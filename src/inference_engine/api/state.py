@@ -12,12 +12,15 @@ from ..adapters.llama_cpp import LlamaCppAdapter
 from ..config import settings
 from ..evals import EvalRunner, PolicyRegistry, RubricRegistry
 from ..manager import ModelManager
+from ..observability import get_logger
 from ..registry import (
     CompositeRegistry,
     MLXRegistry,
     ModelDescriptor,
+    OllamaHttpRegistry,
     OllamaRegistry,
     VLLMRegistry,
+    get_probe,
 )
 
 
@@ -36,11 +39,18 @@ def _build_adapter_for(descriptor: ModelDescriptor) -> InferenceAdapter:
         from ..adapters.vllm_adapter import VLLMAdapter  # noqa: PLC0415
 
         return VLLMAdapter()
+    if descriptor.format == "ollama_http":
+        # Lazy import — keeps the cold-import path quick when the operator
+        # hasn't configured an Ollama fallback (OLLAMA_HTTP_ENDPOINT="").
+        from ..adapters.ollama_http import OllamaHttpAdapter  # noqa: PLC0415
+
+        return OllamaHttpAdapter()
     raise ValueError(f"unsupported model format: {descriptor.format!r}")
 
 
 class AppState:
     def __init__(self) -> None:
+        log = get_logger("startup.appstate")
         ollama = OllamaRegistry(settings.ollama_models_dir)
         mlx = MLXRegistry(settings.mlx_models_dir)
         vllm = VLLMRegistry(settings.vllm_models_file)
@@ -48,11 +58,42 @@ class AppState:
         # path always wins over a local GGUF/MLX of the same qualified_name.
         # Local-format ordering (mlx-vs-gguf) follows the existing toggle.
         local_sources = (mlx, ollama) if settings.prefer_mlx_over_gguf else (ollama, mlx)
-        self.registry = CompositeRegistry((vllm, *local_sources))
+
+        # Ollama-HTTP fallback comes *after* the local sources: anything
+        # llama.cpp / MLX can serve in-process wins on latency, only
+        # llama.cpp-rejected GGUFs fall through to the HTTP path.  Empty
+        # endpoint → registry stays inert; nothing to wire up.
+        sources: tuple = (vllm, *local_sources)
+        if settings.ollama_http_endpoint:
+            ollama_http = OllamaHttpRegistry(settings.ollama_http_endpoint)
+            sources = (*sources, ollama_http)
+            log.info(
+                "ollama_http.fallback_enabled",
+                endpoint=settings.ollama_http_endpoint,
+            )
+
+        self.registry = CompositeRegistry(sources)
+
+        # Probe-aware resolver: for each model id, walk sources in order and
+        # pick the first descriptor whose adapter would actually load.  GGUFs
+        # are checked via the load probe (gemma4 etc. fail here and fall
+        # through to ollama_http); non-GGUFs trust the source.  This keeps
+        # ``manager.get(id)`` and ``/v1/models`` agreeing on what's reachable.
+        def _accept(desc: ModelDescriptor) -> bool:
+            if desc.format == "gguf":
+                return get_probe().probe(desc).loadable
+            return True
+
+        self._accept = _accept
+
+        def _resolve(model_id: str) -> ModelDescriptor | None:
+            return self.registry.resolve(model_id, _accept)
+
         self.manager = ModelManager(
             registry=self.registry,
             adapter_factory=_build_adapter_for,
             memory_budget_bytes=settings.memory_budget_bytes,
+            resolver=_resolve,
         )
         # Heterogeneous backends — report "auto" rather than a single backend.
         self.backend_name = "auto"

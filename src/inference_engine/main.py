@@ -10,6 +10,7 @@ from .config import settings
 from .evals import load_policy
 from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
+from .registry import get_probe
 
 # Configure tracing at import time so the global TracerProvider is set before
 # any span is created or any FastAPI middleware is built. configure_tracing()
@@ -23,13 +24,59 @@ async def lifespan(app: FastAPI):
     n_keys = load_keys()
     app_state.policy_registry = load_policy(settings.auto_eval_policies_file)
     log = get_logger("startup")
+
+    # Walk the composite registry once with probe-aware partitioning so the
+    # startup log honestly reflects the reachable surface — not just what's
+    # on disk.  GGUFs that llama-cpp-python can't load fall through to the
+    # ollama_http source automatically and land in ``available``.  Anything
+    # every source rejects (or that registry parsing skipped) lands in
+    # ``unavailable`` / ``skipped`` with structured reasons.
+    probe = get_probe()
+
+    def _accept(desc):
+        if desc.format == "gguf":
+            return probe.probe(desc).loadable
+        return True
+
+    loadable, rejected = app_state.registry.list_loadable(_accept)
+
+    available_summary = [
+        {"model": d.qualified_name, "format": d.format} for d in loadable
+    ]
+    unavailable = []
+    for desc in rejected:
+        if desc.format == "gguf":
+            result = probe.probe(desc)
+            unavailable.append(
+                {
+                    "model": desc.qualified_name,
+                    "reason": result.reason or "load_failed",
+                    "detail": result.detail,
+                }
+            )
+        else:
+            unavailable.append(
+                {"model": desc.qualified_name, "reason": "rejected_by_accept"}
+            )
+    skipped = [
+        {"model": s.qualified_name, "reason": s.reason}
+        for source in getattr(app_state.registry, "_sources", ())
+        for s in (getattr(source, "list_skipped", lambda: [])() or [])
+    ]
+
     log.info(
         "engine_ready",
         version=__version__,
         backend=app_state.backend_name,
         ollama_models_dir=str(settings.ollama_models_dir),
         mlx_models_dir=str(settings.mlx_models_dir),
-        n_models=len(app_state.registry.list_models()),
+        ollama_http_endpoint=settings.ollama_http_endpoint or "<disabled>",
+        n_available=len(loadable),
+        n_unavailable=len(unavailable),
+        n_skipped=len(skipped),
+        available=available_summary,
+        unavailable=unavailable,
+        skipped=skipped,
         memory_budget_gb=settings.memory_budget_gb,
         otel_enabled=is_enabled(),
         auth_enabled=settings.auth_enabled,

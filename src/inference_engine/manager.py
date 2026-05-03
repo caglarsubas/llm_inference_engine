@@ -55,8 +55,14 @@ class ModelManager:
         registry: OllamaRegistry,
         adapter_factory: Callable[[ModelDescriptor], InferenceAdapter],
         memory_budget_bytes: int,
+        resolver: Callable[[str], ModelDescriptor | None] | None = None,
     ) -> None:
         self._registry = registry
+        # Probe-aware resolution lives in CompositeRegistry; we accept it as
+        # a callable so the manager stays decoupled from the probe details
+        # and the registry-source tree.  ``None`` falls back to plain
+        # ``registry.get(model_id)`` so single-source tests keep working.
+        self._resolver = resolver or registry.get
         self._adapter_factory = adapter_factory
         self._budget = memory_budget_bytes
         self._loaded: OrderedDict[str, tuple[InferenceAdapter, ModelDescriptor]] = OrderedDict()
@@ -105,7 +111,7 @@ class ModelManager:
         same model dedupe, while concurrent callers for different models
         proceed in parallel.
         """
-        descriptor = self._registry.get(model_id)
+        descriptor = self._resolver(model_id)
         if descriptor is None:
             raise ModelNotFoundError(model_id)
         key = descriptor.qualified_name

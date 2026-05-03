@@ -24,6 +24,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from ..observability import get_logger
+
+log = get_logger("registry.ollama")
+
 OLLAMA_MEDIA_PREFIX = "application/vnd.ollama.image."
 
 ModelFormat = Literal["gguf", "mlx", "vllm"]
@@ -67,6 +71,21 @@ class ModelDescriptor:
         return f"{self.registry}/{self.namespace}/{self.name}:{self.tag}"
 
 
+@dataclass(frozen=True)
+class SkippedManifest:
+    """A manifest the registry deliberately did not surface, with a reason.
+
+    Reasons are short machine-friendly strings (``no_local_model_layer``,
+    ``unreadable_manifest``) so callers can group/filter without parsing
+    free-form text. Operators see the human reason in the warning log line.
+    """
+
+    qualified_name: str
+    manifest_path: str
+    reason: str
+    detail: str = ""
+
+
 class OllamaRegistry:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
@@ -78,6 +97,9 @@ class OllamaRegistry:
             raise FileNotFoundError(f"blobs dir not found: {self.blobs_dir}")
 
         self._cache: dict[str, ModelDescriptor] = {}
+        # Manifests we walked but did not return — exposed so /v1/models can
+        # surface them honestly to operators rather than silently dropping.
+        self._skipped: dict[str, SkippedManifest] = {}
 
     def _blob_path(self, digest: str) -> Path:
         # digest looks like "sha256:abcdef..."; on disk it's "sha256-abcdef..."
@@ -102,12 +124,37 @@ class OllamaRegistry:
         except json.JSONDecodeError:
             return None
 
-    def _parse_manifest(self, manifest_path: Path) -> ModelDescriptor | None:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
+    def _record_skip(
+        self,
+        manifest_path: Path,
+        qualified_name: str,
+        reason: str,
+        detail: str = "",
+    ) -> None:
+        """Remember a manifest we deliberately skipped + emit a warn line.
 
+        We dedupe on ``qualified_name`` so list_models() being called multiple
+        times doesn't spam the log; the first walk emits, subsequent walks
+        replace the entry silently in case the reason changes (e.g. operator
+        added a missing blob between walks).
+        """
+        is_new = qualified_name not in self._skipped
+        self._skipped[qualified_name] = SkippedManifest(
+            qualified_name=qualified_name,
+            manifest_path=str(manifest_path),
+            reason=reason,
+            detail=detail,
+        )
+        if is_new:
+            log.warning(
+                "registry.skip",
+                model=qualified_name,
+                manifest=str(manifest_path),
+                reason=reason,
+                detail=detail,
+            )
+
+    def _parse_manifest(self, manifest_path: Path) -> ModelDescriptor | None:
         # Path: <root>/manifests/<registry>/<namespace>/<model>/<tag>
         try:
             tag = manifest_path.name
@@ -115,6 +162,19 @@ class OllamaRegistry:
             namespace = manifest_path.parent.parent.name
             registry = manifest_path.parent.parent.parent.name
         except IndexError:
+            return None
+
+        qname = f"{model}:{tag}"
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self._record_skip(
+                manifest_path,
+                qname,
+                "unreadable_manifest",
+                detail=type(exc).__name__,
+            )
             return None
 
         gguf_path: Path | None = None
@@ -140,7 +200,24 @@ class OllamaRegistry:
             elif kind == "params":
                 params = self._read_blob_json(digest) or {}
 
-        if gguf_path is None or not gguf_path.exists():
+        if gguf_path is None:
+            # No model layer in the manifest at all (e.g. cloud-only entries
+            # like ``minimax-m2.7:cloud`` whose weights live behind ollama's
+            # cloud API rather than in the local blob store).
+            self._record_skip(
+                manifest_path,
+                qname,
+                "no_local_model_layer",
+                detail="manifest has no application/vnd.ollama.image.model layer",
+            )
+            return None
+        if not gguf_path.exists():
+            self._record_skip(
+                manifest_path,
+                qname,
+                "missing_blob",
+                detail=str(gguf_path),
+            )
             return None
 
         return ModelDescriptor(
@@ -168,6 +245,14 @@ class OllamaRegistry:
             self._cache[desc.qualified_name] = desc
             self._cache[desc.fully_qualified_name] = desc
         return sorted(descriptors, key=lambda d: d.qualified_name)
+
+    def list_skipped(self) -> list[SkippedManifest]:
+        """Return every manifest skipped in the most-recent ``list_models()`` walk.
+
+        Populated as a side effect of ``list_models()`` / ``_parse_manifest()``;
+        callers that have not yet triggered a walk get an empty list.
+        """
+        return sorted(self._skipped.values(), key=lambda s: s.qualified_name)
 
     def get(self, name_with_tag: str) -> ModelDescriptor | None:
         if not self._cache:

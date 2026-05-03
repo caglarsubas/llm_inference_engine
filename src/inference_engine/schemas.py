@@ -267,6 +267,35 @@ class ModelInfo(BaseModel):
     model_path: str | None = None
 
 
+class UnavailableModel(BaseModel):
+    """A manifest the engine knows about but cannot serve.
+
+    Two reason families:
+
+    * **Registry skip** — the manifest was rejected at parse time
+      (``no_local_model_layer`` for cloud-only entries, ``missing_blob``,
+      ``unreadable_manifest``).  ``backend`` is ``"none"`` because no
+      adapter was attempted.
+    * **Load probe failure** — llama.cpp can't open the GGUF (typically
+      because the architecture isn't supported by the bundled
+      ``llama-cpp-python``).  ``reason`` carries the exception class name,
+      ``detail`` carries the first line of its message.
+
+    Surfaced in ``ModelList.unavailable`` so clients (and operators
+    eyeballing ``/v1/models``) can see *why* a model is missing instead
+    of getting a 500 on first chat call.
+    """
+
+    id: str
+    reason: str
+    detail: str = ""
+    backend: str = "none"
+    format: str = "gguf"
+
+
 class ModelList(BaseModel):
     object: Literal["list"] = "list"
     data: list[ModelInfo]
+    # Empty for clients that pre-date this field — fully backwards-compatible
+    # with the previous schema (additional pydantic field with a default).
+    unavailable: list[UnavailableModel] = Field(default_factory=list)
