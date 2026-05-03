@@ -69,7 +69,7 @@ services:
       MLX_MODELS_DIR: /models/mlx
       AUTH_KEYS_FILE: /config/auth_keys.json
       AUTO_EVAL_POLICIES_FILE: /config/auto_eval_policies.json
-      MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-12.0}
+      MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-60.0}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-inference-engine}
