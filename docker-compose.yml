@@ -51,6 +51,46 @@
 # ---------------------------------------------------------------------------
 
 services:
+  # ---------------------------------------------------------------------------
+  # Ollama sidecar — fallback runtime for GGUF architectures the engine's
+  # bundled llama-cpp-python doesn't yet support (gemma4, qwen3.6, ministral-3,
+  # nemotron3, etc.).  Ollama ships its own ggml fork that tracks new model
+  # families faster than llama-cpp-python does, so anything llama.cpp can't
+  # load locally we proxy here.
+  #
+  # We mount the *same* host model dir as the engine so ollama and our
+  # OllamaRegistry see identical blobs and manifests — no duplicate storage,
+  # no re-pull.  Ollama discovers models from $OLLAMA_MODELS, which we point
+  # at the mounted store.  The engine talks to ollama over the compose network
+  # (http://ollama:11434), never exposed to the host.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    expose:
+      - "11434"
+    environment:
+      OLLAMA_MODELS: /models
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+    volumes:
+      # Read-write so ollama can update its lockfiles in-place; the host data
+      # is the same store the engine reads from.  Pin to a tag in production.
+      - "${OLLAMA_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/ollama}:/models"
+    deploy:
+      resources:
+        limits:
+          # Sized for the largest GGUF in the store + KV cache headroom.
+          # The M5 Max host advertises ~128 GB; we leave plenty for the
+          # engine replicas and Docker Desktop overhead.  Override via
+          # ``OLLAMA_MEMORY_LIMIT`` for tighter hosts.
+          memory: ${OLLAMA_MEMORY_LIMIT:-64g}
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
   engine:
     build:
       context: .
@@ -69,7 +109,7 @@ services:
       MLX_MODELS_DIR: /models/mlx
       AUTH_KEYS_FILE: /config/auth_keys.json
       AUTO_EVAL_POLICIES_FILE: /config/auto_eval_policies.json
-      MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-12.0}
+      MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-60.0}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-inference-engine}
@@ -77,6 +117,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # llama.cpp on CPU inside containers — Metal isn't available here.
       N_GPU_LAYERS: "0"
+      # Fallback runtime for GGUFs llama-cpp-python can't load.  Empty string
+      # disables the fallback (engine will mark unsupported models as
+      # ``unavailable`` instead of routing them to ollama).
+      OLLAMA_HTTP_ENDPOINT: ${OLLAMA_HTTP_ENDPOINT:-http://ollama:11434}
     volumes:
       # Models are mounted read-only from the host. Override the host path
       # via OLLAMA_MODELS_HOST_DIR / MLX_MODELS_HOST_DIR in your .env.
@@ -101,6 +145,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+    depends_on:
+      # Wait for ollama before starting — the OllamaHttpRegistry calls
+      # /api/tags during AppState construction; if ollama isn't reachable yet
+      # the registry boots empty, and we'd need a restart for the fallback to
+      # be wired.  ``service_started`` (not ``service_healthy``) so we don't
+      # block on ollama's first-pull warm-up if it ever decides to fetch.
+      ollama:
+        condition: service_started
     restart: unless-stopped
 
   nginx:

@@ -23,6 +23,19 @@ class Settings(BaseSettings):
             ".vllm_models.example.json."
         ),
     )
+    ollama_http_endpoint: str = Field(
+        default="",
+        description=(
+            "Base URL of an Ollama server used as a fallback runtime for "
+            "GGUF architectures the bundled llama-cpp-python can't load "
+            "(e.g. gemma4, qwen3.6, ministral-3 — anything Ollama's ggml "
+            "fork supports but our wheel doesn't yet). Empty string disables "
+            "the fallback; the engine then marks unsupported models as "
+            "'unavailable' rather than routing them. The Ollama-served "
+            "registry is consulted *after* local llama.cpp, so anything "
+            "llama.cpp can load stays in-process for the latency win."
+        ),
+    )
     prefer_mlx_over_gguf: bool = Field(
         default=True,
         description="When the same qualified name is in both registries, prefer MLX.",
