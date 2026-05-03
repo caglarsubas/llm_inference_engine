@@ -1,0 +1,5 @@
+[
+  {"key": "sk-dev-CHANGE-ME-LOCAL-DEVELOPMENT", "tenant": "dev"},
+  {"key": "sk-eval-CHANGE-ME-EVAL-RUNNER",      "tenant": "evals"},
+  {"key": "sk-agent-CHANGE-ME-AGENT-PRODUCTION","tenant": "agent-runtime"}
+]

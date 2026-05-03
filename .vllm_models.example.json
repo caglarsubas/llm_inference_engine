@@ -1,0 +1,16 @@
+[
+  {
+    "name": "llama-3.2-1b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm:8000",
+    "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+    "size_bytes": 2400000000
+  },
+  {
+    "name": "llama-3.2-3b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-secondary:8000",
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "size_bytes": 6500000000
+  }
+]

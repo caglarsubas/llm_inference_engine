@@ -1,0 +1,119 @@
+# ---------------------------------------------------------------------------
+# Multi-GPU vLLM overlay — two vLLM containers pinned to different GPUs.
+#
+# Apply on top of docker-compose.yml (NOT in addition to docker-compose.vllm.yml):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vllm-multigpu.yml up -d
+#
+# Or via Make:
+#
+#   make compose-vllm-multigpu-up
+#
+# Why this exists
+# ---------------
+#
+# vLLM serves one model per process. Round 25's docker-compose.vllm.yml runs a
+# single vLLM service that grabs ``count: 1`` GPU. To serve multiple models
+# simultaneously on a multi-GPU host, you need multiple vLLM services, each
+# pinned to a specific GPU via ``device_ids``. ``count`` and ``device_ids``
+# are mutually exclusive in the Compose GPU spec, so this is a separate
+# overlay rather than a parameter on the single-GPU one.
+#
+# Prerequisites
+# -------------
+#
+# * Host has ≥2 NVIDIA GPUs (verify with ``nvidia-smi``)
+# * NVIDIA Container Toolkit installed
+# * The GPU IDs you pin to (``'0'`` and ``'1'`` here) must exist on the host;
+#   override via ``VLLM_GPU_ID_PRIMARY`` / ``VLLM_GPU_ID_SECONDARY`` in .env
+#   if the layout differs (e.g. running on slots 2 and 3 of a 4-GPU node).
+#
+# Companion config
+# ----------------
+#
+# Drop a ``.vllm_models.json`` into the project root with two entries —
+# one per upstream — pointing at ``http://vllm:8000`` and
+# ``http://vllm-secondary:8000``. The example ``.vllm_models.example.json``
+# is already shaped this way; copy it to ``.vllm_models.json`` and adjust
+# the model_id values for the models you've configured below.
+# ---------------------------------------------------------------------------
+
+services:
+  vllm:
+    image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}
+    container_name: inference-engine-vllm-primary
+    ipc: host
+    expose:
+      - "8000"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - "${HF_CACHE_HOST_DIR:-./.cache/huggingface}:/root/.cache/huggingface"
+    command: >
+      --model ${VLLM_MODEL_PRIMARY:-meta-llama/Llama-3.2-1B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --gpu-memory-utilization ${VLLM_GPU_UTIL:-0.85}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-4096}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # Pin to a specific GPU. ``device_ids`` takes string IDs that
+              # match what ``nvidia-smi`` shows for the host's GPU layout.
+              # Use ``count: all`` (in vllm.yml) instead if you don't care
+              # which GPU you land on.
+              device_ids: ['${VLLM_GPU_ID_PRIMARY:-0}']
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  vllm-secondary:
+    image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}
+    container_name: inference-engine-vllm-secondary
+    ipc: host
+    expose:
+      - "8000"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - "${HF_CACHE_HOST_DIR:-./.cache/huggingface}:/root/.cache/huggingface"
+    command: >
+      --model ${VLLM_MODEL_SECONDARY:-meta-llama/Llama-3.2-3B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --gpu-memory-utilization ${VLLM_GPU_UTIL:-0.85}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-4096}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${VLLM_GPU_ID_SECONDARY:-1}']
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  # Engine override — mount a multi-upstream .vllm_models.json that
+  # references both vLLM services by their compose hostnames.
+  engine:
+    volumes:
+      - "${VLLM_MODELS_FILE:-./.vllm_models.json}:/app/.vllm_models.json:ro"
+    environment:
+      VLLM_MODELS_FILE: /app/.vllm_models.json
+    depends_on:
+      vllm:
+        condition: service_started
+      vllm-secondary:
+        condition: service_started

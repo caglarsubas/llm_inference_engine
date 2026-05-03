@@ -1,0 +1,16 @@
+# Jaeger all-in-one — OTLP/gRPC collector + UI on one container.
+# Start with:  docker compose -f docker-compose.otel.yml up -d
+# UI:          http://127.0.0.1:16686
+# Then run the engine with OTEL_ENABLED=true.
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: inference-engine-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP/gRPC (used by the engine)
+      - "4318:4318"     # OTLP/HTTP (alternative)
+    restart: unless-stopped

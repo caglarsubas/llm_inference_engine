@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# vLLM sidecar overlay — continuous chat batching for the engine.
+#
+# Bring up the engine + a vLLM server side-by-side. The engine reads
+# ``.vllm_models.json`` to discover the upstream and routes any request whose
+# ``model`` field matches a configured entry into the vLLM batcher.
+#
+# Usage (CUDA host):
+#   make compose-vllm-up         # engine + vllm + nginx
+#   make compose-vllm-down
+#
+# Hardware reality
+# ----------------
+#
+# vLLM requires CUDA (or a supported AMD/Intel GPU). It does NOT run on:
+#   * Apple Silicon Docker Desktop  (no Metal passthrough)
+#   * macOS / Windows without GPU passthrough
+#   * Pure-CPU containers (the image builds but the server fails fast)
+#
+# So this overlay is meant for Linux GPU hosts. On a laptop without a GPU it
+# will fail with a clear error from vLLM at startup; the engine itself stays
+# up and serves the local llama.cpp / MLX models normally — vLLM-routed
+# requests will return 503 until vllm comes up.
+#
+# Multi-model
+# -----------
+#
+# vLLM serves one model per process. To run multiple models concurrently,
+# duplicate the ``vllm`` service with a different name + port and add a
+# matching entry to ``.vllm_models.json``. Example: ``vllm-3b`` on port 8001
+# serving Llama-3.2-3B-Instruct, ``vllm-1b`` on 8000 serving 1B.
+# ---------------------------------------------------------------------------
+
+services:
+  vllm:
+    image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}
+    container_name: inference-engine-vllm
+    ipc: host                        # required for vLLM's worker shared mem
+    expose:
+      - "8000"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      # HuggingFace model cache. Persists across restarts so vLLM doesn't
+      # re-download multi-GB weights every boot.
+      - "${HF_CACHE_HOST_DIR:-./.cache/huggingface}:/root/.cache/huggingface"
+    command: >
+      --model ${VLLM_MODEL:-meta-llama/Llama-3.2-1B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --gpu-memory-utilization ${VLLM_GPU_UTIL:-0.85}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-4096}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            # GPU access via Docker Compose's standard device-reservation
+            # block. ``count`` selects how many GPUs to allocate:
+            #   1   → first available GPU (default for single-vLLM)
+            #   all → every GPU on the host (greedy; rarely what you want
+            #         in multi-tenant — pin per-container instead)
+            # For pinning specific GPUs when running multiple vLLM
+            # containers, use ``docker-compose.vllm-multigpu.yml`` which
+            # uses ``device_ids: ['0']`` / ``['1']`` instead of count.
+            # See https://docs.docker.com/compose/how-tos/gpu-support/ for
+            # the full spec; prerequisites in the README's GPU section.
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-1}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s             # cold-start (model download + CUDA graph) can take minutes
+    restart: unless-stopped
+
+  # The engine override: mount a .vllm_models.json that points at the sidecar
+  # above. Operators can drop their own file; this default expects an entry
+  # named ``llama-3.2-1b-instruct:vllm`` so basic E2E works out of the box.
+  engine:
+    volumes:
+      - "${VLLM_MODELS_FILE:-./.vllm_models.json}:/app/.vllm_models.json:ro"
+    environment:
+      VLLM_MODELS_FILE: /app/.vllm_models.json
+    depends_on:
+      vllm:
+        condition: service_started

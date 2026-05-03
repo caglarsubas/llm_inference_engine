@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# HAProxy LB overlay — replaces nginx with HAProxy for header-based stickiness.
+#
+#   make compose-up-sticky                      # 2 replicas, default
+#   make compose-up-sticky REPLICAS=4
+#   make compose-down-sticky
+#
+# Why exists
+# ----------
+#
+# The default ``docker-compose.yml`` ships nginx because it's the most
+# universally familiar LB. nginx OSS forces us into round-robin with no
+# header-based stickiness — a documented constraint in round 24's README
+# section. This overlay swaps that out for HAProxy, which DOES support
+# ``balance hdr(Authorization)`` natively against a dynamically-discovered
+# upstream pool.
+#
+# Apply by combining compose files:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.haproxy.yml up -d
+#
+# The overlay disables the nginx service (``profiles: [disabled]``) and adds
+# the haproxy service in front. The engine service is unchanged — same
+# image, same volume mounts, same env.
+# ---------------------------------------------------------------------------
+
+services:
+  # Disable nginx by tagging it with a profile no one activates.
+  nginx:
+    profiles: ["disabled"]
+
+  haproxy:
+    image: haproxy:2.9-alpine
+    depends_on:
+      - engine
+    ports:
+      # Public LB port (same as nginx default so clients don't change).
+      - "${LB_PORT:-8080}:8080"
+      # Stats endpoint for ops dashboards (HAProxy's built-in status page).
+      - "${HAPROXY_STATS_PORT:-8404}:8404"
+    volumes:
+      - ./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/lb_health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped

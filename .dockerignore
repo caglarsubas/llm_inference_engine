@@ -1,0 +1,23 @@
+.git
+.gitignore
+.venv
+.env
+.auth_keys.json
+.auto_eval_policies.json
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+tests
+scripts
+docker
+docker-compose*.yml
+Dockerfile
+.dockerignore
+# README.md is read by hatchling during package install — keep it.
+Makefile
+test-reports
+*.gguf
+*.safetensors
+.DS_Store

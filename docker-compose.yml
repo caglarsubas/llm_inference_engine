@@ -1,0 +1,119 @@
+# ---------------------------------------------------------------------------
+# Inference engine — horizontally-scalable compose stack.
+#
+# Bring up:    make compose-up                    # 2 replicas, default
+#              make compose-up-scale REPLICAS=4   # scale on demand
+# Tear down:   make compose-down
+# Logs:        make compose-logs
+#
+# Topology
+# --------
+#
+#   ┌──────────┐           ┌────────────┐
+#   │  client  │ ───────►  │   nginx    │  :8080  (host port)
+#   └──────────┘           │  (LB)      │
+#                          └─────┬──────┘
+#                                │  hash $http_authorization consistent
+#                  ┌─────────────┼─────────────┐
+#                  ▼             ▼             ▼
+#           ┌──────────┐  ┌──────────┐  ┌──────────┐
+#           │ engine.1 │  │ engine.2 │  │ engine.N │  (internal, replica-keyed)
+#           └────┬─────┘  └────┬─────┘  └────┬─────┘
+#                │             │             │
+#                └─────────────┼─────────────┘
+#                              ▼
+#                  ┌────────────────────────┐
+#                  │  /models  (read-only)  │   shared volume mount
+#                  │  /config  (read-only)  │
+#                  └────────────────────────┘
+#
+# Sticky-session caveat — important
+# ---------------------------------
+#
+# ``hash $http_authorization consistent`` keeps a tenant on the same engine
+# replica for cache locality (prefix cache, tool-timing store, embed
+# coalescer queue). With multiple replicas you do NOT get cross-replica
+# sharing of these caches; that needs a real shared-state layer (Redis or
+# similar) and is deliberately out of scope here. Anonymous traffic (no
+# Authorization header) hashes on the empty string and effectively all
+# lands on one replica — fine for dev, attention-needed in production
+# where you'd want per-tenant auth turned on.
+#
+# Auto-scaling
+# ------------
+#
+# docker-compose itself supports manual scale via ``--scale``. For metric-
+# driven horizontal pod autoscaling (CPU/QPS-based), this stack runs cleanly
+# under ``docker stack deploy`` (Swarm mode) or Kubernetes — the
+# ``deploy.replicas`` block below is read by Swarm and ignored by plain
+# compose, which is fine. ``make compose-up-scale REPLICAS=N`` is the
+# manual-scale path.
+# ---------------------------------------------------------------------------
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Switch to "-DGGML_CUDA=on" on a CUDA host. Metal is unavailable
+        # inside containers and we leave that path off by default.
+        CMAKE_ARGS: ""
+        EXTRAS: "otel"
+    image: prometa/inference-engine:dev
+    expose:
+      - "8080"
+    environment:
+      # Configurable by the operator via .env (compose reads it automatically).
+      OLLAMA_MODELS_DIR: /models/ollama
+      MLX_MODELS_DIR: /models/mlx
+      AUTH_KEYS_FILE: /config/auth_keys.json
+      AUTO_EVAL_POLICIES_FILE: /config/auto_eval_policies.json
+      MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-12.0}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-inference-engine}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # llama.cpp on CPU inside containers — Metal isn't available here.
+      N_GPU_LAYERS: "0"
+    volumes:
+      # Models are mounted read-only from the host. Override the host path
+      # via OLLAMA_MODELS_HOST_DIR / MLX_MODELS_HOST_DIR in your .env.
+      - "${OLLAMA_MODELS_HOST_DIR:-/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models}:/models/ollama:ro"
+      - "${MLX_MODELS_HOST_DIR:-./.cache/mlx}:/models/mlx:ro"
+      # Config (auth keys + auto-eval policy) — operator-provided. Empty by
+      # default; if you set AUTH_ENABLED=true you must mount a real keys file.
+      - "${CONFIG_HOST_DIR:-./docker/config}:/config:ro"
+    deploy:
+      # Swarm-mode replica count — also influences `up --scale` UX. For
+      # plain compose, run `make compose-up-scale REPLICAS=N`.
+      replicas: ${REPLICAS:-2}
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+      resources:
+        limits:
+          memory: ${ENGINE_MEMORY_LIMIT:-16g}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/v1/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - engine
+    ports:
+      - "${LB_PORT:-8080}:8080"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/lb_health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped

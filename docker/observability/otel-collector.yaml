@@ -1,0 +1,148 @@
+# ---------------------------------------------------------------------------
+# OpenTelemetry Collector — central pipeline for the engine's spans.
+#
+# The engine exports OTLP/gRPC to this collector at port 4317. The collector
+# fans the data out to:
+#
+#   * Jaeger    — full traces for ad-hoc inspection and root-cause work.
+#   * Prometheus (via spanmetrics + sumconnector) — derived metrics that
+#     Grafana dashboards graph (request rate, p50/p95/p99 latency, token
+#     throughput, eval scores, etc.).
+#
+# The two connectors below are what makes this dashboard work:
+#
+#   spanmetrics  — emits ``calls_total`` (counter) + ``duration_milliseconds``
+#                  (histogram) per span name, with our domain attributes
+#                  preserved as labels (prometa.tenant, gen_ai.request.model,
+#                  gen_ai.system, etc.). Lets us slice traffic by tenant /
+#                  model / backend without re-instrumenting.
+#
+#   sum          — converts span attribute values into counter metrics.
+#                  We pull ``gen_ai.usage.input_tokens`` and
+#                  ``gen_ai.usage.output_tokens`` from chat.generate /
+#                  embeddings.run / completions.run / eval.run spans into
+#                  ``inference_tokens_input_total`` and
+#                  ``inference_tokens_output_total``.
+#
+# Span attribute → metric label naming: OTel converts ``foo.bar`` to
+# ``foo_bar`` in Prometheus exposition. We refer to the Prometheus name in
+# dashboard queries.
+# ---------------------------------------------------------------------------
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  # Promote span attributes that we want as metric labels into a stable
+  # location. Not strictly necessary because spanmetrics' ``dimensions`` block
+  # can read attributes directly — but explicit promotion makes the metric
+  # label set obvious from this file.
+  attributes/promote:
+    actions:
+      - key: prometa.tenant
+        action: upsert
+        from_attribute: prometa.tenant
+      - key: gen_ai.request.model
+        action: upsert
+        from_attribute: gen_ai.request.model
+      - key: gen_ai.system
+        action: upsert
+        from_attribute: gen_ai.system
+
+connectors:
+  # Spans → calls counter + duration histogram.
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s]
+    dimensions:
+      - name: prometa.tenant
+        default: anonymous
+      - name: gen_ai.request.model
+        default: unknown
+      - name: gen_ai.system
+        default: unknown
+    namespace: traces.spanmetrics
+    metrics_flush_interval: 15s
+    aggregation_temporality: AGGREGATION_TEMPORALITY_CUMULATIVE
+
+  # Span attribute values → sum metrics. The ``sum`` connector reads a numeric
+  # attribute off each span and adds it to a counter, so we get *total tokens*
+  # served instead of just *number of spans*. Two metric definitions (input +
+  # output tokens), each labeled by tenant + model + backend.
+  sum:
+    spans:
+      inference_tokens_input_total:
+        description: "Sum of gen_ai.usage.input_tokens across all completed spans."
+        source_attribute: gen_ai.usage.input_tokens
+        conditions:
+          - 'attributes["gen_ai.usage.input_tokens"] != nil'
+        attributes:
+          - key: prometa.tenant
+            default_value: anonymous
+          - key: gen_ai.request.model
+            default_value: unknown
+          - key: gen_ai.system
+            default_value: unknown
+      inference_tokens_output_total:
+        description: "Sum of gen_ai.usage.output_tokens across all completed spans."
+        source_attribute: gen_ai.usage.output_tokens
+        conditions:
+          - 'attributes["gen_ai.usage.output_tokens"] != nil'
+        attributes:
+          - key: prometa.tenant
+            default_value: anonymous
+          - key: gen_ai.request.model
+            default_value: unknown
+          - key: gen_ai.system
+            default_value: unknown
+
+exporters:
+  # Traces — Jaeger via OTLP.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Metrics — Prometheus pulls from this exporter on :8889.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: ""              # don't double-prefix; metric names already namespaced
+    send_timestamps: true
+    metric_expiration: 10m
+    enable_open_metrics: true
+    resource_to_telemetry_conversion:
+      enabled: true            # surface service.name etc as labels
+
+  # Optional debug logging — flip enabled to ``debug`` for verbose dump.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    # Traces flow into both Jaeger (for search) and the connectors that
+    # derive metrics. The connectors are themselves pipeline endpoints in
+    # OTel's bidirectional connector model.
+    traces:
+      receivers: [otlp]
+      processors: [attributes/promote, batch]
+      exporters: [otlp/jaeger, spanmetrics, sum]
+
+    # Metrics derived from spans.
+    metrics/spans:
+      receivers: [spanmetrics, sum]
+      processors: [batch]
+      exporters: [prometheus]
+
+  telemetry:
+    logs:
+      level: info

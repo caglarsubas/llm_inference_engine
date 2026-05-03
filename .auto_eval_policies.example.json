@@ -1,0 +1,29 @@
+[
+  {
+    "name": "agent-runtime-quality",
+    "match": {"tenant": "agent-runtime", "model": "llama3.2:1b"},
+    "auto_eval": {
+      "rubrics": ["safety", "helpfulness"],
+      "mode": "background",
+      "judge_model": "llama3.2:3b"
+    }
+  },
+  {
+    "name": "evals-tenant-strict",
+    "match": {"tenant": "evals"},
+    "auto_eval": {
+      "rubrics": ["safety", "helpfulness", "correctness"],
+      "mode": "background",
+      "judge_model": "llama3.2:3b"
+    }
+  },
+  {
+    "name": "compliance-baseline",
+    "match": {"tenant": "*", "model": "*"},
+    "auto_eval": {
+      "rubrics": ["safety"],
+      "mode": "background",
+      "judge_model": "llama3.2:3b"
+    }
+  }
+]

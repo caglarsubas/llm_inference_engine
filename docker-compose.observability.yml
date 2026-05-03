@@ -1,0 +1,107 @@
+# ---------------------------------------------------------------------------
+# Observability overlay — Grafana dashboard, Prometheus, Jaeger, OTel Collector.
+#
+#   make obs-up    # bring up the engine stack with full observability
+#   make obs-down
+#
+# Stack (everything inside the compose network):
+#
+#                 engine ─OTLP─▶ otel-collector ──▶ jaeger      (16686 UI)
+#                                       │
+#                                       ▼
+#                                  prometheus  (9090 UI)
+#                                       │
+#                                       ▼
+#                                  grafana     (3000 UI — main dashboard here)
+#
+# UI endpoints exposed on the host:
+#
+#   * Grafana                  http://localhost:3000   (admin / admin)
+#   * Prometheus               http://localhost:9090
+#   * Jaeger trace search      http://localhost:16686
+#   * Engine LB                http://localhost:8090   (unchanged)
+#
+# This overlay supersedes ``docker-compose.otel.yml`` — it brings up Jaeger
+# too, plus the full metrics-and-dashboard stack. Use the standalone Jaeger
+# overlay only if you don't need dashboards.
+# ---------------------------------------------------------------------------
+
+services:
+  # OTel Collector — central pipeline. Engine speaks OTLP/gRPC to it.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.151.0
+    container_name: inference-engine-otel-collector
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./docker/observability/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    expose:
+      - "4317"   # OTLP/gRPC
+      - "4318"   # OTLP/HTTP
+      - "8889"   # Prometheus exporter
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: inference-engine-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+    expose:
+      - "4317"
+      - "4318"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: inference-engine-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=24h'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: inference-engine-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Datasource UIDs are referenced from the dashboard JSON; pin them.
+      GF_DATASOURCES_DEFAULT_PROMETHEUS_UID: prometheus
+    volumes:
+      - ./docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+    restart: unless-stopped
+
+  # Engine override — point at the otel-collector instead of jaeger directly.
+  # The default ``docker-compose.yml`` already wires OTEL_EXPORTER_OTLP_ENDPOINT
+  # via env var; we override here so the obs overlay alone is sufficient.
+  engine:
+    environment:
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "inference-engine"
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.env
+.auth_keys.json
+.auto_eval_policies.json
+.vllm_models.json
+.DS_Store
+dist/
+build/
+*.egg-info/
