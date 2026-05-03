@@ -80,7 +80,7 @@ services:
     volumes:
       # Models are mounted read-only from the host. Override the host path
       # via OLLAMA_MODELS_HOST_DIR / MLX_MODELS_HOST_DIR in your .env.
-      - "${OLLAMA_MODELS_HOST_DIR:-/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models}:/models/ollama:ro"
+      - "${OLLAMA_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/ollama}:/models/ollama:ro"
       - "${MLX_MODELS_HOST_DIR:-./.cache/mlx}:/models/mlx:ro"
       # Config (auth keys + auto-eval policy) — operator-provided. Empty by
       # default; if you set AUTH_ENABLED=true you must mount a real keys file.
