@@ -1,0 +1,106 @@
+# ---------------------------------------------------------------------------
+# Native topology — engine + ollama run as launchd agents, *only* the
+# observability stack runs in containers.
+#
+# Why the split
+# -------------
+# Docker on macOS runs a Linux VM and that VM has no Metal passthrough, so
+# anything inside a container is CPU-only.  The engine and ollama are the
+# two services that benefit from Metal (10-30× speed-up on 30B-class
+# models), so they live natively under launchd.  Grafana, Prometheus,
+# Jaeger and the OTel Collector see no benefit from GPU and are perfectly
+# happy in containers.
+#
+# Bring up:
+#     ./scripts/native-service.sh install    # one-time: load launchd agents
+#     make native-up                         # bring up obs containers
+#
+# Tear down:
+#     make native-down                       # obs containers
+#     ./scripts/native-service.sh stop       # native services
+#
+# Endpoints (all loopback — the engine is on-prem, nothing is exposed
+# beyond the host):
+#
+#     engine        http://127.0.0.1:8080         (native, Metal)
+#     ollama        http://127.0.0.1:11434        (native, Metal)
+#     jaeger ui     http://127.0.0.1:16686
+#     prometheus    http://127.0.0.1:9090
+#     grafana       http://127.0.0.1:3000
+#     otel ingest   http://127.0.0.1:4317         (engine sends OTLP here)
+#
+# The OTel Collector publishes 4317 to the host (unlike the containerised
+# topology, where the engine is in-network and uses the service name).
+# That's the only delta from docker-compose.observability.yml — but rather
+# than overlay we keep the file standalone so ``make native-up`` is a
+# single, self-contained command.
+# ---------------------------------------------------------------------------
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.151.0
+    container_name: inference-engine-otel-collector
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./docker/observability/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      # OTLP/gRPC — the native engine connects here via 127.0.0.1.
+      - "4317:4317"
+      # OTLP/HTTP — for tools that prefer it over gRPC.
+      - "4318:4318"
+    expose:
+      - "8889"   # Prometheus exporter (scraped by the prometheus service)
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: inference-engine-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+    expose:
+      - "4317"
+      - "4318"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: inference-engine-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=24h'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: inference-engine-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DATASOURCES_DEFAULT_PROMETHEUS_UID: prometheus
+    volumes:
+      - ./docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

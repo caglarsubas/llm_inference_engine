@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Native engine launchd template — installed by scripts/native-service.sh.
+
+  Why native instead of containerized: Docker on macOS runs a Linux VM
+  that doesn't expose Metal; llama-cpp-python falls back to CPU and a
+  30 B model takes ~25 s instead of ~2-3 s on the M5 Max GPU.  Running
+  the engine as a launchd user agent gives us auto-restart, log capture,
+  and boot-on-login while keeping full GPU access via the Metal backend.
+
+  Placeholders are substituted at install time:
+
+      __PROJECT_DIR__   absolute path to the engine repo
+      __VENV_PYTHON__   absolute path to .venv/bin/uvicorn
+      __HOME__          $HOME (used for OLLAMA_MODELS_DIR default)
+
+  Sibling agent ``com.prometa.ollama.plist`` runs ``ollama serve``
+  natively as well so the HTTP-fallback path stays Metal-accelerated for
+  GGUFs llama-cpp-python doesn't yet support.
+
+  Run ``./scripts/native-service.sh install`` to materialise this and
+  load both agents.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prometa.inference-engine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__VENV_PYTHON__</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>inference_engine.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8080</string>
+    </array>
+
+    <!--
+      WorkingDirectory must be the repo root so relative defaults
+      (e.g. .vllm_models.json, .auto_eval_policies.json) resolve.
+    -->
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <!--
+      Environment.  We deliberately default OLLAMA_HTTP_ENDPOINT at
+      127.0.0.1:11434 (the sibling native ollama agent) so the engine
+      finds its fallback runtime without operator config.  Override any
+      key by editing the installed plist under ~/Library/LaunchAgents/
+      and ``launchctl bootout`` + ``bootstrap`` it.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>OLLAMA_MODELS_DIR</key>
+        <string>__HOME__/.cache/inference_engine/ollama</string>
+        <key>MLX_MODELS_DIR</key>
+        <string>__HOME__/.cache/inference_engine/mlx</string>
+        <key>OLLAMA_HTTP_ENDPOINT</key>
+        <string>http://127.0.0.1:11434</string>
+        <key>MEMORY_BUDGET_GB</key>
+        <string>96.0</string>
+        <!-- Metal: offload every layer.  The unified-memory M5 Max has
+             ~115 GiB of recommendedMaxWorkingSetSize so this fits even
+             the 33B-class GGUFs comfortably. -->
+        <key>N_GPU_LAYERS</key>
+        <string>-1</string>
+        <key>N_CTX</key>
+        <string>8192</string>
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+        <key>OTEL_ENABLED</key>
+        <string>true</string>
+        <!-- Containerised observability stack exposes the OTLP port on
+             localhost via OrbStack/Docker port-publish.  Adjust if you
+             move the collector to a different host. -->
+        <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
+        <string>http://127.0.0.1:4317</string>
+        <key>AUTH_ENABLED</key>
+        <string>false</string>
+    </dict>
+
+    <!-- Auto-start on login + auto-restart on crash. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Throttle restart loops so a config error doesn't peg the CPU. -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!--
+      Logs land under /tmp so any user can read them without sudo.
+      ``./scripts/native-service.sh logs engine`` tails them.
+    -->
+    <key>StandardOutPath</key>
+    <string>/tmp/prometa-inference-engine.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/prometa-inference-engine.err.log</string>
+</dict>
+</plist>

@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs test lint clean
 
 install:
 	uv sync
@@ -133,6 +133,46 @@ obs-load:
 	  wait; \
 	done
 	@echo "  drove 40 requests across 2 tenants × 2 models — check Grafana"
+
+# ---------------------------------------------------------------------------
+# Native topology — engine + ollama as launchd agents (Metal-accelerated),
+# observability stack in containers.  Recommended for on-prem Apple Silicon
+# deployments where Docker's CPU-only container VM would tank inference
+# latency (Metal isn't passed through to Linux containers on macOS).
+# ---------------------------------------------------------------------------
+
+native-install: install-metal
+	./scripts/native-service.sh install
+
+native-uninstall:
+	./scripts/native-service.sh uninstall
+
+native-up:
+	./scripts/native-service.sh start
+	docker compose -f docker-compose.native.yml up -d
+	@echo
+	@echo "engine (native, Metal): http://127.0.0.1:8080"
+	@echo "ollama (native, Metal): http://127.0.0.1:11434"
+	@echo "Grafana    → http://127.0.0.1:$${GRAFANA_PORT:-3000}    (admin / admin)"
+	@echo "Prometheus → http://127.0.0.1:$${PROMETHEUS_PORT:-9090}"
+	@echo "Jaeger UI  → http://127.0.0.1:$${JAEGER_UI_PORT:-16686}"
+
+native-down:
+	./scripts/native-service.sh stop
+	docker compose -f docker-compose.native.yml down
+
+native-restart:
+	./scripts/native-service.sh restart
+
+native-status:
+	./scripts/native-service.sh status
+	@echo
+	@docker compose -f docker-compose.native.yml ps
+
+# Tail engine logs by default; pass TARGET=ollama for the fallback runtime.
+TARGET ?= engine
+native-logs:
+	./scripts/native-service.sh logs $(TARGET)
 
 list-models:
 	uv run python scripts/list_models.py

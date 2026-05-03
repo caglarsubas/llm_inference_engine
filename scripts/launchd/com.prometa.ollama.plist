@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Native ollama launchd template — installed by scripts/native-service.sh.
+
+  Ollama on macOS uses Metal automatically (its bundled ggml fork knows
+  how to talk to MTLDevice).  Running it natively under launchd instead
+  of in a Docker container gets us:
+
+    * full Metal acceleration (10-30× speed-up on 30B-class models vs
+      CPU-bound containerised ollama)
+    * shared unified memory with the engine — no double mmap of weights
+    * auto-restart, boot-on-login, log capture (same shape as the
+      engine's plist)
+
+  Path substitutions performed at install time:
+
+      __OLLAMA_BIN__   absolute path to ``ollama`` (resolved by the
+                       installer; typically /opt/homebrew/bin/ollama or
+                       /usr/local/bin/ollama).
+      __HOME__         $HOME — used for OLLAMA_MODELS so it sees the
+                       same blob store the engine reads from.
+
+  We deliberately point OLLAMA_MODELS at ``~/.cache/inference_engine/
+  ollama`` rather than the default ``~/.ollama/models`` so a single
+  on-disk store backs both the engine's local OllamaRegistry (manifest
+  walker) and the HTTP-fallback adapter — pull a model once with
+  ``ollama pull`` and both runtimes see it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prometa.ollama</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__OLLAMA_BIN__</string>
+        <string>serve</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>OLLAMA_MODELS</key>
+        <string>__HOME__/.cache/inference_engine/ollama</string>
+        <!-- Bind only to loopback — this fallback exists for the engine
+             on the same host, not for external clients. -->
+        <key>OLLAMA_HOST</key>
+        <string>127.0.0.1:11434</string>
+        <!-- Keep models warm in unified memory longer than the default
+             5 m so successive chat calls don't re-mmap a 30 GB blob. -->
+        <key>OLLAMA_KEEP_ALIVE</key>
+        <string>30m</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/prometa-ollama.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/prometa-ollama.err.log</string>
+</dict>
+</plist>
