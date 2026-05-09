@@ -73,8 +73,17 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
     volumes:
-      - ./docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Native topology uses a dedicated config that scrapes the engine
+      # via host.docker.internal — the engine runs on the host under
+      # launchd, not as a compose service. The default config (used by
+      # docker-compose.observability.yml) targets the in-network
+      # `engine:8080` and would sit permanently `down` here.
+      - ./docker/observability/prometheus.native.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    extra_hosts:
+      # Required on Linux so host.docker.internal resolves; no-op on
+      # macOS / Windows where Docker Desktop provides the alias.
+      - "host.docker.internal:host-gateway"
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     depends_on:

@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Native-topology variant of prometheus.yml.
+#
+# The fully-containerized topology (docker-compose.observability.yml on
+# top of docker-compose.yml) runs the engine as a service named
+# `engine` inside the compose network — Prometheus resolves it via
+# Docker's embedded DNS.
+#
+# The native topology (docker-compose.native.yml) runs the engine on
+# the host under launchd, so the compose-network DNS lookup `engine`
+# fails and the scrape target sits permanently in `down` state. Every
+# Grafana panel then shows "No Data" because the inference-engine job
+# never reports metrics.
+#
+# Workaround: scrape the engine via Docker Desktop's host-gateway
+# alias `host.docker.internal`, which resolves to the macOS / Windows
+# host from inside any container. On Linux the same alias works when
+# the container is started with `extra_hosts: ["host.docker.internal:host-gateway"]`,
+# which docker-compose.native.yml does for prometheus.
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8889']
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: 'telemetry_sdk_(name|language|version)'
+
+  - job_name: inference-engine
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ['host.docker.internal:8080']
