@@ -12,11 +12,11 @@
 #                                  prometheus  (9090 UI)
 #                                       │
 #                                       ▼
-#                                  grafana     (3000 UI — main dashboard here)
+#                                  grafana     (3030 UI — main dashboard here)
 #
 # UI endpoints exposed on the host:
 #
-#   * Grafana                  http://localhost:3000   (admin / admin)
+#   * Grafana                  http://localhost:3030   (admin / admin)
 #   * Prometheus               http://localhost:9090
 #   * Jaeger trace search      http://localhost:16686
 #   * Engine LB                http://localhost:8090   (unchanged)
@@ -84,7 +84,10 @@ services:
       - ./docker/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      # 3030 by default — frees the host's :3000 for app dev servers
+      # (Next.js, Vite, etc. all default to 3000). Override via
+      # GRAFANA_PORT=<n> in .env if you want it back on 3000.
+      - "${GRAFANA_PORT:-3030}:3000"
     depends_on:
       - prometheus
       - jaeger
