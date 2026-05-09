@@ -26,7 +26,7 @@
 #     ollama        http://127.0.0.1:11434        (native, Metal)
 #     jaeger ui     http://127.0.0.1:16686
 #     prometheus    http://127.0.0.1:9090
-#     grafana       http://127.0.0.1:3000
+#     grafana       http://127.0.0.1:3030
 #     otel ingest   http://127.0.0.1:4317         (engine sends OTLP here)
 #
 # The OTel Collector publishes 4317 to the host (unlike the containerised
@@ -95,7 +95,10 @@ services:
       - ./docker/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      # 3030 by default — frees the host's :3000 for app dev servers
+      # (Next.js, Vite, etc. all default to 3000). Override via
+      # GRAFANA_PORT=<n> in .env if you want it back on 3000.
+      - "${GRAFANA_PORT:-3030}:3000"
     depends_on:
       - prometheus
       - jaeger
