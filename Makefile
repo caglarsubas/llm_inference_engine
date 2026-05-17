@@ -10,7 +10,7 @@ install-mlx:
 	uv sync --extra mlx
 
 install-otel:
-	uv sync --extra otel
+	uv sync --extra otel --extra dev
 
 sync:
 	uv sync
@@ -141,7 +141,7 @@ obs-load:
 # latency (Metal isn't passed through to Linux containers on macOS).
 # ---------------------------------------------------------------------------
 
-native-install: install-metal
+native-install: install-metal install-otel
 	./scripts/native-service.sh install
 
 native-uninstall:
@@ -153,7 +153,7 @@ native-up:
 	@echo
 	@echo "engine (native, Metal): http://127.0.0.1:8080"
 	@echo "ollama (native, Metal): http://127.0.0.1:11434"
-	@echo "Grafana    → http://127.0.0.1:$${GRAFANA_PORT:-3000}    (admin / admin)"
+	@echo "Grafana    → http://127.0.0.1:$${GRAFANA_PORT:-3030}    (admin / admin)"
 	@echo "Prometheus → http://127.0.0.1:$${PROMETHEUS_PORT:-9090}"
 	@echo "Jaeger UI  → http://127.0.0.1:$${JAEGER_UI_PORT:-16686}"
 
