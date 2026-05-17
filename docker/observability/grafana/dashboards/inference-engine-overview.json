@@ -1,5 +1,7 @@
 {
-  "annotations": {"list": []},
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -10,341 +12,858 @@
     {
       "type": "row",
       "title": "Traffic overview",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
-      "id": 100, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "stat",
-      "title": "Requests / sec",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "title": "Avg req/s (dashboard range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
-      "targets": [{
-        "expr": "sum(rate(traces_spanmetrics_calls_total{span_name=~\"chat\\\\..*|completions\\\\.run|embeddings\\\\.run|rerank\\\\.run|eval\\\\.run\"}[5m]))",
-        "refId": "A"
-      }],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
-      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}}
+      "targets": [
+        {
+          "expr": "sum(increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run|eval[.]run\"}[${__range}])) / (${__range_s})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2
+        }
+      }
     },
     {
       "type": "stat",
-      "title": "Active tenants (5m)",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "title": "Distinct tenants seen (dashboard range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
       "id": 2,
-      "targets": [{
-        "expr": "count(count by (prometa_tenant) (rate(traces_spanmetrics_calls_total[5m]) > 0))",
-        "refId": "A"
-      }],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}}
+      "targets": [
+        {
+          "expr": "count(sum by(prometa_tenant)(increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__range}])))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      }
     },
     {
       "type": "stat",
-      "title": "Active models (5m)",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "title": "Distinct models served (dashboard range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
       "id": 3,
-      "targets": [{
-        "expr": "count(count by (gen_ai_request_model) (rate(traces_spanmetrics_calls_total{gen_ai_request_model!=\"unknown\"}[5m]) > 0))",
-        "refId": "A"
-      }],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}}
+      "targets": [
+        {
+          "expr": "count(sum by(gen_ai_request_model)(increase(traces_spanmetrics_calls_total{gen_ai_request_model!=\"unknown\", span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__range}])))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      }
     },
     {
       "type": "stat",
-      "title": "Error rate (5m)",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "title": "Error share (dashboard range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
       "id": 4,
-      "targets": [{
-        "expr": "sum(rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[5m])) / clamp_min(sum(rate(traces_spanmetrics_calls_total[5m])), 0.001)",
-        "refId": "A"
-      }],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "targets": [
+        {
+          "expr": "sum(increase(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[${__range}])) / clamp_min(sum(increase(traces_spanmetrics_calls_total[${__range}])), 1)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "decimals": 2,
-          "thresholds": {"mode": "absolute", "steps": [
-            {"color": "green", "value": null},
-            {"color": "yellow", "value": 0.01},
-            {"color": "red", "value": 0.05}
-          ]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
         }
       }
     },
-
     {
       "type": "row",
       "title": "Request rate breakdowns",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
-      "id": 101, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 101,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "timeseries",
       "title": "Requests/sec by route",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
       "id": 5,
-      "targets": [{
-        "expr": "sum by (span_name) (rate(traces_spanmetrics_calls_total[5m]))",
-        "legendFormat": "{{span_name}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","max","mean"]}}
+      "targets": [
+        {
+          "expr": "sum by (span_name) (rate(traces_spanmetrics_calls_total[${__rate_interval}]))",
+          "legendFormat": "{{span_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "max",
+            "mean"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Requests/sec by tenant",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 6},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
       "id": 6,
-      "targets": [{
-        "expr": "sum by (prometa_tenant) (rate(traces_spanmetrics_calls_total{span_name=~\"chat\\\\..*|completions\\\\.run|embeddings\\\\.run|rerank\\\\.run\"}[5m]))",
-        "legendFormat": "{{prometa_tenant}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "reqps"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","max","mean"]}}
+      "targets": [
+        {
+          "expr": "sum by (prometa_tenant) (rate(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__rate_interval}]))",
+          "legendFormat": "{{prometa_tenant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "max",
+            "mean"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Requests/sec by model",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 15},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
       "id": 7,
-      "targets": [{
-        "expr": "sum by (gen_ai_request_model) (rate(traces_spanmetrics_calls_total{span_name=~\"chat\\\\..*|completions\\\\.run|embeddings\\\\.run|rerank\\\\.run\",gen_ai_request_model!=\"unknown\"}[5m]))",
-        "legendFormat": "{{gen_ai_request_model}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "reqps"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","max","mean"]}}
+      "targets": [
+        {
+          "expr": "sum by (gen_ai_request_model) (rate(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\",gen_ai_request_model!=\"unknown\"}[${__rate_interval}]))",
+          "legendFormat": "{{gen_ai_request_model}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "max",
+            "mean"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Requests/sec by backend",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 15},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
       "id": 8,
-      "targets": [{
-        "expr": "sum by (gen_ai_system) (rate(traces_spanmetrics_calls_total{span_name=~\"chat\\\\..*|completions\\\\.run|embeddings\\\\.run|rerank\\\\.run\",gen_ai_system!=\"unknown\"}[5m]))",
-        "legendFormat": "{{gen_ai_system}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "reqps"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","max","mean"]}}
+      "targets": [
+        {
+          "expr": "sum by (gen_ai_system) (rate(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\",gen_ai_system!=\"unknown\"}[${__rate_interval}]))",
+          "legendFormat": "{{gen_ai_system}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "max",
+            "mean"
+          ]
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Latency",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24},
-      "id": 102, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 102,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "timeseries",
       "title": "Latency p50 / p95 / p99 by route",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 25},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
       "id": 9,
       "targets": [
-        {"expr": "histogram_quantile(0.50, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[5m])))", "legendFormat": "p50 — {{span_name}}", "refId": "A"},
-        {"expr": "histogram_quantile(0.95, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[5m])))", "legendFormat": "p95 — {{span_name}}", "refId": "B"},
-        {"expr": "histogram_quantile(0.99, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[5m])))", "legendFormat": "p99 — {{span_name}}", "refId": "C"}
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[${__rate_interval}])))",
+          "legendFormat": "p50 — {{span_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[${__rate_interval}])))",
+          "legendFormat": "p95 — {{span_name}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[${__rate_interval}])))",
+          "legendFormat": "p99 — {{span_name}}",
+          "refId": "C"
+        }
       ],
-      "fieldConfig": {"defaults": {"unit": "ms"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Latency p95 by model",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 25},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
       "id": 10,
-      "targets": [{
-        "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(traces_spanmetrics_duration_milliseconds_bucket{gen_ai_request_model!=\"unknown\"}[5m])))",
-        "legendFormat": "{{gen_ai_request_model}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "ms"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, gen_ai_request_model) (rate(traces_spanmetrics_duration_milliseconds_bucket{gen_ai_request_model!=\"unknown\"}[${__rate_interval}])))",
+          "legendFormat": "{{gen_ai_request_model}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Token throughput",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 35},
-      "id": 103, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "id": 103,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "timeseries",
       "title": "Input tokens/sec by tenant",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 36},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
       "id": 11,
-      "targets": [{
-        "expr": "sum by (prometa_tenant) (rate(inference_tokens_input_total[5m]))",
-        "legendFormat": "{{prometa_tenant}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "short", "custom": {"axisLabel": "tokens/s"}}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "targets": [
+        {
+          "expr": "sum by (prometa_tenant) (rate(inference_tokens_input_total[${__rate_interval}]))",
+          "legendFormat": "{{prometa_tenant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "axisLabel": "tokens/s"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Output tokens/sec by tenant",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 36},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
       "id": 12,
-      "targets": [{
-        "expr": "sum by (prometa_tenant) (rate(inference_tokens_output_total[5m]))",
-        "legendFormat": "{{prometa_tenant}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "short", "custom": {"axisLabel": "tokens/s"}}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "targets": [
+        {
+          "expr": "sum by (prometa_tenant) (rate(inference_tokens_output_total[${__rate_interval}]))",
+          "legendFormat": "{{prometa_tenant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "axisLabel": "tokens/s"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Tokens/sec by model (input + output)",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 45},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
       "id": 13,
       "targets": [
-        {"expr": "sum by (gen_ai_request_model) (rate(inference_tokens_input_total{gen_ai_request_model!=\"unknown\"}[5m]))", "legendFormat": "input — {{gen_ai_request_model}}", "refId": "A"},
-        {"expr": "sum by (gen_ai_request_model) (rate(inference_tokens_output_total{gen_ai_request_model!=\"unknown\"}[5m]))", "legendFormat": "output — {{gen_ai_request_model}}", "refId": "B"}
+        {
+          "expr": "sum by (gen_ai_request_model) (rate(inference_tokens_input_total{gen_ai_request_model!=\"unknown\"}[${__rate_interval}]))",
+          "legendFormat": "input — {{gen_ai_request_model}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (gen_ai_request_model) (rate(inference_tokens_output_total{gen_ai_request_model!=\"unknown\"}[${__rate_interval}]))",
+          "legendFormat": "output — {{gen_ai_request_model}}",
+          "refId": "B"
+        }
       ],
-      "fieldConfig": {"defaults": {"unit": "short", "custom": {"axisLabel": "tokens/s"}}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "axisLabel": "tokens/s"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Tenant × model traffic matrix",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 54},
-      "id": 104, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "id": 104,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "table",
-      "title": "Last-5m requests by tenant × model",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 55},
+      "title": "Requests by tenant × model (dashboard range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
       "id": 14,
-      "targets": [{
-        "expr": "sum by (prometa_tenant, gen_ai_request_model, gen_ai_system) (increase(traces_spanmetrics_calls_total{span_name=~\"chat\\\\..*|completions\\\\.run|embeddings\\\\.run|rerank\\\\.run\",gen_ai_request_model!=\"unknown\"}[5m]))",
-        "format": "table",
-        "instant": true,
-        "refId": "A"
-      }],
-      "transformations": [
-        {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "__name__": true, "job": true, "instance": true, "service_name": true, "span_kind": true},
-          "renameByName": {
-            "prometa_tenant": "Tenant",
-            "gen_ai_request_model": "Model",
-            "gen_ai_system": "Backend",
-            "Value": "Requests"
-          }
-        }}
+      "targets": [
+        {
+          "expr": "sum by (prometa_tenant, gen_ai_request_model, gen_ai_system) (increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\",gen_ai_request_model!=\"unknown\"}[${__range}]))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
       ],
-      "options": {"footer": {"show": true, "reducer": ["sum"], "fields": ["Value"]}, "showHeader": true},
-      "fieldConfig": {"defaults": {"custom": {"align": "auto"}}}
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "service_name": true,
+              "span_kind": true
+            },
+            "renameByName": {
+              "prometa_tenant": "Tenant",
+              "gen_ai_request_model": "Model",
+              "gen_ai_system": "Backend",
+              "Value": "Requests"
+            }
+          }
+        }
+      ],
+      "options": {
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "fields": [
+            "Value"
+          ]
+        },
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Eval signals (LLM-as-a-Judge)",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 65},
-      "id": 105, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "id": 105,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "timeseries",
       "title": "Eval runs/sec by rubric",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 66},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
       "id": 15,
-      "targets": [{
-        "expr": "sum by (eval_rubric_name) (rate(traces_spanmetrics_calls_total{span_name=\"eval.run\"}[5m]))",
-        "legendFormat": "{{eval_rubric_name}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "reqps"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "targets": [
+        {
+          "expr": "sum by (eval_rubric_name) (rate(traces_spanmetrics_calls_total{span_name=\"eval.run\"}[${__rate_interval}]))",
+          "legendFormat": "{{eval_rubric_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Eval latency p95 by rubric",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 66},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 66
+      },
       "id": 16,
-      "targets": [{
-        "expr": "histogram_quantile(0.95, sum by (le, eval_rubric_name) (rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"eval.run\"}[5m])))",
-        "legendFormat": "{{eval_rubric_name}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "ms"}},
-      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["last","mean","max"]}}
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, eval_rubric_name) (rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"eval.run\"}[${__rate_interval}])))",
+          "legendFormat": "{{eval_rubric_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ]
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Operational health",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 75},
-      "id": 106, "collapsed": false, "panels": []
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 75
+      },
+      "id": 106,
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "timeseries",
       "title": "Loaded models (per replica)",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 76},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 76
+      },
       "id": 17,
-      "targets": [{
-        "expr": "sum by (instance) (inference_engine_models_loaded)",
-        "legendFormat": "{{instance}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}}
+      "targets": [
+        {
+          "expr": "sum by (instance) (inference_engine_models_loaded)",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Loaded model bytes (per replica)",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 76},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 76
+      },
       "id": 18,
-      "targets": [{
-        "expr": "sum by (instance) (inference_engine_loaded_bytes)",
-        "legendFormat": "{{instance}}",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "bytes"}}
+      "targets": [
+        {
+          "expr": "sum by (instance) (inference_engine_loaded_bytes)",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Prefix cache size by model",
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 76},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 76
+      },
       "id": 19,
-      "targets": [{
-        "expr": "sum by (model, backend) (inference_engine_prefix_cache_size_bytes)",
-        "legendFormat": "{{model}} ({{backend}})",
-        "refId": "A"
-      }],
-      "fieldConfig": {"defaults": {"unit": "bytes"}}
+      "targets": [
+        {
+          "expr": "sum by (model, backend) (inference_engine_prefix_cache_size_bytes)",
+          "legendFormat": "{{model}} ({{backend}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
     }
   ],
   "refresh": "10s",
   "schemaVersion": 38,
-  "tags": ["inference", "prometa"],
-  "templating": {"list": []},
-  "time": {"from": "now-30m", "to": "now"},
+  "tags": [
+    "inference",
+    "prometa"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "Inference Engine — Overview",
   "uid": "inference-engine-overview",
-  "version": 1,
+  "version": 3,
   "weekStart": ""
 }

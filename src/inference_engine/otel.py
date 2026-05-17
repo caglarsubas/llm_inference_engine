@@ -96,7 +96,11 @@ def configure_tracing() -> None:
         from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
         from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
     except ImportError as exc:
-        log.error("otel.import_failed", error=str(exc))
+        log.error(
+            "otel.import_failed",
+            error=str(exc),
+            hint="install OpenTelemetry deps (native: `make install-otel`, then restart the engine)",
+        )
         return
 
     from . import __version__  # noqa: PLC0415
