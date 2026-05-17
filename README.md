@@ -386,6 +386,28 @@ Cold model load shows up as a long `model.acquire` (e.g. 263 ms) above an unchan
 
 Point any OTLP/gRPC collector at `OTEL_EXPORTER_OTLP_ENDPOINT` instead of Jaeger. Standard OTel env vars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`, …) are honored by the SDK directly. Service identity is pre-set to `service.name=inference-engine`, `service.version=<package version>`.
 
+To wire the engine into the [Prometa platform](https://github.com/caglarsubas/agent-hook-v2) for cross-service tracing, set the resource attributes so the platform's correlation-id resolver finds the engine's role in the canonical chain. Two patterns:
+
+**Pattern A — engine as a standalone agent.** The engine appears in the Prometa registry as its own agent (`inference-engine`). Use this when the engine isn't called from a Prometa-instrumented agent (e.g. direct HTTP from a frontend / CLI):
+
+```bash
+OTEL_ENABLED=true \
+OTEL_EXPORTER_OTLP_ENDPOINT=https://prometa.example.com/api/v2/otlp/v1/traces \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+OTEL_EXPORTER_OTLP_HEADERS="x-api-key=prm_live_..." \
+OTEL_RESOURCE_ATTRIBUTES="prometa.solution_id=sol_inference,prometa.stage=production"
+```
+
+**Pattern B — engine called by a Prometa-SDK-instrumented agent.** The engine's `chat.generate` / `tool.invoke` spans nest under the calling agent's span via standard OTel context propagation (W3C `traceparent` header on the inbound request). Agents using the [Python](https://github.com/prometa-ai/orchestra-python-sdk), [Node](https://github.com/prometa-ai/orchestra-node-sdk), or [Java](https://github.com/prometa-ai/orchestra-java-sdk) SDKs already propagate this header out of the box — no engine-side change needed beyond pointing at the same OTLP endpoint. The platform's resolver then attributes the engine span's identity horizontals (`agent_id`, `solution_id`) by inheriting from the parent agent's resolved chain.
+
+Engine-side resource attributes already wired into the OTLP stream:
+- `service.name=inference-engine` — primary identity
+- `service.version=<package version>` — auto-discovered
+- `prometa.tenant` (per-span, set from the inbound `x-prometa-tenant` header) — drives multi-tenant routing in Grafana panels
+- `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` — OTel GenAI semconv keys; the platform's cost rollup keys on these.
+
+See the platform-side [`correlation-id-design.md`](https://github.com/caglarsubas/agent-hook-v2/blob/main/resources/correlation/correlation-id-design.md) for the full chain grammar and the SDK READMEs for the agent-side helpers (`set_customer_id`, `set_user_id`, `set_request_model`, `set_tool_name`, etc.) that populate the optional identity-horizontal segments.
+
 ### Grafana dashboards — full observability stack
 
 `make obs-up` brings up the engine plus a complete Grafana / Prometheus / Jaeger / OTel-Collector stack. All metrics on the dashboard are derived from the same OTLP traces the engine already emits — no extra instrumentation. The pipeline is:
