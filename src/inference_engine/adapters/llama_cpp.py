@@ -35,6 +35,7 @@ multi-slot was meant to solve: alternating prefixes / cross-conversation reuse.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
@@ -248,7 +249,34 @@ class LlamaCppAdapter(InferenceAdapter):
             self._last_embed_action = "none"
 
     @staticmethod
-    def _to_llama_messages(messages: Iterable[ChatMessage]) -> list[dict]:
+    def _arguments_for_template(raw: str) -> Any:
+        """Convert OpenAI-shaped ``tool_calls[].function.arguments`` (a JSON-encoded
+        string) into the shape Jinja chat templates actually expect.
+
+        Many HuggingFace-style GGUF templates (Nemotron, Qwen-coder, GLM-4-tool, …)
+        iterate the arguments with filters like ``arguments | items`` — they assume
+        a mapping. ``transformers.apply_chat_template`` quietly parses the JSON
+        string into a dict before rendering; llama-cpp-python's Jinja path does
+        not. Without this shim, the second turn of any tool-calling conversation
+        (where the assistant's prior ``tool_calls`` come back from the client as
+        OpenAI-spec strings) crashes with ``TypeError: Can only get item pairs
+        from a mapping.`` on the template side.
+
+        On parse failure (the value really is a free-form string, e.g.
+        ``"hello"``), return the raw value so OpenAI-strict templates that index
+        ``arguments`` as a string still work. Empty strings become ``{}`` for
+        the same reason the HF helper does: a zero-argument call is a mapping
+        with no keys, not a string of length zero.
+        """
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+
+    @classmethod
+    def _to_llama_messages(cls, messages: Iterable[ChatMessage]) -> list[dict]:
         out: list[dict] = []
         for m in messages:
             entry: dict = {"role": m.role, "content": m.content}
@@ -259,7 +287,7 @@ class LlamaCppAdapter(InferenceAdapter):
                         "type": tc.type,
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "arguments": cls._arguments_for_template(tc.function.arguments),
                         },
                     }
                     for tc in m.tool_calls
