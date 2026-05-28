@@ -55,6 +55,10 @@ class GenerationResult:
     # Set when the model returned OpenAI-style tool calls. None when not
     # supported by the backend or when the model didn't invoke any tools.
     tool_calls: list[dict] | None = None
+    # Reasoning text stripped from ``text`` by the backend itself (e.g. when
+    # llama.cpp grammars start parsing ``<think>`` natively). Most adapters
+    # leave this ``None`` and let the chat-layer normalizer split it out.
+    reasoning_content: str | None = None
 
 
 @dataclass

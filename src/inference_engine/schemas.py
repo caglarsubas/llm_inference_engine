@@ -29,6 +29,8 @@ class ChatMessage(BaseModel):
     # content, and tool result messages obviously have content but in JSON or
     # plain text form.
     content: str | None = None
+    # OpenAI extension for reasoning models (o-series, DeepSeek-R1, Nemotron).
+    reasoning_content: str | None = None
     # Set on assistant messages that include function/tool invocations.
     tool_calls: list[ToolCall] | None = None
     # Set on tool result messages — references the call this is replying to.
@@ -145,6 +147,10 @@ class ToolCallDelta(BaseModel):
 class ChatCompletionDelta(BaseModel):
     role: Literal["system", "user", "assistant", "tool"] | None = None
     content: str | None = None
+    # OpenAI o-series / DeepSeek-R1 streaming reasoning channel. Mirrors the
+    # ``content`` field but carries chain-of-thought text that clients should
+    # render separately (or not at all) from the user-facing answer.
+    reasoning_content: str | None = None
     tool_calls: list[ToolCallDelta] | None = None
 
 
@@ -265,6 +271,17 @@ class ModelInfo(BaseModel):
     backend: str = "llama_cpp"
     format: str = "gguf"
     model_path: str | None = None
+    # Capability hints for clients (DeclarAI model registry, UI badges).
+    # ``reasoning``/``thinking`` mean the underlying model emits private chain
+    # of thought; the engine strips it into a separate channel before clients
+    # see it. ``tool_calling_mode`` reflects what the engine *delivers* —
+    # always ``"native"`` for chat-capable adapters because vendor XML is
+    # normalized server-side. Adapters with no tool plumbing at all surface
+    # ``"unsupported"``.
+    reasoning: bool | None = None
+    thinking: bool | None = None
+    thinking_level: Literal["low", "med", "high"] | None = None
+    tool_calling_mode: Literal["native", "unsupported"] | None = None
 
 
 class UnavailableModel(BaseModel):

@@ -328,6 +328,9 @@ class LlamaCppAdapter(InferenceAdapter):
         message = choice.get("message") or {}
         usage = result.get("usage", {}) or {}
         tool_calls = message.get("tool_calls")
+        # Vendor-XML repair (Nemotron etc.) is centralised in the chat layer
+        # so MLX, vLLM, and Ollama-HTTP get the same treatment without each
+        # adapter re-implementing it.
         return GenerationResult(
             text=message.get("content") or "",
             finish_reason=choice.get("finish_reason") or "stop",
