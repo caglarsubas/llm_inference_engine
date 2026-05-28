@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import replace
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from ..adapters import GenerationParams, InferenceAdapter
+from ..response_normalize import (
+    StreamDelta,
+    StreamNormalizer,
+    infer_model_capabilities,
+    normalize_assistant_text,
+)
 from ..auth import Identity, require_identity
 from ..cancellation import watch_disconnect
 from ..config import settings
@@ -191,6 +198,38 @@ def _auto_eval_attrs(spec: AutoEvalSpec | None, policy: PolicyEntry | None = Non
     return attrs
 
 
+def _normalize_blocking_result(result, params: GenerationParams):
+    """Apply the vendor-XML normalizer to an adapter result.
+
+    Idempotent over backends that already returned structured ``tool_calls``
+    (e.g. vLLM with a tool parser, llama.cpp with a Nemotron grammar): we
+    only strip ``<think>`` blocks from ``content`` and leave the call ids
+    intact so the agent's subsequent ``tool_call_id`` replies still match.
+    """
+    if not result.text and not result.tool_calls:
+        return result
+    normalized = normalize_assistant_text(
+        result.text,
+        existing_tool_calls=result.tool_calls,
+        finish_reason=result.finish_reason,
+        tools_requested=bool(params.tools),
+    )
+    if (
+        normalized.content == result.text
+        and normalized.tool_calls == result.tool_calls
+        and normalized.reasoning_content is None
+        and normalized.finish_reason == result.finish_reason
+    ):
+        return result
+    return replace(
+        result,
+        text=normalized.content or "",
+        finish_reason=normalized.finish_reason,
+        tool_calls=normalized.tool_calls,
+        reasoning_content=normalized.reasoning_content or result.reasoning_content,
+    )
+
+
 def _last_user_prompt(messages: list[ChatMessage]) -> str:
     """Pick the most recent user-turn content to use as the eval 'prompt'.
 
@@ -230,6 +269,11 @@ async def _blocking_response(
         # tools the agent has already executed and is now feeding back.
         n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
         result = await adapter.generate(messages, params)
+        # Single normalization seam: convert any leaked vendor markup
+        # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
+        # OpenAI fields. Backends that already returned ``tool_calls`` keep
+        # their ids — _normalize_blocking_result short-circuits on those.
+        result = _normalize_blocking_result(result, params)
         # Audit outbound tool calls AFTER generation — what the model
         # decided to invoke this turn.
         n_tool_calls = _tool_audit.emit_tool_calls(s, result.tool_calls)
@@ -310,6 +354,7 @@ async def _blocking_response(
                 message=ChatMessage(
                     role="assistant",
                     content=result.text or None,
+                    reasoning_content=result.reasoning_content,
                     tool_calls=response_tool_calls,
                 ),
                 finish_reason=result.finish_reason if result.finish_reason in ("stop", "length", "tool_calls") else "stop",
@@ -356,6 +401,75 @@ async def _stream_response(
     n_tool_results = 0
     n_tool_calls_streamed = 0
 
+    # Streaming normalizer — converts leaked Nemotron/DeepSeek-R1 vendor XML
+    # in the text stream into OpenAI ``reasoning_content`` + ``tool_calls``
+    # deltas before they reach the client. Backends that emit structured
+    # ``tool_call_deltas`` (vLLM tool parser, llama.cpp grammar) bypass this:
+    # their tool_calls flow through untouched on the dedicated channel.
+    caps = infer_model_capabilities(
+        model_name, backend=adapter.backend_name, fmt=getattr(adapter, "format", "")
+    )
+    normalizer = StreamNormalizer(
+        tools_requested=bool(params.tools),
+        expects_reasoning_prelude=bool(caps.get("reasoning")),
+    )
+    next_tool_index = 0
+
+    def _ingest(deltas: list[StreamDelta]) -> list[dict]:
+        """Convert StreamNormalizer output into SSE-shaped chunks."""
+        nonlocal next_tool_index, chunks_emitted
+        out: list[dict] = []
+        for d in deltas:
+            if d.content:
+                chunks_emitted += 1
+                accumulated.append(d.content)
+                out.append(_chunk(ChatCompletionDelta(content=d.content)))
+            if d.reasoning_content:
+                chunks_emitted += 1
+                out.append(
+                    _chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content))
+                )
+            if d.tool_call:
+                tc = d.tool_call
+                fn = tc.get("function") or {}
+                idx = next_tool_index
+                next_tool_index += 1
+                # Emit the full call as a single delta — the inner XML can't
+                # be streamed token-by-token in OpenAI shape anyway, so we
+                # deliver it as one ``{id, type, function: {name, args}}``
+                # chunk and let the reassembler treat it like any other.
+                reassembler.feed(
+                    [
+                        {
+                            "index": idx,
+                            "id": tc.get("id"),
+                            "type": tc.get("type", "function"),
+                            "function": {
+                                "name": fn.get("name", ""),
+                                "arguments": fn.get("arguments", ""),
+                            },
+                        }
+                    ]
+                )
+                out.append(
+                    _chunk(
+                        ChatCompletionDelta(
+                            tool_calls=[
+                                ToolCallDelta(
+                                    index=idx,
+                                    id=tc.get("id"),
+                                    type=tc.get("type", "function"),
+                                    function=ToolCallFunctionDelta(
+                                        name=fn.get("name", ""),
+                                        arguments=fn.get("arguments", ""),
+                                    ),
+                                )
+                            ]
+                        )
+                    )
+                )
+        return out
+
     async with watch_disconnect(request) as cancel:
         reassembler = _tool_audit.ToolCallReassembler()
         with span(
@@ -372,14 +486,22 @@ async def _stream_response(
             try:
                 async for piece in adapter.stream(messages, params, cancel=cancel):
                     if piece.text:
-                        chunks_emitted += 1
-                        accumulated.append(piece.text)
-                        yield _chunk(ChatCompletionDelta(content=piece.text))
+                        for chunk in _ingest(normalizer.feed(piece.text)):
+                            yield chunk
                     if piece.tool_call_deltas:
-                        # Accumulate for end-of-stream audit emission.
+                        # Backend already produced structured deltas — flush
+                        # any text the normalizer was holding back (it can't
+                        # interleave with structured calls cleanly) and pass
+                        # the deltas through.
+                        for chunk in _ingest(normalizer.flush()):
+                            yield chunk
                         reassembler.feed(piece.tool_call_deltas)
-                        # Pass deltas through to the SSE client in OpenAI's
-                        # standard wire format — clients reassemble themselves.
+                        # Re-base our own tool index past whatever the backend
+                        # emitted so post-flush normalized calls don't collide.
+                        next_tool_index = max(
+                            next_tool_index,
+                            max(int(d.get("index", 0)) for d in piece.tool_call_deltas) + 1,
+                        )
                         yield _chunk(
                             ChatCompletionDelta(
                                 tool_calls=[
@@ -399,6 +521,14 @@ async def _stream_response(
                         )
                     if piece.finish_reason:
                         finish_reason = piece.finish_reason
+                # Drain any held-back text now that the adapter is done.
+                for chunk in _ingest(normalizer.flush()):
+                    yield chunk
+                # If the normalizer parsed tool calls out of the text stream,
+                # the canonical finish_reason is ``tool_calls`` regardless of
+                # what the adapter signalled.
+                if normalizer.has_tool_calls():
+                    finish_reason = "tool_calls"
             finally:
                 cancelled = bool(cancel)
                 if not cancelled:
