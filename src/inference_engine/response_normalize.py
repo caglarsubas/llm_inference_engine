@@ -253,6 +253,7 @@ def normalize_assistant_text(
     existing_tool_calls: list[dict] | None = None,
     finish_reason: str = "stop",
     tools_requested: bool = False,
+    expects_reasoning_prelude: bool = False,
 ) -> NormalizedAssistant:
     """Parse leaked reasoning + tool-call XML from raw assistant ``content``.
 
@@ -260,8 +261,28 @@ def normalize_assistant_text(
     strip ``<think>`` blocks from ``content`` and leave the structured tool
     calls untouched (re-parsing would issue fresh ``call_id``s that wouldn't
     match the agent's subsequent ``tool_call_id`` replies).
+
+    ``expects_reasoning_prelude`` is the blocking-path symmetric of the
+    streaming normalizer's same-named flag. Set it for reasoning-family models
+    (Nemotron, DeepSeek-R1, Qwen3-thinking, QwQ, …) whose chat template
+    silently opens ``<think>`` at the generation prompt — so the tag never
+    appears in ``result.text``. When the model exhausts ``max_tokens`` before
+    emitting ``</think>`` or a ``<tool_call>`` anchor, the resulting prose has
+    nothing for the splitter to grab onto and would otherwise leak the model's
+    chain-of-thought into ``content``. With the flag set, we prepend a
+    synthetic ``<think>`` so the existing orphan-open handler classifies
+    unanchored text as reasoning — matching what ``StreamNormalizer`` does
+    when it starts in ``_S_REASONING``. No-op when the text already opens with
+    any of the ``<think>``/``<thinking>``/``<reasoning>`` family of tags.
     """
     raw = text or ""
+    if expects_reasoning_prelude and raw and _THINK_OPEN_RE.search(raw) is None:
+        # The chat template invisibly opened a think block; tell the splitter.
+        # If a `</think>` is present, this turns into a well-formed pair and
+        # all the existing pair / orphan-close logic still applies; if no
+        # close exists either (the leak case), the orphan-open branch picks
+        # up everything from our synthetic open onward as reasoning.
+        raw = "<think>" + raw
     body, reasoning = _split_reasoning(raw)
     reasoning_parts: list[str] = [reasoning] if reasoning else []
 

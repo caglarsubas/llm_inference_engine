@@ -157,6 +157,122 @@ def test_empty_string() -> None:
 
 
 # ---------------------------------------------------------------------------
+# expects_reasoning_prelude — blocking-path symmetric of the streaming flag.
+# Reasoning-family chat templates (Nemotron, DeepSeek-R1, QwQ) pre-emit
+# `<think>` invisibly; when the model exhausts max_tokens before closing it,
+# the blocking normalizer used to leak the chain-of-thought into content.
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_prelude_unanchored_length_finish_routes_to_reasoning() -> None:
+    """The DeclarAI screenshot case: ~2000 chars of pure reasoning, no markers,
+    finish_reason=length. With the flag set, the synthetic `<think>` prepend
+    sends everything to reasoning_content so the CoT never reaches the user."""
+    leaked_cot = (
+        "We need to suggest 3 derived features for credit-risk boosting. "
+        "We're an ML advisor inside a credit-risk pipeline. The user wants "
+        "feature engineering ideas — let me think about what'd actually help."
+    )
+    out = normalize_assistant_text(
+        leaked_cot,
+        finish_reason="length",
+        tools_requested=True,
+        expects_reasoning_prelude=True,
+    )
+    assert out.content is None
+    assert out.reasoning_content == leaked_cot
+    assert out.tool_calls is None
+    assert out.finish_reason == "length"
+
+
+def test_reasoning_prelude_unanchored_stop_finish_also_routes_to_reasoning() -> None:
+    """Symmetric with `test_stream_pure_text_with_expects_reasoning_flag_still_works`
+    on the streaming side: unanchored text + reasoning-family flag → reasoning,
+    regardless of finish_reason. Clients can collapse a reasoning channel by
+    default; they can never untoast a leaked CoT in content."""
+    text = "just a plain answer with no thinking tags"
+    out = normalize_assistant_text(
+        text,
+        finish_reason="stop",
+        expects_reasoning_prelude=True,
+    )
+    assert out.content is None
+    assert out.reasoning_content == text
+
+
+def test_reasoning_prelude_with_proper_close_uses_normal_path() -> None:
+    """Synthetic prepend turns `prose</think>answer` into a well-formed pair —
+    `prose` becomes reasoning, `answer` becomes content. The existing
+    orphan-close handling still works because the synthetic open + the real
+    close are now paired."""
+    raw = "this is the thinking part</think>\nthe answer is 42"
+    out = normalize_assistant_text(raw, expects_reasoning_prelude=True)
+    assert out.reasoning_content == "this is the thinking part"
+    assert out.content == "the answer is 42"
+
+
+def test_reasoning_prelude_with_proper_pair_unchanged() -> None:
+    """A model that emits its own `<think>...</think>` shouldn't get a second
+    synthetic open; the existing pair parser should claim the whole block."""
+    raw = "<think>my reasoning</think>my answer"
+    out = normalize_assistant_text(raw, expects_reasoning_prelude=True)
+    assert out.reasoning_content == "my reasoning"
+    assert out.content == "my answer"
+
+
+def test_reasoning_prelude_with_tool_call_still_extracts_call() -> None:
+    """Bug-report payload + reasoning_prelude flag = the same clean extraction.
+    The prelude path doesn't break tool-call parsing."""
+    raw = (
+        "thinking about which tool to call...\n"
+        "</think>\n"
+        "<tool_call>\n"
+        "<function=get_data_dictionary>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+    out = normalize_assistant_text(
+        raw,
+        tools_requested=True,
+        expects_reasoning_prelude=True,
+    )
+    assert out.content is None
+    assert out.reasoning_content is not None
+    assert "thinking about which tool" in out.reasoning_content
+    assert out.tool_calls is not None and len(out.tool_calls) == 1
+    assert out.tool_calls[0]["function"]["name"] == "get_data_dictionary"
+    assert out.finish_reason == "tool_calls"
+
+
+def test_reasoning_prelude_off_keeps_current_behavior_for_non_reasoning_models() -> None:
+    """Default path (flag unset) is unchanged — plain models can't suddenly
+    have their answers reclassified as reasoning."""
+    text = "the answer is 42"
+    out = normalize_assistant_text(text, finish_reason="length")
+    assert out.content == "the answer is 42"
+    assert out.reasoning_content is None
+
+
+def test_reasoning_prelude_empty_text_does_not_inject_open_tag() -> None:
+    """Empty input stays empty — no synthetic `<think>` on a zero-length body
+    (we'd otherwise materialise a bogus orphan-open that no one asked for)."""
+    out = normalize_assistant_text("", expects_reasoning_prelude=True)
+    assert out.content is None
+    assert out.reasoning_content is None
+    assert out.tool_calls is None
+
+
+def test_reasoning_prelude_with_alt_tag_family_not_double_prepended() -> None:
+    """The detection is family-aware (think / thinking / reasoning / …) —
+    a model that opens `<thinking>` shouldn't also get a synthetic `<think>`
+    glued on, which would otherwise produce two competing opens."""
+    raw = "<thinking>my thoughts</thinking>my answer"
+    out = normalize_assistant_text(raw, expects_reasoning_prelude=True)
+    assert out.reasoning_content == "my thoughts"
+    assert out.content == "my answer"
+
+
+# ---------------------------------------------------------------------------
 # Capability heuristic
 # ---------------------------------------------------------------------------
 
