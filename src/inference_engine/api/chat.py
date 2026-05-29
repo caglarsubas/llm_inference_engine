@@ -198,13 +198,23 @@ def _auto_eval_attrs(spec: AutoEvalSpec | None, policy: PolicyEntry | None = Non
     return attrs
 
 
-def _normalize_blocking_result(result, params: GenerationParams):
+def _normalize_blocking_result(
+    result,
+    params: GenerationParams,
+    *,
+    expects_reasoning_prelude: bool = False,
+):
     """Apply the vendor-XML normalizer to an adapter result.
 
     Idempotent over backends that already returned structured ``tool_calls``
     (e.g. vLLM with a tool parser, llama.cpp with a Nemotron grammar): we
     only strip ``<think>`` blocks from ``content`` and leave the call ids
     intact so the agent's subsequent ``tool_call_id`` replies still match.
+
+    ``expects_reasoning_prelude`` mirrors the streaming-path knob. Set for
+    reasoning-family models so unanchored prose (max_tokens exhausted before
+    ``</think>`` ever appears) is classified as reasoning instead of leaking
+    the chain-of-thought into ``content``. See ``normalize_assistant_text``.
     """
     if not result.text and not result.tool_calls:
         return result
@@ -213,6 +223,7 @@ def _normalize_blocking_result(result, params: GenerationParams):
         existing_tool_calls=result.tool_calls,
         finish_reason=result.finish_reason,
         tools_requested=bool(params.tools),
+        expects_reasoning_prelude=expects_reasoning_prelude,
     )
     if (
         normalized.content == result.text
@@ -252,6 +263,16 @@ async def _blocking_response(
     policy: PolicyEntry | None = None,
 ) -> ChatCompletionResponse:
     cache_size_before = getattr(adapter, "prefix_cache_size_bytes", 0)
+    # Capability hints feed the normalizer's ``expects_reasoning_prelude``
+    # knob — reasoning-family models (Nemotron, DeepSeek-R1, QwQ, …) have a
+    # chat template that silently opens ``<think>`` at the prompt, so the
+    # tag never reaches us in ``result.text``. Without this signal the
+    # blocking path leaks the entire chain-of-thought into ``content`` when
+    # the model exhausts ``max_tokens`` before closing the block. Streaming
+    # path computes the same caps below; keep them in lockstep.
+    caps = infer_model_capabilities(
+        model_name, backend=adapter.backend_name, fmt=getattr(adapter, "format", "")
+    )
     with span(
         "chat.generate",
         **{
@@ -273,7 +294,9 @@ async def _blocking_response(
         # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
         # OpenAI fields. Backends that already returned ``tool_calls`` keep
         # their ids — _normalize_blocking_result short-circuits on those.
-        result = _normalize_blocking_result(result, params)
+        result = _normalize_blocking_result(
+            result, params, expects_reasoning_prelude=bool(caps.get("reasoning"))
+        )
         # Audit outbound tool calls AFTER generation — what the model
         # decided to invoke this turn.
         n_tool_calls = _tool_audit.emit_tool_calls(s, result.tool_calls)
