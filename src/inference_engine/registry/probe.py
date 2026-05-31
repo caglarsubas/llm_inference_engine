@@ -45,6 +45,11 @@ class ProbeResult:
     reason: str = ""
     detail: str = ""
     duration_ms: float = 0.0
+    # Context length the model was trained on (``<arch>.context_length`` in the
+    # GGUF header). 0 = unknown / not a GGUF. The chat adapter clamps its
+    # requested ``n_ctx`` to this so it never over-allocates KV cache for a
+    # short-context model nor RoPE-extrapolates past the trained window.
+    n_ctx_train: int = 0
 
 
 class GGUFLoadProbe:
@@ -134,8 +139,21 @@ class GGUFLoadProbe:
                 use_mmap=True,
                 verbose=False,
             )
+            # Read the trained context length off the loaded model metadata
+            # while we have the handle — free here, saves the chat adapter a
+            # second load just to size its KV cache. Defensive: older
+            # llama-cpp-python builds may not expose ``n_ctx_train()``.
+            n_ctx_train = 0
+            try:
+                n_ctx_train = int(llm.n_ctx_train())
+            except Exception:  # noqa: BLE001 — metadata read is best-effort
+                n_ctx_train = 0
             del llm
-            return ProbeResult(loadable=True, duration_ms=(time.perf_counter() - t0) * 1000)
+            return ProbeResult(
+                loadable=True,
+                duration_ms=(time.perf_counter() - t0) * 1000,
+                n_ctx_train=n_ctx_train,
+            )
         except Exception as exc:  # noqa: BLE001 — llama-cpp raises ValueError, RuntimeError, OSError
             return ProbeResult(
                 loadable=False,
@@ -175,4 +193,5 @@ def as_dict(result: ProbeResult) -> dict[str, Any]:
         "reason": result.reason,
         "detail": result.detail,
         "duration_ms": result.duration_ms,
+        "n_ctx_train": result.n_ctx_train,
     }

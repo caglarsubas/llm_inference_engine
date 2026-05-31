@@ -48,7 +48,15 @@ class Settings(BaseSettings):
 
     # llama.cpp runtime
     n_gpu_layers: int = Field(default=-1, description="-1 = offload all layers to GPU (Metal).")
-    n_ctx: int = Field(default=8192)
+    # Context-window *ceiling*, not a fixed size. Each GGUF loads at
+    # ``min(n_ctx, n_ctx_train)`` — the model's own trained context caps it,
+    # so short-context models don't over-allocate KV cache and long-context
+    # reasoning models (Nemotron, Qwen3) get the full window. 8192 was
+    # truncating long reasoning answers mid-render once prompt + hidden
+    # reasoning + answer overran it; 32768 gives headroom while staying
+    # comfortably within the 60 GB hot-keep budget on the 128 GB target box.
+    # Lower it per-deployment via N_CTX if KV memory is tight.
+    n_ctx: int = Field(default=32768)
     n_threads: int = Field(default=0, description="0 = auto.")
     n_batch: int = Field(default=512)
 

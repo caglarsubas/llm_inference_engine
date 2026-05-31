@@ -78,6 +78,56 @@ class EmbeddingsNotSupportedError(NotImplementedError):
     """
 
 
+class ContextLengthExceededError(Exception):
+    """The request's prompt (plus any forced generation) does not fit the
+    model's context window.
+
+    Backends translate their native overflow error — e.g. llama.cpp's
+    ``ValueError: Requested tokens (N) exceed context window of M`` — into this
+    typed exception so the API layer can answer with a deterministic
+    ``400 context_length_exceeded`` instead of an opaque ``500``. Clients
+    (DeclarAI's tool loop, agentic dashboards) then branch on the error type
+    rather than heuristically pattern-matching 500s after a big tool result.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        requested_tokens: int | None = None,
+        context_window: int | None = None,
+        backend: str = "",
+    ) -> None:
+        self.requested_tokens = requested_tokens
+        self.context_window = context_window
+        self.backend = backend
+        if not message:
+            if requested_tokens is not None and context_window is not None:
+                message = (
+                    f"This model's maximum context length is {context_window} tokens, "
+                    f"but the request needs {requested_tokens}. Shorten the prompt or "
+                    f"the prior tool results."
+                )
+            else:
+                message = "The request exceeds the model's maximum context length."
+        super().__init__(message)
+
+    def error_detail(self) -> dict:
+        """OpenAI-style error payload for the FastAPI ``detail`` field, so
+        clients can read ``detail.type == 'context_length_exceeded'``."""
+        detail: dict = {
+            "message": str(self),
+            "type": "context_length_exceeded",
+            "code": "context_length_exceeded",
+            "param": "messages",
+        }
+        if self.requested_tokens is not None:
+            detail["requested_tokens"] = self.requested_tokens
+        if self.context_window is not None:
+            detail["context_window"] = self.context_window
+        return detail
+
+
 class InferenceAdapter(ABC):
     """Abstract base for all inference backends."""
 
