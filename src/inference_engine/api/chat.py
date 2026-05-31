@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import replace
@@ -8,7 +9,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
-from ..adapters import GenerationParams, InferenceAdapter
+from ..adapters import ContextLengthExceededError, GenerationParams, InferenceAdapter
 from ..response_normalize import (
     StreamDelta,
     StreamNormalizer,
@@ -289,7 +290,13 @@ async def _blocking_response(
         # Audit inbound tool messages BEFORE generation — these record what
         # tools the agent has already executed and is now feeding back.
         n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
-        result = await adapter.generate(messages, params)
+        try:
+            result = await adapter.generate(messages, params)
+        except ContextLengthExceededError as exc:
+            # Prompt + forced generation overran the model's window. Answer with
+            # a deterministic, typed 400 so clients branch on the error type
+            # instead of pattern-matching an opaque 500 after a big tool result.
+            raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
         # Single normalization seam: convert any leaked vendor markup
         # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
         # OpenAI fields. Backends that already returned ``tool_calls`` keep
@@ -552,6 +559,16 @@ async def _stream_response(
                 # what the adapter signalled.
                 if normalizer.has_tool_calls():
                     finish_reason = "tool_calls"
+            except ContextLengthExceededError as exc:
+                # The SSE response line is already open (we sent the role
+                # delta), so we can't downgrade to a 400 here. Emit a typed
+                # terminal ``error`` event — same payload shape as the blocking
+                # 400 body — then stop. Clients keying on ``type`` get the same
+                # signal on both paths.
+                finish_reason = "error"
+                s.bind(**{"error.type": "context_length_exceeded"})
+                yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
+                return
             finally:
                 cancelled = bool(cancel)
                 if not cancelled:

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
@@ -45,6 +46,7 @@ from ..observability import get_logger
 from ..registry import ModelDescriptor
 from ..schemas import ChatMessage
 from .base import (
+    ContextLengthExceededError,
     EmbeddingResult,
     GenerationParams,
     GenerationResult,
@@ -53,6 +55,21 @@ from .base import (
 )
 
 log = get_logger("adapter.llama_cpp")
+
+# Floor for the per-model context clamp. A model whose trained context is below
+# this (rare for chat GGUFs) still loads at its own size; the floor only guards
+# against a bogus/zero ``n_ctx_train`` collapsing the window to nothing.
+_MIN_N_CTX = 512
+
+# llama.cpp raises ``ValueError`` with this shape when the tokenized prompt does
+# not fit ``n_ctx``: "Requested tokens (9001) exceed context window of 8192".
+# We translate that into a typed ContextLengthExceededError so the API answers
+# 400 instead of 500. Matched loosely (lower-cased substring) to survive minor
+# wording drift across llama-cpp-python releases; the integers are best-effort.
+_CTX_OVERFLOW_RE = re.compile(
+    r"requested\s+tokens?\s*\((\d+)\).*context\s+window\s+of\s*(\d+)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +198,59 @@ class LlamaCppAdapter(InferenceAdapter):
     def last_embed_action(self) -> str:
         return self._last_embed_action
 
+    @staticmethod
+    def _effective_n_ctx(requested: int, n_ctx_train: int) -> int:
+        """Clamp the configured context ceiling to what the model supports.
+
+        ``settings.n_ctx`` is a *ceiling* (default 32768), not a fixed size.
+        We size the actual KV cache to ``min(requested, n_ctx_train)`` so:
+
+        * a long-context model (Nemotron, Qwen3) gets the full ceiling rather
+          than the legacy 8192 that was truncating reasoning answers mid-table;
+        * a short-context model (e.g. an 8192-trained GGUF) keeps its own size
+          — no wasted KV memory, no RoPE-extrapolation past the trained window.
+
+        ``n_ctx_train <= 0`` means "unknown" (probe missed / non-llama build),
+        so we fall back to the requested ceiling unchanged. A small floor keeps
+        a bogus zero from collapsing the window.
+        """
+        if n_ctx_train and n_ctx_train > 0:
+            return max(min(requested, n_ctx_train), _MIN_N_CTX)
+        return requested
+
+    def _resolve_n_ctx(self, descriptor: ModelDescriptor) -> int:
+        """Compute this model's effective context window.
+
+        Reuses the startup load-probe's cached ``n_ctx_train`` (read off GGUF
+        metadata) so we don't pay a second metadata load here. Best-effort:
+        any probe failure falls back to the configured ceiling.
+        """
+        n_ctx_train = 0
+        try:
+            from ..registry.probe import get_probe  # noqa: PLC0415 — avoid import cycle at module load
+
+            n_ctx_train = int(get_probe().probe(descriptor).n_ctx_train)
+        except Exception:  # noqa: BLE001 — sizing is advisory; never block load
+            n_ctx_train = 0
+        return self._effective_n_ctx(settings.n_ctx, n_ctx_train)
+
+    @staticmethod
+    def _as_context_error(exc: Exception, *, backend: str) -> ContextLengthExceededError | None:
+        """Translate llama.cpp's context-overflow ``ValueError`` into the typed
+        ``ContextLengthExceededError``; return ``None`` for any other error so
+        callers re-raise it untouched."""
+        if not isinstance(exc, ValueError):
+            return None
+        m = _CTX_OVERFLOW_RE.search(str(exc))
+        if m is None:
+            return None
+        requested, window = int(m.group(1)), int(m.group(2))
+        return ContextLengthExceededError(
+            requested_tokens=requested,
+            context_window=window,
+            backend=backend,
+        )
+
     async def load(self, descriptor: ModelDescriptor) -> None:
         if descriptor.format != "gguf":
             raise ValueError(f"LlamaCppAdapter only handles gguf, got {descriptor.format!r}")
@@ -189,13 +259,16 @@ class LlamaCppAdapter(InferenceAdapter):
 
         from llama_cpp import Llama  # noqa: PLC0415  (lazy import; heavy native module)
 
+        effective_n_ctx = self._resolve_n_ctx(descriptor)
+
         log.info(
             "loading_model",
             model=descriptor.qualified_name,
             model_path=str(descriptor.model_path),
             size_bytes=descriptor.size_bytes,
             n_gpu_layers=settings.n_gpu_layers,
-            n_ctx=settings.n_ctx,
+            n_ctx=effective_n_ctx,
+            n_ctx_ceiling=settings.n_ctx,
         )
 
         # Free previous model first to keep RAM bounded.
@@ -205,7 +278,7 @@ class LlamaCppAdapter(InferenceAdapter):
             return Llama(
                 model_path=str(descriptor.model_path),
                 n_gpu_layers=settings.n_gpu_layers,
-                n_ctx=settings.n_ctx,
+                n_ctx=effective_n_ctx,
                 n_threads=settings.n_threads or None,
                 n_batch=settings.n_batch,
                 verbose=False,
@@ -347,7 +420,13 @@ class LlamaCppAdapter(InferenceAdapter):
             def _run() -> dict:
                 return self._llm.create_chat_completion(messages=msgs, stream=False, **kwargs)
 
-            result = await asyncio.to_thread(_run)
+            try:
+                result = await asyncio.to_thread(_run)
+            except ValueError as exc:
+                ctx_err = self._as_context_error(exc, backend=self.backend_name)
+                if ctx_err is not None:
+                    raise ctx_err from exc
+                raise
 
             usage = result.get("usage", {}) or {}
             self._last_prompt_tokens = int(usage.get("prompt_tokens", 0))
@@ -390,7 +469,13 @@ class LlamaCppAdapter(InferenceAdapter):
 
         def _producer() -> None:
             try:
-                iterator = self._llm.create_chat_completion(messages=msgs, stream=True, **kwargs)
+                try:
+                    iterator = self._llm.create_chat_completion(messages=msgs, stream=True, **kwargs)
+                except ValueError as exc:
+                    ctx_err = self._as_context_error(exc, backend=self.backend_name)
+                    if ctx_err is not None:
+                        raise ctx_err from exc
+                    raise
                 for event in iterator:
                     if cancel is not None and bool(cancel):
                         # Belt-and-braces: stopping_criteria already bailed out
@@ -462,7 +547,13 @@ class LlamaCppAdapter(InferenceAdapter):
             def _run() -> dict:
                 return self._llm.create_completion(prompt=prompt, stream=False, **kwargs)
 
-            result = await asyncio.to_thread(_run)
+            try:
+                result = await asyncio.to_thread(_run)
+            except ValueError as exc:
+                ctx_err = self._as_context_error(exc, backend=self.backend_name)
+                if ctx_err is not None:
+                    raise ctx_err from exc
+                raise
             usage = result.get("usage", {}) or {}
             self._last_prompt_tokens = int(usage.get("prompt_tokens", 0))
 

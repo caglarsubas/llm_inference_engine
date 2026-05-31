@@ -20,7 +20,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..adapters import GenerationParams, InferenceAdapter
+from ..adapters import ContextLengthExceededError, GenerationParams, InferenceAdapter
 from ..auth import Identity, require_identity
 from ..manager import ModelNotFoundError
 from ..observability import span
@@ -95,7 +95,10 @@ async def create_completion(
         },
     ) as s:
         for index, prompt in enumerate(prompts):
-            result = await adapter.complete(prompt, params)
+            try:
+                result = await adapter.complete(prompt, params)
+            except ContextLengthExceededError as exc:
+                raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
             total_prompt_tokens += result.prompt_tokens
             total_completion_tokens += result.completion_tokens
             choices.append(
