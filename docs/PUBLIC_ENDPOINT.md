@@ -106,12 +106,25 @@ scripts/share_endpoint.sh --domain my-name.ngrok-free.dev   # stable URL
   subdomain on the free plan fails with `ERR_NGROK_313` ("only paid plans may
   create custom subdomains").
 
-**Keeping it up**
+**Keeping it up (always-on)**
 
 `make share` runs in the foreground and the tunnel stops when you do (or on
-logout / reboot). For an always-on endpoint, run the tunnel under a process
-manager — e.g. a `launchd` agent on macOS, the same way the engine service is
-installed — so it reconnects automatically.
+logout / reboot). For a **truly always-on** endpoint, install the tunnel as a
+`launchd` user agent — it auto-starts on login and respawns on crash/reboot,
+exactly like the engine service:
+
+```bash
+make share-install NGROK_DOMAIN=my-name.ngrok-free.dev   # install + start
+make share-status                                        # state, PID, live URL
+make share-logs                                          # tail tunnel logs
+make share-restart                                       # re-read config / restart
+make share-uninstall                                     # remove the agent
+```
+
+A reserved domain is **required** here (an ephemeral URL would change on every
+respawn). Port defaults to `PORT` from `.env`/`8080`; override with
+`PORT=8090`. Pair this with the engine's own `make native-install` agent and
+both the engine and its public URL come back together after a reboot.
 
 ---
 

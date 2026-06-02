@@ -243,8 +243,19 @@ public URL with auth off is an open inference engine), prints the assigned URL,
 and emits copy-paste `curl` + Prometa wiring for it. Direct use:
 
 ```bash
-scripts/share_endpoint.sh --provider ngrok --domain my.ngrok.app   # stable URL
+scripts/share_endpoint.sh --provider ngrok --domain my-name.ngrok-free.dev   # stable URL
 scripts/share_endpoint.sh --provider cloudflared --port 8090
+```
+
+For a stable URL, claim the free static domain on the ngrok dashboard and pass
+`make share NGROK_DOMAIN=my-name.ngrok-free.dev`. For a **truly always-on**
+endpoint that survives crashes and reboots, install the tunnel as a `launchd`
+agent (same pattern as `make native-install`):
+
+```bash
+make share-install NGROK_DOMAIN=my-name.ngrok-free.dev   # auto-start + respawn
+make share-status        # state, PID, live URL
+make share-uninstall     # remove the agent
 ```
 
 Paste the printed URL into **Prometa → Settings → Self-hosted
@@ -310,6 +321,8 @@ scripts/
 ├── list_models.py            # CLI to enumerate the unified registry
 ├── download_mlx_model.py     # snapshot_download from mlx-community/*
 ├── share_endpoint.sh         # expose the engine on a public HTTPS URL (ngrok/cloudflared)
+├── share-service.sh          # run the ngrok tunnel as an always-on launchd agent
+├── launchd/                  # launchd plist templates (engine, ollama, ngrok-tunnel)
 ├── smoke_test.py             # blocking + streaming end-to-end check
 └── stress_test.py            # concurrent-traffic harness with p50/p95/p99 + throughput
 docs/

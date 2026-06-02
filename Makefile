@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -185,6 +185,25 @@ share:
 
 share-cf:
 	./scripts/share_endpoint.sh --provider cloudflared $(if $(PORT),--port $(PORT),)
+
+# Always-on public endpoint: run the ngrok tunnel as a launchd user agent so
+# it auto-starts on login and respawns on crash/reboot. Requires a reserved
+# domain (free static *.ngrok-free.dev on the ngrok dashboard).
+#   make share-install NGROK_DOMAIN=my-name.ngrok-free.dev [PORT=8080]
+share-install:
+	./scripts/share-service.sh install $(if $(NGROK_DOMAIN),--domain $(NGROK_DOMAIN),) $(if $(PORT),--port $(PORT),)
+
+share-uninstall:
+	./scripts/share-service.sh uninstall
+
+share-restart:
+	./scripts/share-service.sh restart
+
+share-status:
+	./scripts/share-service.sh status
+
+share-logs:
+	./scripts/share-service.sh logs
 
 list-models:
 	uv run python scripts/list_models.py
