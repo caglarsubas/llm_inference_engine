@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ngrok tunnel launchd template — installed by scripts/share-service.sh.
+
+  Keeps the engine's public HTTPS endpoint alive across crashes, logout,
+  and reboot by running ``ngrok http`` as a user agent with
+  ``RunAtLoad=true`` + ``KeepAlive=true``.  Pair it with
+  ``com.prometa.inference-engine`` so the engine and its public URL both
+  come back automatically after a restart — "truly always-on".
+
+  A reserved domain is required so the URL is stable: an ephemeral tunnel
+  would hand out a new hostname on every respawn, defeating the point of a
+  persistent agent.  Claim the free static domain on the ngrok dashboard
+  (Domains → currently ``*.ngrok-free.dev``) and pass it at install time.
+
+  Path/value substitutions performed at install time:
+
+      __NGROK_BIN__      absolute path to ``ngrok`` (resolved by the
+                         installer; typically /opt/homebrew/bin/ngrok).
+      __PORT__           local engine port the tunnel forwards to (8080).
+      __NGROK_DOMAIN__   your reserved ngrok domain — the stable public URL.
+      __HOME__           $HOME — ngrok reads its authtoken from
+                         $HOME/Library/Application Support/ngrok/ngrok.yml,
+                         so HOME must be set for the launchd-spawned process.
+
+  Run ``./scripts/share-service.sh install --domain <domain>`` to
+  materialise this and load the agent.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prometa.ngrok-tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NGROK_BIN__</string>
+        <string>http</string>
+        <string>127.0.0.1:__PORT__</string>
+        <string>--domain</string>
+        <string>__NGROK_DOMAIN__</string>
+        <string>--log</string>
+        <string>stdout</string>
+    </array>
+
+    <!--
+      HOME must be explicit: launchd user agents inherit a minimal env, and
+      ngrok resolves its config (authtoken) relative to HOME.  PATH lets it
+      find any helper binaries.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+
+    <!-- Auto-start on login + always respawn (ngrok should never exit). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Throttle restart loops so a bad domain/token doesn't peg the CPU. -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/prometa-ngrok-tunnel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/prometa-ngrok-tunnel.err.log</string>
+</dict>
+</plist>
