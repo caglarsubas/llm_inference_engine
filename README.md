@@ -225,6 +225,38 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   }' | jq
 ```
 
+## Sharing a public endpoint (ngrok / Cloudflare Tunnel)
+
+The engine binds to loopback by default. To hand a consumer — or the Prometa
+control plane — a public HTTPS "Engine URL" without a public IP or inbound
+firewall rule, front it with a tunnel:
+
+```bash
+make share              # ngrok against $PORT from .env  (default 8080)
+make share-cf           # Cloudflare Tunnel (no account needed)
+make share PORT=8090    # tunnel a different port, e.g. the docker LB
+```
+
+`make share` wraps [`scripts/share_endpoint.sh`](scripts/share_endpoint.sh),
+which health-checks the engine, warns loudly if `AUTH_ENABLED` isn't on (a
+public URL with auth off is an open inference engine), prints the assigned URL,
+and emits copy-paste `curl` + Prometa wiring for it. Direct use:
+
+```bash
+scripts/share_endpoint.sh --provider ngrok --domain my.ngrok.app   # stable URL
+scripts/share_endpoint.sh --provider cloudflared --port 8090
+```
+
+Paste the printed URL into **Prometa → Settings → Self-hosted
+(llm_inference_engine) → ENGINE URL**, and a bearer key from `.auth_keys.json`
+into ENGINE TOKEN.
+
+**The full, shareable usage guide for the URL** — base URL, auth, listing
+models, and `POST` examples for every route across all backends/models, plus
+SDK snippets and troubleshooting — lives in
+[`docs/PUBLIC_ENDPOINT.md`](docs/PUBLIC_ENDPOINT.md). Send that to whoever
+consumes the endpoint.
+
 ## Layout
 
 ```
@@ -277,8 +309,11 @@ docker/config/                  # mount target for auth_keys.json + auto_eval_po
 scripts/
 ├── list_models.py            # CLI to enumerate the unified registry
 ├── download_mlx_model.py     # snapshot_download from mlx-community/*
+├── share_endpoint.sh         # expose the engine on a public HTTPS URL (ngrok/cloudflared)
 ├── smoke_test.py             # blocking + streaming end-to-end check
 └── stress_test.py            # concurrent-traffic harness with p50/p95/p99 + throughput
+docs/
+└── PUBLIC_ENDPOINT.md        # shareable usage guide for the public Engine URL
 tests/
 ├── test_registry.py            # Ollama manifest parser
 ├── test_mlx_registry.py        # MLX directory scanner

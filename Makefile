@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf test lint clean
 
 install:
 	uv sync
@@ -173,6 +173,18 @@ native-status:
 TARGET ?= engine
 native-logs:
 	./scripts/native-service.sh logs $(TARGET)
+
+# ---------------------------------------------------------------------------
+# Public endpoint — expose the engine on a public HTTPS URL (ngrok / cloudflared)
+# so Prometa's "Engine URL" field (or any remote OpenAI client) can reach it.
+# Tunnel a different port with PORT=8090 (e.g. the compose LB). Full usage
+# guide for the URL you get out: docs/PUBLIC_ENDPOINT.md
+# ---------------------------------------------------------------------------
+share:
+	./scripts/share_endpoint.sh --provider ngrok $(if $(PORT),--port $(PORT),)
+
+share-cf:
+	./scripts/share_endpoint.sh --provider cloudflared $(if $(PORT),--port $(PORT),)
 
 list-models:
 	uv run python scripts/list_models.py
