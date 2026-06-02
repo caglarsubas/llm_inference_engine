@@ -181,7 +181,7 @@ native-logs:
 # guide for the URL you get out: docs/PUBLIC_ENDPOINT.md
 # ---------------------------------------------------------------------------
 share:
-	./scripts/share_endpoint.sh --provider ngrok $(if $(PORT),--port $(PORT),)
+	./scripts/share_endpoint.sh --provider ngrok $(if $(PORT),--port $(PORT),) $(if $(NGROK_DOMAIN),--domain $(NGROK_DOMAIN),)
 
 share-cf:
 	./scripts/share_endpoint.sh --provider cloudflared $(if $(PORT),--port $(PORT),)

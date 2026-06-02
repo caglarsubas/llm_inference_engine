@@ -184,7 +184,7 @@ run_ngrok() {
       exit 1
     fi
     url="$(curl -fsS --max-time 2 http://127.0.0.1:4040/api/tunnels 2>/dev/null \
-      | grep -oE 'https://[a-zA-Z0-9.-]+\.(ngrok\.app|ngrok-free\.app|ngrok\.io)' \
+      | grep -oE 'https://[a-zA-Z0-9.-]+\.ngrok(-free)?\.(app|dev|io)' \
       | head -n1 || true)"
     [[ -n "$url" ]] && break
     sleep 0.5

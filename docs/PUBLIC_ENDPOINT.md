@@ -28,7 +28,7 @@ route for any model, plus the configuration knobs that change behaviour.
 ## 1. Anatomy of the endpoint
 
 ```
-https://abc123.ngrok.app              ← your public host (changes per session unless reserved)
+https://my-name.ngrok-free.dev        ← your public host (reserved domain = stable; ephemeral = per-session)
                        /v1            ← API version prefix (always present)
                           /chat/completions   ← the route you POST to
 ```
@@ -73,9 +73,10 @@ loopback port, so you don't need a public IP or an inbound firewall rule.
 examples):
 
 ```bash
-make share            # ngrok  (default)
-make share-cf         # Cloudflare Tunnel (no account needed)
-make share PORT=8090  # tunnel a different port, e.g. the docker LB
+make share                                       # ngrok  (default)
+make share-cf                                    # Cloudflare Tunnel (no account needed)
+make share PORT=8090                             # tunnel a different port, e.g. the docker LB
+make share NGROK_DOMAIN=my-name.ngrok-free.dev   # stable, reserved ngrok domain
 ```
 
 Under the hood that runs `scripts/share_endpoint.sh`. Direct use:
@@ -83,7 +84,7 @@ Under the hood that runs `scripts/share_endpoint.sh`. Direct use:
 ```bash
 scripts/share_endpoint.sh --provider ngrok
 scripts/share_endpoint.sh --provider cloudflared --port 8090
-scripts/share_endpoint.sh --domain my-reserved.ngrok.app   # stable URL
+scripts/share_endpoint.sh --domain my-name.ngrok-free.dev   # stable URL
 ```
 
 **Prerequisites**
@@ -93,9 +94,24 @@ scripts/share_endpoint.sh --domain my-reserved.ngrok.app   # stable URL
 - cloudflared: `brew install cloudflared` (quick `*.trycloudflare.com` tunnels
   need no login).
 
-The free ngrok URL changes every restart. Reserve a domain on the ngrok
-dashboard and pass `--domain` for a URL that survives restarts — recommended
-when you've pasted it into Prometa.
+**Stable vs. ephemeral URL**
+
+- An **ephemeral** ngrok run (no `--domain`) gives a URL that can change between
+  sessions — fine for a quick test, annoying once it's pasted into Prometa.
+- The **ngrok free plan includes one reserved static domain** (shown under
+  *Domains* in the dashboard, current format `my-name.ngrok-free.dev`). Pass it
+  with `make share NGROK_DOMAIN=my-name.ngrok-free.dev` (or `--domain`) for a
+  URL that survives tunnel restarts.
+- Use the domain **exactly** as the dashboard shows it. Passing any other
+  subdomain on the free plan fails with `ERR_NGROK_313` ("only paid plans may
+  create custom subdomains").
+
+**Keeping it up**
+
+`make share` runs in the foreground and the tunnel stops when you do (or on
+logout / reboot). For an always-on endpoint, run the tunnel under a process
+manager — e.g. a `launchd` agent on macOS, the same way the engine service is
+installed — so it reconnects automatically.
 
 ---
 
@@ -482,9 +498,9 @@ on that URL. Verify the wiring from Prometa's side, or directly:
 curl -s https://abc123.ngrok.app/v1/models | jq '.data[].id'
 ```
 
-If you used a **free ngrok URL**, it changes on every restart — update the
-ENGINE URL field after each restart, or reserve a domain (`--domain`) for a
-stable value.
+If you used an **ephemeral ngrok URL**, it can change between sessions — update
+the ENGINE URL after each restart, or use your reserved domain
+(`make share NGROK_DOMAIN=…`) for a stable value you set once.
 
 ---
 
@@ -498,8 +514,9 @@ stable value.
 | `501 embeddings not supported by mlx backend`      | That model can't embed. Use a `llama_cpp`/embedding model for `/v1/embeddings` & `/v1/rerank`. |
 | `400` "blocking is incompatible with stream=true"  | `auto_eval.mode:"blocking"` can't stream. Use `mode:"background"` or `stream:false`. |
 | Browser shows an **ngrok warning page** for GETs   | Free ngrok interstitial. Add header `ngrok-skip-browser-warning: true`, or just use POST/API clients (unaffected). |
+| `ERR_NGROK_313` / "only paid plans may create custom subdomains" | The `--domain` / `NGROK_DOMAIN` you passed isn't your account's reserved domain (often a typo). Copy it verbatim from the ngrok dashboard *Domains* page. |
 | Connection refused / 502 from the tunnel           | The engine isn't running or you tunneled the wrong port. `curl 127.0.0.1:8080/v1/health` locally; tunnel the LB port with `PORT=` if using docker. |
-| Tunnel URL works then dies                          | Free tunnels are session-scoped. Keep the `make share` process running; reserve a domain for persistence. |
+| Tunnel URL works then dies                          | The `make share` process stopped (foreground job, logout, or reboot). Restart it; for persistence run the tunnel under `launchd`. A reserved domain keeps the URL identical across restarts. |
 
 Add `ngrok-skip-browser-warning` example:
 
