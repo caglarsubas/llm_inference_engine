@@ -84,10 +84,45 @@ def _identity_attrs(identity: Identity) -> dict:
     }
 
 
-async def _resolve(model_id: str, identity: Identity) -> tuple[InferenceAdapter, str]:
+def _intent_attrs(req: ChatCompletionRequest) -> dict:
+    """Mirror DeclarAI intent labels onto Prometa-indexable span attributes."""
+    if not req.intent_labels:
+        return {}
+
+    labels = list(req.intent_labels)
+    label_names = list(req.intent_label_names or [])
+    source = req.intent_source or "request"
+    preclassified = bool(req.intent_preclassified)
+
+    attrs: dict = {
+        "declarai.intent.labels": labels,
+        "declarai.intent.label_names": label_names,
+        "declarai.intent.count": len(labels),
+        "declarai.intent.source": source,
+        "declarai.intent.preclassified": preclassified,
+        "prometa.intent.labels": labels,
+        "prometa.intent.label_names": label_names,
+        "prometa.intent.source": source,
+        "prometa.intent.preclassified": preclassified,
+    }
+    if req.intent_classifier_version:
+        attrs["declarai.intent.classifier_version"] = req.intent_classifier_version
+    return attrs
+
+
+async def _resolve(
+    model_id: str,
+    identity: Identity,
+    intent_attrs: dict | None = None,
+) -> tuple[InferenceAdapter, str]:
     """Resolve `model_id` against the manager. Returns the adapter and qualified name."""
     try:
-        with span("model.acquire", model=model_id, **_identity_attrs(identity)):
+        with span(
+            "model.acquire",
+            model=model_id,
+            **_identity_attrs(identity),
+            **(intent_attrs or {}),
+        ):
             adapter, desc = await app_state.manager.get(model_id)
     except ModelNotFoundError:
         raise HTTPException(status_code=404, detail=f"model not found: {model_id!r}") from None
@@ -100,7 +135,8 @@ async def chat_completions(
     request: Request,
     identity: Identity = Depends(require_identity),
 ):
-    adapter, model_name = await _resolve(req.model, identity)
+    intent_attrs = _intent_attrs(req)
+    adapter, model_name = await _resolve(req.model, identity, intent_attrs)
 
     # Resolve the effective auto-eval spec from server policy + request.
     auto_eval, policy = _resolve_auto_eval(
@@ -121,12 +157,12 @@ async def chat_completions(
         return EventSourceResponse(
             _stream_response(
                 adapter, model_name, req.messages, params, identity, request,
-                auto_eval, policy,
+                auto_eval, policy, intent_attrs,
             )
         )
 
     return await _blocking_response(
-        adapter, model_name, req.messages, params, identity, auto_eval, policy
+        adapter, model_name, req.messages, params, identity, auto_eval, policy, intent_attrs
     )
 
 
@@ -262,6 +298,7 @@ async def _blocking_response(
     identity: Identity,
     auto_eval: AutoEvalSpec | None = None,
     policy: PolicyEntry | None = None,
+    intent_attrs: dict | None = None,
 ) -> ChatCompletionResponse:
     cache_size_before = getattr(adapter, "prefix_cache_size_bytes", 0)
     # Capability hints feed the normalizer's ``expects_reasoning_prelude``
@@ -283,6 +320,7 @@ async def _blocking_response(
             "gen_ai.request.temperature": params.temperature,
             "n_messages": len(messages),
             **_identity_attrs(identity),
+            **(intent_attrs or {}),
             **_prefix_cache_attrs(adapter),
             **_auto_eval_attrs(auto_eval, policy),
         },
@@ -408,6 +446,7 @@ async def _stream_response(
     request: Request,
     auto_eval: AutoEvalSpec | None = None,
     policy: PolicyEntry | None = None,
+    intent_attrs: dict | None = None,
 ) -> AsyncIterator[dict]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -509,6 +548,7 @@ async def _stream_response(
                 "gen_ai.request.model": model_name,
                 "n_messages": len(messages),
                 **_identity_attrs(identity),
+                **(intent_attrs or {}),
                 **_auto_eval_attrs(auto_eval, policy),
             },
         ) as s:

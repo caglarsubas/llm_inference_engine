@@ -7,7 +7,33 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+
+
+IntentLabel = Literal["A", "B", "C", "D", "E"]
+
+INTENT_LABEL_NAMES: dict[str, str] = {
+    "A": "general_information_gathering",
+    "B": "pipeline_flow_information_gathering",
+    "C": "current_status_information_gathering",
+    "D": "configuration_editing_execution",
+    "E": "flow_process_execution",
+}
+
+
+def _split_trace_value(value) -> list[str] | None:
+    """Accept dotted trace fields as arrays or comma-separated strings."""
+    if value is None:
+        return None
+
+    raw_items = value if isinstance(value, list | tuple | set) else [value]
+    items: list[str] = []
+    for raw in raw_items:
+        for part in str(raw).split(","):
+            item = part.strip()
+            if item:
+                items.append(item)
+    return items or None
 
 
 class ToolCallFunction(BaseModel):
@@ -88,6 +114,74 @@ class ChatCompletionRequest(BaseModel):
     # OpenAI-compatible tool calling. Passed straight through to the backend.
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict | None = None
+    # DeclarAI intent metadata. DeclarAI may send the literal dotted trace keys
+    # in the OpenAI-compatible body; expose snake_case names inside Python while
+    # accepting the external attribute names directly.
+    intent_labels: list[IntentLabel] | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "intent_labels",
+            "declarai.intent.labels",
+            "prometa.intent.labels",
+        ),
+    )
+    intent_label_names: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "intent_label_names",
+            "declarai.intent.label_names",
+            "prometa.intent.label_names",
+        ),
+    )
+    intent_source: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "intent_source",
+            "declarai.intent.source",
+            "prometa.intent.source",
+        ),
+    )
+    intent_preclassified: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "intent_preclassified",
+            "declarai.intent.preclassified",
+            "prometa.intent.preclassified",
+        ),
+    )
+    intent_classifier_version: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "intent_classifier_version",
+            "declarai.intent.classifier_version",
+        ),
+    )
+
+    @field_validator("intent_labels", mode="before")
+    @classmethod
+    def _normalize_intent_labels(cls, value):
+        labels = _split_trace_value(value)
+        if labels is None:
+            return None
+        out: list[str] = []
+        for label in labels:
+            normalized = label.upper()
+            if normalized not in out:
+                out.append(normalized)
+        return out
+
+    @field_validator("intent_label_names", mode="before")
+    @classmethod
+    def _normalize_intent_label_names(cls, value):
+        return _split_trace_value(value)
+
+    @model_validator(mode="after")
+    def _fill_intent_label_names(self):
+        if self.intent_labels and not self.intent_label_names:
+            self.intent_label_names = [
+                INTENT_LABEL_NAMES[label] for label in self.intent_labels
+            ]
+        return self
 
 
 class ChatCompletionChoice(BaseModel):
