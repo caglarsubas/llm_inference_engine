@@ -1,4 +1,4 @@
-"""DeclarAI intent labels on chat traces."""
+"""Caller-supplied intent labels on chat traces."""
 
 from __future__ import annotations
 
@@ -78,39 +78,35 @@ def _descriptor(name: str = "intent-fake:1") -> ModelDescriptor:
     )
 
 
-def test_request_accepts_dotted_declarai_intent_attrs() -> None:
+def test_request_accepts_generic_dotted_intent_attrs() -> None:
     req = _base_request(
         **{
-            "declarai.intent.labels": "D,E",
-            "declarai.intent.source": "deterministic_clause_decomposition",
-            "declarai.intent.preclassified": False,
-            "declarai.intent.classifier_version": "deterministic-intent-v1",
+            "intent.labels": "configuration_edit,flow_execution",
+            "intent.label_names": (
+                "configuration_editing_execution,flow_process_execution"
+            ),
+            "intent.source": "client_classifier",
+            "intent.preclassified": True,
+            "intent.classifier_version": "intent-router-v1",
         }
     )
 
-    assert req.intent_labels == ["D", "E"]
+    assert req.intent_labels == ["configuration_edit", "flow_execution"]
     assert req.intent_label_names == [
         "configuration_editing_execution",
         "flow_process_execution",
     ]
 
     attrs = _intent_attrs(req)
-    assert attrs["declarai.intent.labels"] == ["D", "E"]
-    assert attrs["declarai.intent.label_names"] == [
+    assert attrs["intent.labels"] == ["configuration_edit", "flow_execution"]
+    assert attrs["intent.label_names"] == [
         "configuration_editing_execution",
         "flow_process_execution",
     ]
-    assert attrs["declarai.intent.count"] == 2
-    assert attrs["declarai.intent.source"] == "deterministic_clause_decomposition"
-    assert attrs["declarai.intent.preclassified"] is False
-    assert attrs["declarai.intent.classifier_version"] == "deterministic-intent-v1"
-    assert attrs["prometa.intent.labels"] == ["D", "E"]
-    assert attrs["prometa.intent.label_names"] == [
-        "configuration_editing_execution",
-        "flow_process_execution",
-    ]
-    assert attrs["prometa.intent.source"] == "deterministic_clause_decomposition"
-    assert attrs["prometa.intent.preclassified"] is False
+    assert attrs["intent.count"] == 2
+    assert attrs["intent.source"] == "client_classifier"
+    assert attrs["intent.preclassified"] is True
+    assert attrs["intent.classifier_version"] == "intent-router-v1"
 
 
 @pytest.mark.asyncio
@@ -119,7 +115,7 @@ async def test_model_acquire_span_stamps_intent_before_generation(
     _session_exporter,
 ) -> None:
     _session_exporter.clear()
-    req = _base_request(**{"declarai.intent.labels": "D,E"})
+    req = _base_request(**{"intent.labels": "configuration_edit,flow_execution"})
 
     async def _fake_get(model_id: str):
         return _IntentAdapter(), _descriptor(model_id)
@@ -137,21 +133,24 @@ async def test_model_acquire_span_stamps_intent_before_generation(
         span for span in _session_exporter.get_finished_spans() if span.name == "model.acquire"
     ]
     attrs = acquire_span.attributes
-    assert list(attrs["declarai.intent.labels"]) == ["D", "E"]
-    assert list(attrs["prometa.intent.labels"]) == ["D", "E"]
+    assert list(attrs["intent.labels"]) == ["configuration_edit", "flow_execution"]
 
 
 @pytest.mark.asyncio
-async def test_blocking_chat_span_stamps_declarai_and_prometa_intent_attrs(
+async def test_blocking_chat_span_stamps_generic_intent_attrs(
     _session_exporter,
 ) -> None:
     _session_exporter.clear()
     req = _base_request(
         **{
-            "declarai.intent.labels": ["D", "E"],
-            "declarai.intent.source": "deterministic_clause_decomposition",
-            "declarai.intent.preclassified": False,
-            "declarai.intent.classifier_version": "deterministic-intent-v1",
+            "intent.labels": ["configuration_edit", "flow_execution"],
+            "intent.label_names": [
+                "configuration_editing_execution",
+                "flow_process_execution",
+            ],
+            "intent.source": "client_classifier",
+            "intent.preclassified": True,
+            "intent.classifier_version": "intent-router-v1",
         }
     )
 
@@ -168,22 +167,15 @@ async def test_blocking_chat_span_stamps_declarai_and_prometa_intent_attrs(
         span for span in _session_exporter.get_finished_spans() if span.name == "chat.generate"
     ]
     attrs = chat_span.attributes
-    assert list(attrs["declarai.intent.labels"]) == ["D", "E"]
-    assert list(attrs["declarai.intent.label_names"]) == [
+    assert list(attrs["intent.labels"]) == ["configuration_edit", "flow_execution"]
+    assert list(attrs["intent.label_names"]) == [
         "configuration_editing_execution",
         "flow_process_execution",
     ]
-    assert attrs["declarai.intent.count"] == 2
-    assert attrs["declarai.intent.source"] == "deterministic_clause_decomposition"
-    assert attrs["declarai.intent.preclassified"] is False
-    assert attrs["declarai.intent.classifier_version"] == "deterministic-intent-v1"
-    assert list(attrs["prometa.intent.labels"]) == ["D", "E"]
-    assert list(attrs["prometa.intent.label_names"]) == [
-        "configuration_editing_execution",
-        "flow_process_execution",
-    ]
-    assert attrs["prometa.intent.source"] == "deterministic_clause_decomposition"
-    assert attrs["prometa.intent.preclassified"] is False
+    assert attrs["intent.count"] == 2
+    assert attrs["intent.source"] == "client_classifier"
+    assert attrs["intent.preclassified"] is True
+    assert attrs["intent.classifier_version"] == "intent-router-v1"
 
 
 @pytest.mark.asyncio
@@ -194,9 +186,10 @@ async def test_stream_chat_span_stamps_preclassified_button_intent(
     req = _base_request(
         stream=True,
         **{
-            "prometa.intent.labels": ["C"],
-            "prometa.intent.source": "get_ai_support_button",
-            "prometa.intent.preclassified": True,
+            "intent.labels": ["current_status"],
+            "intent.label_names": ["current_status_information_gathering"],
+            "intent.source": "support_button",
+            "intent.preclassified": True,
         },
     )
 
@@ -215,16 +208,8 @@ async def test_stream_chat_span_stamps_preclassified_button_intent(
         span for span in _session_exporter.get_finished_spans() if span.name == "chat.stream"
     ]
     attrs = chat_span.attributes
-    assert list(attrs["declarai.intent.labels"]) == ["C"]
-    assert list(attrs["declarai.intent.label_names"]) == [
-        "current_status_information_gathering"
-    ]
-    assert attrs["declarai.intent.count"] == 1
-    assert attrs["declarai.intent.source"] == "get_ai_support_button"
-    assert attrs["declarai.intent.preclassified"] is True
-    assert list(attrs["prometa.intent.labels"]) == ["C"]
-    assert list(attrs["prometa.intent.label_names"]) == [
-        "current_status_information_gathering"
-    ]
-    assert attrs["prometa.intent.source"] == "get_ai_support_button"
-    assert attrs["prometa.intent.preclassified"] is True
+    assert list(attrs["intent.labels"]) == ["current_status"]
+    assert list(attrs["intent.label_names"]) == ["current_status_information_gathering"]
+    assert attrs["intent.count"] == 1
+    assert attrs["intent.source"] == "support_button"
+    assert attrs["intent.preclassified"] is True

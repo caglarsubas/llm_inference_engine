@@ -7,8 +7,7 @@ Why this exists
 silently lags behind the model architectures ollama can pull (e.g. a 2026
 ``gemma4`` GGUF shipped before ``llama-cpp-python`` recognised the arch).
 Surfacing those models in ``/v1/models`` only to 500 on first chat call
-gives downstream callers (DeclarAI, agentic-hook-v2 dashboards) phantom
-options that look broken.
+gives downstream callers phantom options that look broken.
 
 The probe runs a **vocab-only** load (``Llama(vocab_only=True)``) which
 opens the GGUF and parses the header / metadata / vocab without allocating

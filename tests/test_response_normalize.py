@@ -1,8 +1,8 @@
 """Tests for the vendor-XML normalization layer.
 
-The payload strings are kept *verbatim* from the original bug report
-(DeclarAI / Nemotron-3-nano) so a regression that puts the leak back will
-fail this file even if it passes synthetic well-formed XML.
+The payload strings are kept *verbatim* from the original Nemotron-3-nano bug
+report so a regression that puts the leak back will fail this file even if it
+passes synthetic well-formed XML.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from inference_engine.response_normalize import (
 # ---------------------------------------------------------------------------
 
 
-# Verbatim from the DeclarAI bug report. Note the *orphan* </think> close tag
+# Verbatim from the original bug report. Note the *orphan* </think> close tag
 # (no opening tag) and the Nemotron NIM `<function=NAME>` form. This is what
 # llama-cpp-python returns when no Nemotron grammar is loaded.
 NEMOTRON_BUG_REPORT_PAYLOAD = (
@@ -165,7 +165,7 @@ def test_empty_string() -> None:
 
 
 def test_reasoning_prelude_unanchored_length_finish_routes_to_reasoning() -> None:
-    """The DeclarAI screenshot case: ~2000 chars of pure reasoning, no markers,
+    """A screenshot case: ~2000 chars of pure reasoning, no markers,
     finish_reason=length. With the flag set, the synthetic `<think>` prepend
     sends everything to reasoning_content so the CoT never reaches the user."""
     leaked_cot = (

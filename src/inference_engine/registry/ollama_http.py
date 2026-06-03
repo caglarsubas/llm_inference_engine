@@ -129,7 +129,7 @@ class OllamaHttpRegistry:
             #      cloud-hosted variants (``minimax-m2.7:cloud``).
             # On-prem deployments don't have (and shouldn't need) the
             # OLLAMA_API_KEY required to reach those, and surfacing them in
-            # /v1/models would give DeclarAI a phantom option that 500s on
+            # /v1/models would give clients a phantom option that 500s on
             # call.  We log the skip so operators see why a manifest they
             # can see in ``ollama list`` is missing from the engine.
             if size <= 0 or tag == "cloud":

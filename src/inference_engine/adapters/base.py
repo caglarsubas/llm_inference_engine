@@ -85,9 +85,9 @@ class ContextLengthExceededError(Exception):
     Backends translate their native overflow error — e.g. llama.cpp's
     ``ValueError: Requested tokens (N) exceed context window of M`` — into this
     typed exception so the API layer can answer with a deterministic
-    ``400 context_length_exceeded`` instead of an opaque ``500``. Clients
-    (DeclarAI's tool loop, agentic dashboards) then branch on the error type
-    rather than heuristically pattern-matching 500s after a big tool result.
+    ``400 context_length_exceeded`` instead of an opaque ``500``. Clients then
+    branch on the error type rather than heuristically pattern-matching 500s
+    after a big tool result.
     """
 
     def __init__(
