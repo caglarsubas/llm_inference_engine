@@ -432,17 +432,21 @@ Cold model load shows up as a long `model.acquire` (e.g. 263 ms) above an unchan
 
 ### Caller intent labels on chat spans
 
-`/v1/chat/completions` accepts optional generic intent trace keys directly in the request body. When present, the engine stamps them onto `model.acquire` before cold-load or cache lookup work, then onto the `chat.generate` or `chat.stream` span before model generation begins:
+`/v1/chat/completions` accepts optional generic intent metadata in the request body. When present, the engine stamps it onto `model.acquire` before cold-load or cache lookup work, then onto the `chat.generate` or `chat.stream` span before model generation begins:
 
 ```json
 {
   "model": "gemma4:26b",
   "messages": [{"role": "user", "content": "Update the config and run the pipeline"}],
-  "intent.labels": ["configuration_edit", "flow_execution"],
-  "intent.label_names": ["configuration_editing_execution", "flow_process_execution"],
-  "intent.source": "client_classifier",
-  "intent.preclassified": true,
-  "intent.classifier_version": "intent-router-v1"
+  "metadata": {
+    "intent": {
+      "labels": ["configuration_edit", "flow_execution"],
+      "label_names": ["configuration_editing_execution", "flow_process_execution"],
+      "source": "client_classifier",
+      "preclassified": true,
+      "classifier_version": "intent-router-v1"
+    }
+  }
 }
 ```
 
@@ -455,7 +459,7 @@ The emitted span attributes are:
 - `intent.preclassified`
 - `intent.classifier_version` when supplied
 
-For preclassified frontend prompts, set `intent.preclassified=true`; the engine only propagates those labels and does not run another classifier. If a downstream platform needs a vendor- or platform-specific namespace, map these generic `intent.*` attributes in the collector, SDK, or ingestion layer rather than hard-coding that namespace into the inference service.
+For preclassified frontend prompts, set `metadata.intent.preclassified=true`; the engine only propagates those labels and does not run another classifier. Top-level dotted `intent.*` request keys are still accepted for clients that cannot send nested metadata, but `metadata.intent` is the preferred API shape. If a downstream platform needs a vendor- or platform-specific namespace, map the emitted generic `intent.*` span attributes in the collector, SDK, or ingestion layer rather than hard-coding that namespace into the inference service.
 
 ### Plugging into Prometa
 
