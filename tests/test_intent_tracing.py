@@ -109,13 +109,73 @@ def test_request_accepts_generic_dotted_intent_attrs() -> None:
     assert attrs["intent.classifier_version"] == "intent-router-v1"
 
 
+def test_request_accepts_metadata_intent_attrs() -> None:
+    req = _base_request(
+        metadata={
+            "intent": {
+                "labels": "configuration_edit,flow_execution,configuration_edit",
+                "label_names": [
+                    "configuration_editing_execution",
+                    "flow_process_execution",
+                ],
+                "source": "client_classifier",
+                "preclassified": True,
+                "classifier_version": "intent-router-v1",
+            }
+        }
+    )
+
+    assert req.intent_labels == ["configuration_edit", "flow_execution"]
+    assert req.intent_label_names == [
+        "configuration_editing_execution",
+        "flow_process_execution",
+    ]
+    assert req.intent_source == "client_classifier"
+    assert req.intent_preclassified is True
+    assert req.intent_classifier_version == "intent-router-v1"
+
+    attrs = _intent_attrs(req)
+    assert attrs["intent.labels"] == ["configuration_edit", "flow_execution"]
+    assert attrs["intent.label_names"] == [
+        "configuration_editing_execution",
+        "flow_process_execution",
+    ]
+    assert attrs["intent.count"] == 2
+    assert attrs["intent.source"] == "client_classifier"
+    assert attrs["intent.preclassified"] is True
+    assert attrs["intent.classifier_version"] == "intent-router-v1"
+
+
+def test_top_level_intent_attrs_override_metadata_intent_attrs() -> None:
+    req = _base_request(
+        metadata={
+            "intent": {
+                "labels": ["metadata_label"],
+                "source": "metadata_classifier",
+                "preclassified": False,
+            }
+        },
+        **{
+            "intent.labels": ["top_level_label"],
+            "intent.source": "top_level_classifier",
+            "intent.preclassified": True,
+        },
+    )
+
+    assert req.intent_labels == ["top_level_label"]
+    assert req.intent_source == "top_level_classifier"
+    assert req.intent_preclassified is True
+
+
 @pytest.mark.asyncio
 async def test_model_acquire_span_stamps_intent_before_generation(
     monkeypatch,
     _session_exporter,
 ) -> None:
     _session_exporter.clear()
-    req = _base_request(**{"intent.labels": "configuration_edit,flow_execution"})
+    req = _base_request(
+        metadata={"intent": {"labels": "configuration_edit,flow_execution"}}
+    )
 
     async def _fake_get(model_id: str):
         return _IntentAdapter(), _descriptor(model_id)
@@ -142,15 +202,17 @@ async def test_blocking_chat_span_stamps_generic_intent_attrs(
 ) -> None:
     _session_exporter.clear()
     req = _base_request(
-        **{
-            "intent.labels": ["configuration_edit", "flow_execution"],
-            "intent.label_names": [
-                "configuration_editing_execution",
-                "flow_process_execution",
-            ],
-            "intent.source": "client_classifier",
-            "intent.preclassified": True,
-            "intent.classifier_version": "intent-router-v1",
+        metadata={
+            "intent": {
+                "labels": ["configuration_edit", "flow_execution"],
+                "label_names": [
+                    "configuration_editing_execution",
+                    "flow_process_execution",
+                ],
+                "source": "client_classifier",
+                "preclassified": True,
+                "classifier_version": "intent-router-v1",
+            }
         }
     )
 
@@ -185,11 +247,13 @@ async def test_stream_chat_span_stamps_preclassified_button_intent(
     _session_exporter.clear()
     req = _base_request(
         stream=True,
-        **{
-            "intent.labels": ["current_status"],
-            "intent.label_names": ["current_status_information_gathering"],
-            "intent.source": "support_button",
-            "intent.preclassified": True,
+        metadata={
+            "intent": {
+                "labels": ["current_status"],
+                "label_names": ["current_status_information_gathering"],
+                "source": "support_button",
+                "preclassified": True,
+            }
         },
     )
 

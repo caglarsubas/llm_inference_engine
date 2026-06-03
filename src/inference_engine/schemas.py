@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 def _split_trace_value(value) -> list[str] | None:
@@ -23,6 +23,18 @@ def _split_trace_value(value) -> list[str] | None:
             if item:
                 items.append(item)
     return items or None
+
+
+def _split_unique_trace_value(value) -> list[str] | None:
+    items = _split_trace_value(value)
+    if items is None:
+        return None
+
+    out: list[str] = []
+    for item in items:
+        if item not in out:
+            out.append(item)
+    return out
 
 
 class ToolCallFunction(BaseModel):
@@ -85,6 +97,32 @@ class AutoEvalSpec(BaseModel):
     mode: Literal["background", "blocking"] = "background"
 
 
+class IntentMetadata(BaseModel):
+    """Optional caller-supplied intent metadata."""
+
+    labels: list[str] | None = None
+    label_names: list[str] | None = None
+    source: str | None = None
+    preclassified: bool | None = None
+    classifier_version: str | None = None
+
+    @field_validator("labels", mode="before")
+    @classmethod
+    def _normalize_labels(cls, value):
+        return _split_unique_trace_value(value)
+
+    @field_validator("label_names", mode="before")
+    @classmethod
+    def _normalize_label_names(cls, value):
+        return _split_trace_value(value)
+
+
+class RequestMetadata(BaseModel):
+    """Generic request metadata extensions."""
+
+    intent: IntentMetadata | None = None
+
+
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
@@ -103,8 +141,12 @@ class ChatCompletionRequest(BaseModel):
     # OpenAI-compatible tool calling. Passed straight through to the backend.
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict | None = None
-    # Optional caller-supplied intent metadata. Accept generic dotted trace keys
-    # in the OpenAI-compatible body while exposing snake_case names internally.
+    metadata: RequestMetadata | None = Field(
+        default=None,
+        description="Optional generic request metadata. `metadata.intent` is stamped on spans.",
+    )
+    # Top-level intent fields are kept for clients that cannot send nested
+    # metadata. The preferred request shape is ``metadata.intent``.
     intent_labels: list[str] | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -144,19 +186,30 @@ class ChatCompletionRequest(BaseModel):
     @field_validator("intent_labels", mode="before")
     @classmethod
     def _normalize_intent_labels(cls, value):
-        labels = _split_trace_value(value)
-        if labels is None:
-            return None
-        out: list[str] = []
-        for label in labels:
-            if label not in out:
-                out.append(label)
-        return out
+        return _split_unique_trace_value(value)
 
     @field_validator("intent_label_names", mode="before")
     @classmethod
     def _normalize_intent_label_names(cls, value):
         return _split_trace_value(value)
+
+    @model_validator(mode="after")
+    def _merge_metadata_intent(self):
+        intent = self.metadata.intent if self.metadata else None
+        if intent is None:
+            return self
+
+        if self.intent_labels is None:
+            self.intent_labels = intent.labels
+        if self.intent_label_names is None:
+            self.intent_label_names = intent.label_names
+        if self.intent_source is None:
+            self.intent_source = intent.source
+        if self.intent_preclassified is None:
+            self.intent_preclassified = intent.preclassified
+        if self.intent_classifier_version is None:
+            self.intent_classifier_version = intent.classifier_version
+        return self
 
 
 class ChatCompletionChoice(BaseModel):
