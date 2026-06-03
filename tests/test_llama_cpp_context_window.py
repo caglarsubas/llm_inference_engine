@@ -1,6 +1,6 @@
 """Regression tests for the n_ctx-truncation fix.
 
-Covers three engine-side behaviours added in response to the DeclarAI
+Covers three engine-side behaviours added in response to the
 ``nemotron-context-window-8k-answer-truncation`` report:
 
 1. ``LlamaCppAdapter._effective_n_ctx`` — the configured context *ceiling* is

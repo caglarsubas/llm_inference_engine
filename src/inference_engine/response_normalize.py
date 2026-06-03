@@ -644,8 +644,8 @@ _REASONING_MARKERS = (
 def infer_model_capabilities(model_id: str, *, backend: str, fmt: str) -> dict:
     """Heuristic capability hints surfaced on ``/v1/models``.
 
-    Returns OpenAI-shaped fields that DeclarAI (and other clients) can use to
-    pick a model, render badges, and skip tools where unsupported. Two flags:
+    Returns OpenAI-shaped fields that clients can use to pick a model, render
+    badges, and skip tools where unsupported. Two flags:
 
     * ``reasoning`` — model is in a known thinking family. The streaming
       normalizer starts in reasoning state for these so the chat-template

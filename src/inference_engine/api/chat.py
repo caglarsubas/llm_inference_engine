@@ -85,7 +85,7 @@ def _identity_attrs(identity: Identity) -> dict:
 
 
 def _intent_attrs(req: ChatCompletionRequest) -> dict:
-    """Mirror DeclarAI intent labels onto Prometa-indexable span attributes."""
+    """Return generic caller-supplied intent span attributes."""
     if not req.intent_labels:
         return {}
 
@@ -95,18 +95,14 @@ def _intent_attrs(req: ChatCompletionRequest) -> dict:
     preclassified = bool(req.intent_preclassified)
 
     attrs: dict = {
-        "declarai.intent.labels": labels,
-        "declarai.intent.label_names": label_names,
-        "declarai.intent.count": len(labels),
-        "declarai.intent.source": source,
-        "declarai.intent.preclassified": preclassified,
-        "prometa.intent.labels": labels,
-        "prometa.intent.label_names": label_names,
-        "prometa.intent.source": source,
-        "prometa.intent.preclassified": preclassified,
+        "intent.labels": labels,
+        "intent.label_names": label_names,
+        "intent.count": len(labels),
+        "intent.source": source,
+        "intent.preclassified": preclassified,
     }
     if req.intent_classifier_version:
-        attrs["declarai.intent.classifier_version"] = req.intent_classifier_version
+        attrs["intent.classifier_version"] = req.intent_classifier_version
     return attrs
 
 
