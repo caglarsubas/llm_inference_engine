@@ -430,6 +430,36 @@ POST /v1/chat/completions                      ← HTTP server span (FastAPIInst
 
 Cold model load shows up as a long `model.acquire` (e.g. 263 ms) above an unchanged `chat.generate`; warm hits drop `model.acquire` to <1 ms. That's exactly the kind of evidence Prometa's signal layer needs to attribute latency to load vs. compute.
 
+### DeclarAI intent labels on chat spans
+
+`/v1/chat/completions` accepts DeclarAI's dotted intent trace keys directly in the request body. When present, the engine stamps them onto `model.acquire` before cold-load or cache lookup work, then onto the `chat.generate` or `chat.stream` span before model generation begins. The same label set is mirrored into Prometa-indexable attributes:
+
+```json
+{
+  "model": "gemma4:26b",
+  "messages": [{"role": "user", "content": "Update the config and run the pipeline"}],
+  "declarai.intent.labels": ["D", "E"],
+  "declarai.intent.source": "deterministic_clause_decomposition",
+  "declarai.intent.preclassified": false,
+  "declarai.intent.classifier_version": "deterministic-intent-v1"
+}
+```
+
+The emitted span attributes are:
+
+- `declarai.intent.labels`
+- `declarai.intent.label_names`
+- `declarai.intent.count`
+- `declarai.intent.source`
+- `declarai.intent.preclassified`
+- `declarai.intent.classifier_version` when supplied
+- `prometa.intent.labels`
+- `prometa.intent.label_names`
+- `prometa.intent.source`
+- `prometa.intent.preclassified`
+
+For preclassified frontend prompts, send `declarai.intent.source` or `prometa.intent.source` as `get_ai_support_button` with `*.intent.preclassified=true`; the engine only propagates those labels and does not run another classifier.
+
 ### Plugging into Prometa
 
 Point any OTLP/gRPC collector at `OTEL_EXPORTER_OTLP_ENDPOINT` instead of Jaeger. Standard OTel env vars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`, …) are honored by the SDK directly. Service identity is pre-set to `service.name=inference-engine`, `service.version=<package version>`.
