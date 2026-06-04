@@ -128,6 +128,51 @@ class ContextLengthExceededError(Exception):
         return detail
 
 
+class GenerationTimeoutError(Exception):
+    """A backend generation call exceeded the server-side deadline.
+
+    HTTP-backed adapters can enforce this by closing the upstream request.
+    Local blocking native calls may not be interruptible, so the route layer
+    only maps this typed error when an adapter can raise it honestly.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        timeout_seconds: float | None = None,
+        backend: str = "",
+        model: str = "",
+    ) -> None:
+        self.timeout_seconds = timeout_seconds
+        self.backend = backend
+        self.model = model
+        if not message:
+            if timeout_seconds and timeout_seconds > 0:
+                message = (
+                    f"Generation exceeded the server-side timeout of "
+                    f"{timeout_seconds:g} seconds."
+                )
+            else:
+                message = "Generation exceeded the server-side timeout."
+        super().__init__(message)
+
+    def error_detail(self) -> dict:
+        detail: dict = {
+            "message": str(self),
+            "type": "generation_timeout",
+            "code": "generation_timeout",
+            "param": "messages",
+        }
+        if self.timeout_seconds is not None:
+            detail["timeout_seconds"] = self.timeout_seconds
+        if self.backend:
+            detail["backend"] = self.backend
+        if self.model:
+            detail["model"] = self.model
+        return detail
+
+
 class InferenceAdapter(ABC):
     """Abstract base for all inference backends."""
 

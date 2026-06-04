@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8080)
     log_level: str = Field(default="INFO")
+    chat_completion_timeout_seconds: float = Field(
+        default=120.0,
+        ge=0.0,
+        description=(
+            "Server-side timeout for HTTP-backed /v1/chat/completions calls. "
+            "0 disables the timeout. Keep below public proxy caps such as "
+            "ngrok's 5-minute free-tier limit."
+        ),
+    )
 
     # llama.cpp runtime
     n_gpu_layers: int = Field(default=-1, description="-1 = offload all layers to GPU (Metal).")
