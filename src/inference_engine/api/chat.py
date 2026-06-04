@@ -9,7 +9,12 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
-from ..adapters import ContextLengthExceededError, GenerationParams, InferenceAdapter
+from ..adapters import (
+    ContextLengthExceededError,
+    GenerationParams,
+    GenerationTimeoutError,
+    InferenceAdapter,
+)
 from ..response_normalize import (
     StreamDelta,
     StreamNormalizer,
@@ -231,6 +236,16 @@ def _auto_eval_attrs(spec: AutoEvalSpec | None, policy: PolicyEntry | None = Non
     return attrs
 
 
+def _timeout_span_attrs(exc: GenerationTimeoutError) -> dict:
+    attrs: dict = {
+        "error.type": "generation_timeout",
+        "gen_ai.response.finish_reason": "timeout",
+    }
+    if exc.timeout_seconds is not None:
+        attrs["generation.timeout_seconds"] = exc.timeout_seconds
+    return attrs
+
+
 def _normalize_blocking_result(
     result,
     params: GenerationParams,
@@ -331,6 +346,9 @@ async def _blocking_response(
             # a deterministic, typed 400 so clients branch on the error type
             # instead of pattern-matching an opaque 500 after a big tool result.
             raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+        except GenerationTimeoutError as exc:
+            s.bind(**_timeout_span_attrs(exc))
+            raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
         # Single normalization seam: convert any leaked vendor markup
         # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
         # OpenAI fields. Backends that already returned ``tool_calls`` keep
@@ -603,6 +621,11 @@ async def _stream_response(
                 # signal on both paths.
                 finish_reason = "error"
                 s.bind(**{"error.type": "context_length_exceeded"})
+                yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
+                return
+            except GenerationTimeoutError as exc:
+                finish_reason = "timeout"
+                s.bind(**_timeout_span_attrs(exc))
                 yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
                 return
             finally:

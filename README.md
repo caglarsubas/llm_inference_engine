@@ -366,6 +366,7 @@ All knobs live in `.env` (see `.env.example`):
 | `MLX_MODELS_DIR`         | `~/.cache/inference_engine/mlx`                                                          | Where `download_mlx_model.py` snapshots HF repos         |
 | `PREFER_MLX_OVER_GGUF`   | `true`                                                                                   | On a name collision, MLX wins (faster on Apple Silicon)  |
 | `DEFAULT_MODEL`          | `llama3.2:3b`                                                                            | Used by smoke test by default                            |
+| `CHAT_COMPLETION_TIMEOUT_SECONDS` | `120`                                                                            | HTTP-backed chat deadline; `0` disables. Keep below public proxy caps. |
 | `N_GPU_LAYERS`           | `-1`                                                                                     | llama.cpp: `-1` = offload all layers to Metal            |
 | `N_CTX`                  | `8192`                                                                                   | Context window                                           |
 | `N_THREADS`              | `0`                                                                                      | `0` = auto                                               |
@@ -1279,6 +1280,64 @@ stress_test.py --stream        # streaming + watchdog stress
 ```
 
 The same-model run shows the lock at work — first batch of 8 fires together and queues, latencies cluster in two tiers. The cross-backend run proves MLX and llama.cpp don't contend. The streaming run validates that 8 simultaneous `watch_disconnect` watchdogs come and go cleanly without leaking asyncio tasks.
+
+### Judge latency and large-model guidance
+
+LLM-as-a-judge traffic has a much tighter SLO than general chat: target p95
+latency is **1-10 seconds** for judge-sized prompts with a short output cap
+(typically 32-128 tokens, `temperature=0`). A multi-minute completion should be
+treated as "not a viable judge model on this hardware", not as normal queue
+behavior.
+
+For `gemma4:26b`, use this checklist before routing production judge traffic:
+
+* Prefer a quantized model that fits entirely on the accelerator. A 26B Q4
+  model plus KV cache usually needs a large-memory GPU or high-end unified
+  memory system; CPU-only or partial-offload runs can land in the multi-minute
+  range.
+* Confirm GPU/Metal/CUDA offload in the upstream runtime. If the engine is
+  reaching `gemma4:26b` through `OLLAMA_HTTP_ENDPOINT`, verify the Ollama server
+  is actually using the accelerator and not falling back to CPU.
+* Keep judge generations small: `max_tokens=64` is a better default for rubric
+  scoring than the chat default of 512.
+* Keep same-model concurrency at 1 unless the backend has a real decode
+  scheduler. Local `llama_cpp`/MLX adapters serialize per adapter; use vLLM or
+  another continuous-batching upstream for high-QPS judge workloads.
+* Measure before enabling the pilot:
+
+```bash
+uv run python scripts/stress_test.py \
+  --base-url http://127.0.0.1:8080 \
+  --models gemma4:26b \
+  --requests 5 \
+  --concurrency 1 \
+  --max-tokens 64 \
+  --prompt "Grade this answer with one JSON object containing score and reason."
+```
+
+The report prints p50/p95/p99 latency and output tokens/sec. If p95 is above
+the judge SLO, route the judge role to a smaller/quantized model or a dedicated
+GPU-backed batching runtime instead of exposing the slow model through ngrok.
+
+## Server-side generation timeout
+
+`CHAT_COMPLETION_TIMEOUT_SECONDS` bounds HTTP-backed chat calls (`ollama_http`
+and `vllm`). The default is 120 seconds, deliberately below common public proxy
+limits such as ngrok's 5-minute free-tier upstream cap. Set it lower for judge
+traffic, for example `CHAT_COMPLETION_TIMEOUT_SECONDS=30`, so a slow candidate
+fails clearly instead of stalling the caller's scoring run.
+
+Timeout behavior:
+
+* Blocking `/v1/chat/completions` returns HTTP `504` with
+  `detail.type="generation_timeout"`, plus the backend, model, and configured
+  timeout.
+* Streaming `/v1/chat/completions` emits a terminal SSE `error` event with the
+  same typed payload, then closes without a `[DONE]` trailer.
+* Local blocking native calls (`llama_cpp`, MLX) are not forcibly interrupted
+  mid-generation because the underlying high-level APIs do not expose a safe
+  cancellation hook. Use `stream=true` when clients need fast disconnect
+  cancellation on local backends.
 
 ## Streaming cancellation
 

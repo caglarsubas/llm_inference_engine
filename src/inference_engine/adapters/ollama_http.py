@@ -48,6 +48,7 @@ from collections.abc import AsyncIterator, Iterable
 import httpx
 
 from ..cancellation import Cancellation
+from ..config import settings
 from ..observability import get_logger
 from ..registry import ModelDescriptor
 from ..schemas import ChatMessage
@@ -56,11 +57,19 @@ from .base import (
     EmbeddingsNotSupportedError,
     GenerationParams,
     GenerationResult,
+    GenerationTimeoutError,
     InferenceAdapter,
     StreamChunk,
 )
 
 log = get_logger("adapter.ollama_http")
+
+
+def _chat_timeout() -> httpx.Timeout:
+    seconds = settings.chat_completion_timeout_seconds
+    if seconds <= 0:
+        return httpx.Timeout(None)
+    return httpx.Timeout(seconds)
 
 
 class OllamaHttpAdapter(InferenceAdapter):
@@ -107,10 +116,7 @@ class OllamaHttpAdapter(InferenceAdapter):
         self._descriptor = descriptor
         self._endpoint = descriptor.endpoint
         self._model_id = str(model_id)
-        # Generous timeout — first request after a cold ollama can wait on
-        # mmap-warmup of a 30 GB model.  Streaming reads piggyback on this
-        # client; per-chunk deadlines come from sse_starlette downstream.
-        self._client = httpx.AsyncClient(base_url=self._endpoint, timeout=600.0)
+        self._client = httpx.AsyncClient(base_url=self._endpoint, timeout=_chat_timeout())
         log.info(
             "loaded",
             model=descriptor.qualified_name,
@@ -198,8 +204,11 @@ class OllamaHttpAdapter(InferenceAdapter):
             "stream": False,
         }
         assert self._client is not None
-        r = await self._client.post("/v1/chat/completions", json=body)
-        r.raise_for_status()
+        try:
+            r = await self._client.post("/v1/chat/completions", json=body)
+            r.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error() from exc
         data = r.json()
 
         choice = (data.get("choices") or [{}])[0]
@@ -230,34 +239,37 @@ class OllamaHttpAdapter(InferenceAdapter):
             "stream": True,
         }
         assert self._client is not None
-        async with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
-            resp.raise_for_status()
-            async for raw_line in resp.aiter_lines():
-                if cancel is not None and bool(cancel):
-                    return
-                if not raw_line or not raw_line.startswith("data:"):
-                    continue
-                payload = raw_line[5:].strip()
-                if payload == "[DONE]":
-                    return
-                try:
-                    event = json.loads(payload)
-                except json.JSONDecodeError:
-                    log.warning("ollama_http.stream.bad_json", payload=payload[:200])
-                    continue
-                choices = event.get("choices") or []
-                if not choices:
-                    continue
-                choice = choices[0]
-                delta = choice.get("delta") or {}
-                text = delta.get("content") or ""
-                tool_call_deltas = delta.get("tool_calls")
-                finish = choice.get("finish_reason")
-                yield StreamChunk(
-                    text=text,
-                    finish_reason=finish,
-                    tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
-                )
+        try:
+            async with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
+                resp.raise_for_status()
+                async for raw_line in resp.aiter_lines():
+                    if cancel is not None and bool(cancel):
+                        return
+                    if not raw_line or not raw_line.startswith("data:"):
+                        continue
+                    payload = raw_line[5:].strip()
+                    if payload == "[DONE]":
+                        return
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        log.warning("ollama_http.stream.bad_json", payload=payload[:200])
+                        continue
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content") or ""
+                    tool_call_deltas = delta.get("tool_calls")
+                    finish = choice.get("finish_reason")
+                    yield StreamChunk(
+                        text=text,
+                        finish_reason=finish,
+                        tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+                    )
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error() from exc
 
     async def complete(
         self,
@@ -295,6 +307,13 @@ class OllamaHttpAdapter(InferenceAdapter):
     @property
     def prefix_cache_last_prompt_tokens(self) -> int:
         return 0
+
+    def _timeout_error(self) -> GenerationTimeoutError:
+        return GenerationTimeoutError(
+            timeout_seconds=settings.chat_completion_timeout_seconds,
+            backend=self.backend_name,
+            model=self._model_id or "",
+        )
 
 
 __all__ = ["OllamaHttpAdapter"]

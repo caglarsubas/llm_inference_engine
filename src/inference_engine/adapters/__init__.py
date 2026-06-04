@@ -3,6 +3,7 @@ from .base import (
     EmbeddingResult,
     EmbeddingsNotSupportedError,
     GenerationParams,
+    GenerationTimeoutError,
     InferenceAdapter,
     StreamChunk,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "EmbeddingResult",
     "EmbeddingsNotSupportedError",
     "GenerationParams",
+    "GenerationTimeoutError",
     "InferenceAdapter",
     "StreamChunk",
 ]

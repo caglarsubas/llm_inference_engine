@@ -524,12 +524,38 @@ the ENGINE URL after each restart, or use your reserved domain
 | `404 {"detail": "model not found: '…'"}`           | The `model` id isn't servable. Run `GET /v1/models`; pick an id from `data`. |
 | `401 missing bearer token` / `invalid api key`     | Auth is on. Send `Authorization: Bearer <key>` with a valid key.           |
 | `400` with `context_length_exceeded`               | Prompt + `max_tokens` overran the model window. Shorten input or lower `max_tokens`. |
+| `504` with `generation_timeout`                    | The HTTP-backed model exceeded `CHAT_COMPLETION_TIMEOUT_SECONDS`. Lower `max_tokens`, use a faster/quantized judge model, or raise the timeout if this is expected long-form chat. |
 | `501 embeddings not supported by mlx backend`      | That model can't embed. Use a `llama_cpp`/embedding model for `/v1/embeddings` & `/v1/rerank`. |
 | `400` "blocking is incompatible with stream=true"  | `auto_eval.mode:"blocking"` can't stream. Use `mode:"background"` or `stream:false`. |
 | Browser shows an **ngrok warning page** for GETs   | Free ngrok interstitial. Add header `ngrok-skip-browser-warning: true`, or just use POST/API clients (unaffected). |
 | `ERR_NGROK_313` / "only paid plans may create custom subdomains" | The `--domain` / `NGROK_DOMAIN` you passed isn't your account's reserved domain (often a typo). Copy it verbatim from the ngrok dashboard *Domains* page. |
 | Connection refused / 502 from the tunnel           | The engine isn't running or you tunneled the wrong port. `curl 127.0.0.1:8080/v1/health` locally; tunnel the LB port with `PORT=` if using docker. |
 | Tunnel URL works then dies                          | The `make share` process stopped (foreground job, logout, or reboot). Restart it; for persistence run the tunnel under `launchd`. A reserved domain keeps the URL identical across restarts. |
+
+### Public judge endpoints
+
+Do not expose a multi-minute judge model through a free ngrok tunnel and expect
+Prometa scoring runs to complete. For judge candidates such as `gemma4:26b`,
+measure single-call latency locally first:
+
+```bash
+uv run python scripts/stress_test.py \
+  --models gemma4:26b \
+  --requests 5 \
+  --concurrency 1 \
+  --max-tokens 64 \
+  --prompt "Grade this answer with one JSON object containing score and reason."
+```
+
+Use the model as a judge only when p95 is in the 1-10 second range on the
+actual serving hardware. If it is slower, choose a smaller/quantized judge
+model, confirm GPU/Metal/CUDA offload in the upstream runtime, or serve the
+model through a batching backend such as vLLM on suitable GPU hardware.
+
+Set `CHAT_COMPLETION_TIMEOUT_SECONDS` below the tunnel/proxy cap. For pilots,
+`30` seconds is a useful starting point because it records a typed timeout
+before the caller's job budget or ngrok's 5-minute limit becomes the failure
+mode.
 
 Add `ngrok-skip-browser-warning` example:
 

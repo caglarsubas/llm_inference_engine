@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from inference_engine.adapters import EmbeddingsNotSupportedError
+from inference_engine.adapters import EmbeddingsNotSupportedError, GenerationTimeoutError
 from inference_engine.adapters.base import GenerationParams
 from inference_engine.adapters.vllm_adapter import VLLMAdapter
 from inference_engine.cancellation import Cancellation
@@ -268,6 +268,23 @@ async def test_generate_passes_tool_calls_through() -> None:
     sent = captured[0]
     sent_assistant = next(m for m in sent["messages"] if m["role"] == "assistant")
     assert sent_assistant["tool_calls"][0]["id"] == "call_prev"
+
+
+@pytest.mark.asyncio
+async def test_generate_timeout_raises_typed_error() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream was too slow", request=req)
+
+    adapter = VLLMAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+
+    with pytest.raises(GenerationTimeoutError) as ei:
+        await adapter.generate([ChatMessage(role="user", content="x")], GenerationParams())
+
+    assert ei.value.backend == "vllm"
+    assert ei.value.model == "test-model"
+    assert ei.value.error_detail()["type"] == "generation_timeout"
 
 
 def _sse(events: list[dict]) -> Iterator[bytes]:
