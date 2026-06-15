@@ -73,6 +73,7 @@ class VLLMAdapter(InferenceAdapter):
         self._descriptor: ModelDescriptor | None = None
         self._endpoint: str | None = None
         self._model_id: str | None = None
+        self._chat_template_kwargs: dict | None = None
         self._client: httpx.AsyncClient | None = None
 
     @property
@@ -97,15 +98,27 @@ class VLLMAdapter(InferenceAdapter):
             raise ValueError(
                 f"vLLM descriptor {descriptor.qualified_name} missing params['model_id']"
             )
+        chat_template_kwargs = descriptor.params.get("chat_template_kwargs")
+        if chat_template_kwargs is not None and not isinstance(chat_template_kwargs, dict):
+            raise ValueError(
+                f"vLLM descriptor {descriptor.qualified_name} params['chat_template_kwargs'] "
+                "must be an object"
+            )
 
         # Idempotent — re-loading the same descriptor is a no-op.
-        if self._descriptor and self._descriptor.endpoint == descriptor.endpoint and self._model_id == model_id:
+        if (
+            self._descriptor
+            and self._descriptor.endpoint == descriptor.endpoint
+            and self._model_id == model_id
+            and self._chat_template_kwargs == chat_template_kwargs
+        ):
             return
 
         await self.unload()
         self._descriptor = descriptor
         self._endpoint = descriptor.endpoint
         self._model_id = str(model_id)
+        self._chat_template_kwargs = dict(chat_template_kwargs) if chat_template_kwargs else None
         self._client = httpx.AsyncClient(base_url=self._endpoint, timeout=_chat_timeout())
         log.info(
             "loaded",
@@ -125,6 +138,7 @@ class VLLMAdapter(InferenceAdapter):
             self._descriptor = None
             self._endpoint = None
             self._model_id = None
+            self._chat_template_kwargs = None
 
     # ------------------------------------------------------------------
     # Request / response translation
@@ -176,6 +190,11 @@ class VLLMAdapter(InferenceAdapter):
             kw["tools"] = params.tools
         if params.tool_choice is not None:
             kw["tool_choice"] = params.tool_choice
+        chat_template_kwargs = dict(self._chat_template_kwargs or {})
+        if params.chat_template_kwargs:
+            chat_template_kwargs.update(params.chat_template_kwargs)
+        if chat_template_kwargs:
+            kw["chat_template_kwargs"] = chat_template_kwargs
         return kw
 
     # ------------------------------------------------------------------

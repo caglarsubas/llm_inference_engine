@@ -79,6 +79,7 @@ def _params_from_request(req: ChatCompletionRequest) -> GenerationParams:
         json_mode=json_mode,
         tools=tools,
         tool_choice=req.tool_choice,
+        chat_template_kwargs=req.chat_template_kwargs,
     )
 
 

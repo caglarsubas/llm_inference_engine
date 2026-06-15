@@ -62,6 +62,47 @@ def test_registry_parses_minimal_entry(tmp_path: Path) -> None:
     assert d.params["model_id"] == "meta-llama/Llama-3.2-1B-Instruct"
 
 
+def test_registry_parses_chat_template_kwargs(tmp_path: Path) -> None:
+    path = tmp_path / "vllm.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "minicpm-v-4.5-gguf-q4-k-m",
+                    "tag": "dmr",
+                    "endpoint": "http://127.0.0.1:12434/engines",
+                    "model_id": "docker.io/local/minicpm-v-4.5-gguf:q4_k_m",
+                    "chat_template_kwargs": {"enable_thinking": False},
+                }
+            ]
+        )
+    )
+
+    desc = VLLMRegistry(path).list_models()[0]
+
+    assert desc.qualified_name == "minicpm-v-4.5-gguf-q4-k-m:dmr"
+    assert desc.params["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_registry_rejects_bad_chat_template_kwargs(tmp_path: Path) -> None:
+    path = tmp_path / "vllm.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "x",
+                    "endpoint": "http://vllm:8000",
+                    "model_id": "any",
+                    "chat_template_kwargs": "enable_thinking=false",
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="chat_template_kwargs"):
+        VLLMRegistry(path).list_models()
+
+
 def test_registry_strips_trailing_slash_on_endpoint(tmp_path: Path) -> None:
     """Trailing slash on endpoint causes httpx to build paths like ``//v1/...``;
     normalise it at parse time so adapters don't need to defensively trim."""
@@ -267,6 +308,35 @@ async def test_generate_passes_multimodal_content_parts_through() -> None:
             },
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_generate_merges_descriptor_and_request_chat_template_kwargs() -> None:
+    captured: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(req.content))
+        return httpx.Response(200, json=_ok_chat_response(content="hello"))
+
+    adapter = VLLMAdapter()
+    desc = _make_descriptor()
+    desc.params["chat_template_kwargs"] = {"enable_thinking": False, "foo": "model"}
+    await adapter.load(desc)
+    _install_transport(adapter, handler)
+
+    await adapter.generate(
+        [ChatMessage(role="user", content="hi")],
+        GenerationParams(
+            max_tokens=8,
+            chat_template_kwargs={"foo": "request", "bar": True},
+        ),
+    )
+
+    assert captured[0]["chat_template_kwargs"] == {
+        "enable_thinking": False,
+        "foo": "request",
+        "bar": True,
+    }
 
 
 @pytest.mark.asyncio

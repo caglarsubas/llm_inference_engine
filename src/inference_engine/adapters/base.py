@@ -30,6 +30,7 @@ class GenerationParams:
     # when supported. Adapters that don't support tools (mlx-lm) ignore these.
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
+    chat_template_kwargs: dict | None = None
 
 
 @dataclass

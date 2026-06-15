@@ -126,7 +126,7 @@ passes:
 |---|---|---|
 | Qwen3-VL exact family | Partially exposed | `qwen3-vl-8b-instruct:vllm` is live through Docker Model Runner vLLM-Metal and passed the image + strict JSON smoke. Larger Qwen3-VL IDs still need upstream servers and smoke validation. Nearby `qwen3.6:27b` remains a local Ollama fallback candidate, not an exact Qwen3-VL id. |
 | GLM-V | Not exposed | No GLM-V upstream is configured and probe-ready. |
-| MiniCPM-V | Not exposed | No MiniCPM-V upstream is configured and probe-ready. |
+| MiniCPM-V | Partially exposed | `minicpm-v-4.5-gguf-q4-k-m:dmr` is live through a locally packaged Docker Model Runner llama.cpp GGUF plus multimodal projector and passed the vehicle-image strict JSON smoke. Full upstream `openbmb/MiniCPM-V-4_5` / `MiniCPM-V-4.6` vLLM-style IDs still need dedicated upstream servers and smoke validation. |
 | InternVL | Not exposed | No InternVL upstream is configured and probe-ready. |
 | Llama 4 VLMs | Not exposed | No Llama 4 Scout/Maverick upstream is configured and probe-ready; license and hardware fit still need review. |
 | Kimi multimodal | Not exposed | No Kimi-VL/Kimi-K2.5 upstream is configured and probe-ready. |
@@ -139,6 +139,7 @@ Exposed local benchmark candidates:
 | Model id | Benchmark status |
 |---|---|
 | `qwen3-vl-8b-instruct:vllm` | Exact demanded Qwen3-VL candidate; Docker Model Runner vLLM-Metal upstream passed engine text JSON smoke and vehicle-image strict JSON smoke with `max_tokens=768`. |
+| `minicpm-v-4.5-gguf-q4-k-m:dmr` | Priority-list MiniCPM-V candidate; locally packaged `openbmb/MiniCPM-V-4_5-gguf` Q4_K_M with `mmproj-model-f16.gguf`, served by Docker Model Runner llama.cpp with `chat_template_kwargs.enable_thinking=false`, and passed vehicle-image strict JSON smoke with `max_tokens=768`. |
 | `ministral-3:3b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
 | `ministral-3:8b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
 | `ministral-3:14b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
@@ -216,6 +217,9 @@ Required benchmark log fields:
   If a manifest gets ahead of runtime by accident, the engine keeps that id in
   `unavailable` until the upstream `/v1/models` probe succeeds. The engine is
   the multiplexer; one vLLM process usually serves one model.
+- For OpenAI-compatible upstreams that need model-specific template switches,
+  set `chat_template_kwargs` on that model's `.vllm_models.json` entry so
+  clients do not need to remember per-model runtime knobs.
 - The candidate list came from the application demand. Before production,
   verify each model id, license, model-card safety limits, context length,
   quantization availability, and image-input support against the upstream

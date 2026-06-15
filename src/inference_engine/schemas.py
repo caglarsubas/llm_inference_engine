@@ -173,6 +173,13 @@ class ChatCompletionRequest(BaseModel):
     stop: list[str] | str | None = None
     seed: int | None = None
     response_format: dict | None = None  # {"type": "json_object"} accepted
+    chat_template_kwargs: dict | None = Field(
+        default=None,
+        description=(
+            "Optional OpenAI-compatible chat-template kwargs for upstream servers "
+            "that expose model-specific template controls."
+        ),
+    )
     auto_eval: AutoEvalSpec | None = Field(
         default=None,
         description="Opt-in auto-judge. See AutoEvalSpec.",

@@ -13,6 +13,7 @@ File format (a JSON array, one entry per vLLM-served model):
         "tag": "vllm",
         "endpoint": "http://vllm:8000",
         "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+        "chat_template_kwargs": {"enable_thinking": false},
         "size_bytes": 2400000000
       }
     ]
@@ -28,6 +29,10 @@ File format (a JSON array, one entry per vLLM-served model):
 * ``size_bytes`` is informational — surfaced on ``/v1/models`` but not
   enforced by the manager's memory budget (vLLM does its own GPU memory
   management on a remote host).
+* ``chat_template_kwargs`` is optional. When present, the adapter forwards it
+  to OpenAI-compatible upstreams that need model-specific chat-template
+  switches (for example Docker Model Runner llama.cpp models that need
+  ``enable_thinking=false``).
 
 Missing config file → empty registry, no vLLM models served. Malformed file
 fails startup loudly via ``load_models()``. `/v1/models` and chat resolution
@@ -70,6 +75,15 @@ class VLLMRegistry:
             except KeyError as exc:
                 raise ValueError(f"vLLM entry {i} missing required field: {exc.args[0]}") from exc
 
+            params = {"model_id": model_id}
+            chat_template_kwargs = entry.get("chat_template_kwargs")
+            if chat_template_kwargs is not None:
+                if not isinstance(chat_template_kwargs, dict):
+                    raise ValueError(
+                        f"vLLM entry {i} chat_template_kwargs must be an object"
+                    )
+                params["chat_template_kwargs"] = chat_template_kwargs
+
             desc = ModelDescriptor(
                 name=name,
                 tag=tag,
@@ -79,7 +93,7 @@ class VLLMRegistry:
                 # ``model_path`` for display) doesn't trip on None.
                 model_path=Path(f"vllm://{endpoint}/{model_id}"),
                 format="vllm",
-                params={"model_id": model_id},
+                params=params,
                 size_bytes=int(entry.get("size_bytes", 0)),
                 endpoint=endpoint,
             )
