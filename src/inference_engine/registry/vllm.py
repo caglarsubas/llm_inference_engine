@@ -30,7 +30,9 @@ File format (a JSON array, one entry per vLLM-served model):
   management on a remote host).
 
 Missing config file → empty registry, no vLLM models served. Malformed file
-fails startup loudly via ``load_models()``.
+fails startup loudly via ``load_models()``. `/v1/models` and chat resolution
+add one more honesty gate: the configured upstream must respond to `/v1/models`
+with this exact ``model_id`` before the descriptor is treated as loadable.
 """
 
 from __future__ import annotations

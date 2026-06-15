@@ -23,6 +23,22 @@ class Settings(BaseSettings):
             ".vllm_models.example.json."
         ),
     )
+    vllm_upstream_probe_timeout_seconds: float = Field(
+        default=1.0,
+        ge=0.05,
+        description=(
+            "Timeout for checking a configured vLLM/OpenAI-compatible upstream's "
+            "/v1/models endpoint before exposing it in /v1/models.data."
+        ),
+    )
+    vllm_upstream_probe_ttl_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        description=(
+            "How long to cache vLLM upstream reachability checks. Set to 0 to "
+            "probe on every /v1/models or cold model resolution."
+        ),
+    )
     ollama_http_endpoint: str = Field(
         default="",
         description=(

@@ -751,6 +751,11 @@ Drop a `.vllm_models.json` (config path overridable via `VLLM_MODELS_FILE`) list
 
 Clients then send `model: "llama-3.2-1b-instruct:vllm"` and the engine routes through `VLLMAdapter` to the upstream. Mixing local and remote: a single engine instance can serve `llama3.2:1b` (Ollama GGUF, llama.cpp), `Llama-3.2-1B-Instruct-4bit:mlx` (MLX), and `llama-3.2-1b-instruct:vllm` (vLLM remote) at the same time — different `model` ids in the same registry, different adapters under the hood, identical observability surface.
 
+The engine only lists a configured vLLM entry in `/v1/models.data` after the
+upstream's own `/v1/models` response contains the exact `model_id`. If the
+endpoint is down or serving a different model, the id is reported under
+`/v1/models.unavailable` with an upstream reason until the next probe succeeds.
+
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
 [`docs/MODEL_DEMAND_SHORTLIST.md`](docs/MODEL_DEMAND_SHORTLIST.md).
@@ -811,13 +816,13 @@ The matching `.vllm_models.json` lists both upstreams (already in `.vllm_models.
 ]
 ```
 
-Clients then send `model: "llama-3.2-1b-instruct:vllm"` or `"llama-3.2-3b-instruct:vllm"` and the engine routes each through its own GPU-pinned vLLM upstream. Adding a third model is two more entries: another vLLM service block in compose with `device_ids: ['2']`, and another `.vllm_models.json` entry pointing at it.
+Clients then send `model: "llama-3.2-1b-instruct:vllm"` or `"llama-3.2-3b-instruct:vllm"` after those ids appear in `/v1/models.data`, and the engine routes each through its own GPU-pinned vLLM upstream. Adding a third model is two more entries: another vLLM service block in compose with `device_ids: ['2']`, and another `.vllm_models.json` entry pointing at it.
 
 `count` and `device_ids` are mutually exclusive in the Compose GPU spec, which is why the single-GPU and multi-GPU paths live in separate overlay files rather than as one parameterised service.
 
 #### Honest constraints
 
-- **vLLM doesn't run on Apple Silicon, macOS Docker Desktop, or pure-CPU containers.** It needs CUDA (or supported AMD/Intel GPUs). On the M5 Max laptop the user's working from, `make compose-vllm-up` will start the vLLM container which will then crash-loop trying to find a GPU. The engine itself stays up and serves local llama.cpp / MLX models normally; vLLM-routed model ids return upstream-503 until vLLM is reachable.
+- **vLLM doesn't run on Apple Silicon, macOS Docker Desktop, or pure-CPU containers.** It needs CUDA (or supported AMD/Intel GPUs). On the M5 Max laptop the user's working from, `make compose-vllm-up` will start the vLLM container which will then crash-loop trying to find a GPU. The engine itself stays up and serves local llama.cpp / MLX models normally; configured vLLM ids remain in `/v1/models.unavailable` until the upstream is reachable and advertises the configured `model_id`.
 - **One model per vLLM process.** Multi-model = multiple vLLM containers on different ports + multiple `.vllm_models.json` entries. The engine is the multiplexer.
 - **No prefix-cache introspection on vLLM.** vLLM's PagedAttention is excellent but its OpenAI-compatible HTTP API doesn't expose per-call hit counts the way our local adapters do. `prefix_cache_*` properties on `VLLMAdapter` report `disabled` so the chat span attrs stay uniform across backends.
 - **Embeddings unsupported.** `VLLMAdapter.embed()` raises `EmbeddingsNotSupportedError`; `/v1/embeddings` against a vLLM model returns 501. Continue to use llama.cpp for embeddings (round 15) or wire a separate vLLM container with an embedding model + a custom adapter override.

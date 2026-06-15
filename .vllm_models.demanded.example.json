@@ -1,0 +1,202 @@
+[
+  {
+    "name": "qwen3-vl-8b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-qwen3-vl-8b:8000",
+    "model_id": "Qwen/Qwen3-VL-8B-Instruct",
+    "family": "Qwen3-VL",
+    "priority": "P0"
+  },
+  {
+    "name": "qwen3-vl-32b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-qwen3-vl-32b:8000",
+    "model_id": "Qwen/Qwen3-VL-32B-Instruct",
+    "family": "Qwen3-VL",
+    "priority": "P0"
+  },
+  {
+    "name": "qwen3-vl-30b-a3b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-qwen3-vl-30b-a3b:8000",
+    "model_id": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "family": "Qwen3-VL",
+    "priority": "P0"
+  },
+  {
+    "name": "qwen3-vl-235b-a22b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-qwen3-vl-235b-a22b:8000",
+    "model_id": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+    "family": "Qwen3-VL",
+    "priority": "P0"
+  },
+  {
+    "name": "glm-4.6v-flash",
+    "tag": "vllm",
+    "endpoint": "http://vllm-glm-4-6v-flash:8000",
+    "model_id": "zai-org/GLM-4.6V-Flash",
+    "family": "GLM-V",
+    "priority": "P0"
+  },
+  {
+    "name": "glm-4.6v",
+    "tag": "vllm",
+    "endpoint": "http://vllm-glm-4-6v:8000",
+    "model_id": "zai-org/GLM-4.6V",
+    "family": "GLM-V",
+    "priority": "P0"
+  },
+  {
+    "name": "glm-4.5v",
+    "tag": "vllm",
+    "endpoint": "http://vllm-glm-4-5v:8000",
+    "model_id": "zai-org/GLM-4.5V",
+    "family": "GLM-V",
+    "priority": "P0"
+  },
+  {
+    "name": "glm-4.1v-9b-thinking",
+    "tag": "vllm",
+    "endpoint": "http://vllm-glm-4-1v-9b-thinking:8000",
+    "model_id": "zai-org/GLM-4.1V-9B-Thinking",
+    "family": "GLM-V",
+    "priority": "P0"
+  },
+  {
+    "name": "minicpm-v-4.5",
+    "tag": "vllm",
+    "endpoint": "http://vllm-minicpm-v-4-5:8000",
+    "model_id": "openbmb/MiniCPM-V-4_5",
+    "family": "MiniCPM-V",
+    "priority": "P0"
+  },
+  {
+    "name": "minicpm-v-4.6",
+    "tag": "vllm",
+    "endpoint": "http://vllm-minicpm-v-4-6:8000",
+    "model_id": "openbmb/MiniCPM-V-4.6",
+    "family": "MiniCPM-V",
+    "priority": "P0"
+  },
+  {
+    "name": "internvl3.5-8b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-internvl3-5-8b:8000",
+    "model_id": "OpenGVLab/InternVL3_5-8B",
+    "family": "InternVL",
+    "priority": "P0"
+  },
+  {
+    "name": "internvl3.5-20b-a4b-preview",
+    "tag": "vllm",
+    "endpoint": "http://vllm-internvl3-5-20b-a4b:8000",
+    "model_id": "OpenGVLab/InternVL3_5-20B-A4B-Preview",
+    "family": "InternVL",
+    "priority": "P0"
+  },
+  {
+    "name": "internvl3.5-241b-a28b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-internvl3-5-241b-a28b:8000",
+    "model_id": "OpenGVLab/InternVL3_5-241B-A28B",
+    "family": "InternVL",
+    "priority": "P0"
+  },
+  {
+    "name": "llama-4-scout-17b-16e-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-llama-4-scout:8000",
+    "model_id": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    "family": "Llama 4",
+    "priority": "P1"
+  },
+  {
+    "name": "llama-4-maverick-17b-128e-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-llama-4-maverick:8000",
+    "model_id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+    "family": "Llama 4",
+    "priority": "P1"
+  },
+  {
+    "name": "kimi-vl-a3b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-kimi-vl-a3b:8000",
+    "model_id": "moonshotai/Kimi-VL-A3B-Instruct",
+    "family": "Kimi multimodal",
+    "priority": "P1"
+  },
+  {
+    "name": "kimi-k2.5",
+    "tag": "vllm",
+    "endpoint": "http://vllm-kimi-k2-5:8000",
+    "model_id": "moonshotai/Kimi-K2.5",
+    "family": "Kimi multimodal",
+    "priority": "P1"
+  },
+  {
+    "name": "deepseek-vl2-tiny",
+    "tag": "vllm",
+    "endpoint": "http://vllm-deepseek-vl2-tiny:8000",
+    "model_id": "deepseek-ai/deepseek-vl2-tiny",
+    "family": "DeepSeek-VL2",
+    "priority": "P2"
+  },
+  {
+    "name": "deepseek-vl2-small",
+    "tag": "vllm",
+    "endpoint": "http://vllm-deepseek-vl2-small:8000",
+    "model_id": "deepseek-ai/deepseek-vl2-small",
+    "family": "DeepSeek-VL2",
+    "priority": "P2"
+  },
+  {
+    "name": "deepseek-vl2",
+    "tag": "vllm",
+    "endpoint": "http://vllm-deepseek-vl2:8000",
+    "model_id": "deepseek-ai/deepseek-vl2",
+    "family": "DeepSeek-VL2",
+    "priority": "P2"
+  },
+  {
+    "name": "molmo2-4b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-molmo2-4b:8000",
+    "model_id": "allenai/Molmo2-4B",
+    "family": "Molmo 2",
+    "priority": "P2"
+  },
+  {
+    "name": "molmo2-8b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-molmo2-8b:8000",
+    "model_id": "allenai/Molmo2-8B",
+    "family": "Molmo 2",
+    "priority": "P2"
+  },
+  {
+    "name": "molmo2-o-7b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-molmo2-o-7b:8000",
+    "model_id": "allenai/Molmo2-O-7B",
+    "family": "Molmo 2",
+    "priority": "P2"
+  },
+  {
+    "name": "aya-vision-8b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-aya-vision-8b:8000",
+    "model_id": "CohereLabs/aya-vision-8b",
+    "family": "Aya Vision",
+    "priority": "P2"
+  },
+  {
+    "name": "aya-vision-32b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-aya-vision-32b:8000",
+    "model_id": "CohereLabs/aya-vision-32b",
+    "family": "Aya Vision",
+    "priority": "P2"
+  }
+]
