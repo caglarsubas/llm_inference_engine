@@ -51,11 +51,11 @@ def _available_status(payload: dict[str, Any], model: str) -> tuple[bool, str]:
     return False, f"{model} is not present in /v1/models.data"
 
 
-def _chat_payload(model: str, image_url: str) -> dict[str, Any]:
+def _chat_payload(model: str, image_url: str, *, max_tokens: int) -> dict[str, Any]:
     return {
         "model": model,
         "temperature": 0,
-        "max_tokens": 256,
+        "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
         "messages": [
             {
@@ -102,6 +102,15 @@ def main() -> int:
     parser.add_argument("--model", default=os.environ.get("ENGINE_MODEL"))
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=int(os.environ.get("ENGINE_MAX_TOKENS", "768")),
+        help=(
+            "Completion token budget for strict JSON. Defaults to 768 because "
+            "256 truncates some local VLM/Ollama candidates."
+        ),
+    )
+    parser.add_argument(
         "--api-key",
         default=os.environ.get("ENGINE_API_KEY") or os.environ.get("ENGINE_TOKEN"),
         help="Bearer token for AUTH_ENABLED deployments.",
@@ -122,7 +131,7 @@ def main() -> int:
             print(reason, file=sys.stderr)
             return 2
 
-        payload = _chat_payload(args.model, _data_url(args.image))
+        payload = _chat_payload(args.model, _data_url(args.image), max_tokens=args.max_tokens)
         started = time.perf_counter()
         chat_response = client.post("/v1/chat/completions", json=payload)
         latency_ms = (time.perf_counter() - started) * 1000
@@ -143,6 +152,7 @@ def main() -> int:
         "model": args.model,
         "latency_ms": round(latency_ms, 2),
         "finish_reason": choice.get("finish_reason"),
+        "max_tokens": args.max_tokens,
         "usage": body.get("usage") or {},
         "parsed": parsed,
     }

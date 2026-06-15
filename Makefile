@@ -211,8 +211,9 @@ list-models:
 smoke:
 	uv run python scripts/smoke_test.py
 
+MAX_TOKENS ?= 768
 vlm-smoke:
-	uv run python scripts/vlm_strict_json_smoke.py --model $(MODEL) --image $(IMAGE)
+	uv run python scripts/vlm_strict_json_smoke.py --model $(MODEL) --image $(IMAGE) --max-tokens $(MAX_TOKENS)
 
 stress:
 	uv run python scripts/stress_test.py --requests 20 --concurrency 8 --models llama3.2:1b

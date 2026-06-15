@@ -101,6 +101,10 @@ vLLM/SGLang/NIM-compatible server must advertise from its own `/v1/models`.
 make vlm-smoke MODEL=qwen3-vl-8b-instruct:vllm IMAGE=/path/to/vehicle.jpg
 ```
 
+The smoke defaults to `max_tokens=768`. Override with `MAX_TOKENS=...` only
+when the benchmark intentionally needs a different budget; 256-token local
+smokes can truncate otherwise valid JSON for `gemma4:31b` and `qwen3.6:27b`.
+
 Only models that pass that smoke should be handed to the FraudGuard benchmark
 as exposed candidates.
 
