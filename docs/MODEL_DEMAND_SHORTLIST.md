@@ -108,6 +108,12 @@ smokes can truncate otherwise valid JSON for `gemma4:31b` and `qwen3.6:27b`.
 Only models that pass that smoke should be handed to the FraudGuard benchmark
 as exposed candidates.
 
+For Docker Model Runner upstreams, use the Docker-advertised model id in
+`.vllm_models.json`, for example
+`huggingface.co/qwen/qwen3-vl-8b-instruct:latest` for
+`qwen3-vl-8b-instruct:vllm`. The engine's `name`/`tag` stay stable for
+clients, while `model_id` must match the upstream exactly.
+
 ## Benchmark Exposure Status
 
 The current local endpoint exposes only installed local GGUF/MLX/Ollama
@@ -118,20 +124,21 @@ passes:
 
 | Family | Current status | Reason |
 |---|---|---|
-| Qwen3-VL exact family | Not exposed | No exact Qwen3-VL upstream is configured and probe-ready. Nearby `qwen3.6:27b` is a local Ollama fallback candidate, not the requested Qwen3-VL id. |
+| Qwen3-VL exact family | Partially exposed | `qwen3-vl-8b-instruct:vllm` is live through Docker Model Runner vLLM-Metal and passed the image + strict JSON smoke. Larger Qwen3-VL IDs still need upstream servers and smoke validation. Nearby `qwen3.6:27b` remains a local Ollama fallback candidate, not an exact Qwen3-VL id. |
 | GLM-V | Not exposed | No GLM-V upstream is configured and probe-ready. |
 | MiniCPM-V | Not exposed | No MiniCPM-V upstream is configured and probe-ready. |
 | InternVL | Not exposed | No InternVL upstream is configured and probe-ready. |
 | Llama 4 VLMs | Not exposed | No Llama 4 Scout/Maverick upstream is configured and probe-ready; license and hardware fit still need review. |
 | Kimi multimodal | Not exposed | No Kimi-VL/Kimi-K2.5 upstream is configured and probe-ready. |
 | DeepSeek-VL2 | Not exposed | No DeepSeek-VL2 upstream is configured and probe-ready. |
-| Molmo 2 | Not exposed | No Molmo 2 upstream is configured and probe-ready. |
+| Molmo 2 | Not exposed | `Molmo2-4B` can be pulled and listed by Docker Model Runner, but local vLLM-Metal load failed because the runner would need `trust_remote_code=True`; do not expose until actual inference smoke passes. |
 | Aya Vision | Not exposed | No Aya Vision upstream is configured and probe-ready; license requires production review. |
 
 Exposed local benchmark candidates:
 
 | Model id | Benchmark status |
 |---|---|
+| `qwen3-vl-8b-instruct:vllm` | Exact demanded Qwen3-VL candidate; Docker Model Runner vLLM-Metal upstream passed engine text JSON smoke and vehicle-image strict JSON smoke with `max_tokens=768`. |
 | `ministral-3:3b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
 | `ministral-3:8b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
 | `ministral-3:14b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |

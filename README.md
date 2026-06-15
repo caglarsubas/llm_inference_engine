@@ -756,6 +756,31 @@ upstream's own `/v1/models` response contains the exact `model_id`. If the
 endpoint is down or serving a different model, the id is reported under
 `/v1/models.unavailable` with an upstream reason until the next probe succeeds.
 
+On macOS with Docker Model Runner, use the host-side OpenAI base before `/v1`
+as the endpoint and the exact Docker-advertised id as `model_id`:
+
+```json
+[
+  {
+    "name": "qwen3-vl-8b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://127.0.0.1:12434/engines",
+    "model_id": "huggingface.co/qwen/qwen3-vl-8b-instruct:latest",
+    "size_bytes": 17530000000
+  }
+]
+```
+
+Validate the upstream directly first, then restart the native engine and run
+the image smoke before handing the id to downstream benchmarks:
+
+```bash
+docker model pull hf.co/Qwen/Qwen3-VL-8B-Instruct
+curl http://127.0.0.1:12434/engines/v1/models
+./scripts/native-service.sh restart engine
+make vlm-smoke MODEL=qwen3-vl-8b-instruct:vllm IMAGE=/path/to/vehicle.jpg
+```
+
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
 [`docs/MODEL_DEMAND_SHORTLIST.md`](docs/MODEL_DEMAND_SHORTLIST.md).
@@ -822,7 +847,7 @@ Clients then send `model: "llama-3.2-1b-instruct:vllm"` or `"llama-3.2-3b-instru
 
 #### Honest constraints
 
-- **vLLM doesn't run on Apple Silicon, macOS Docker Desktop, or pure-CPU containers.** It needs CUDA (or supported AMD/Intel GPUs). On the M5 Max laptop the user's working from, `make compose-vllm-up` will start the vLLM container which will then crash-loop trying to find a GPU. The engine itself stays up and serves local llama.cpp / MLX models normally; configured vLLM ids remain in `/v1/models.unavailable` until the upstream is reachable and advertises the configured `model_id`.
+- **The Compose vLLM overlay is CUDA-oriented.** `make compose-vllm-up` expects a Linux/WSL CUDA host with the NVIDIA Container Toolkit; it is still the production-style path for GPU-pinned vLLM services. On Apple Silicon/macOS Docker Desktop, use Docker Model Runner's host-side API when vLLM-Metal is available, and point `.vllm_models.json` at `http://127.0.0.1:12434/engines`. Model Runner may list models that still fail at load time, so keep the strict image JSON smoke as the final exposure gate.
 - **One model per vLLM process.** Multi-model = multiple vLLM containers on different ports + multiple `.vllm_models.json` entries. The engine is the multiplexer.
 - **No prefix-cache introspection on vLLM.** vLLM's PagedAttention is excellent but its OpenAI-compatible HTTP API doesn't expose per-call hit counts the way our local adapters do. `prefix_cache_*` properties on `VLLMAdapter` report `disabled` so the chat span attrs stay uniform across backends.
 - **Embeddings unsupported.** `VLLMAdapter.embed()` raises `EmbeddingsNotSupportedError`; `/v1/embeddings` against a vLLM model returns 501. Continue to use llama.cpp for embeddings (round 15) or wire a separate vLLM container with an embedding model + a custom adapter override.
