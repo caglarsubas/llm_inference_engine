@@ -751,6 +751,10 @@ Drop a `.vllm_models.json` (config path overridable via `VLLM_MODELS_FILE`) list
 
 Clients then send `model: "llama-3.2-1b-instruct:vllm"` and the engine routes through `VLLMAdapter` to the upstream. Mixing local and remote: a single engine instance can serve `llama3.2:1b` (Ollama GGUF, llama.cpp), `Llama-3.2-1B-Instruct-4bit:mlx` (MLX), and `llama-3.2-1b-instruct:vllm` (vLLM remote) at the same time — different `model` ids in the same registry, different adapters under the hood, identical observability surface.
 
+For the current FraudGuard vehicle-photo model demand shortlist, including
+local bakeoff candidates and VLM serving/evaluation requirements, see
+[`docs/MODEL_DEMAND_SHORTLIST.md`](docs/MODEL_DEMAND_SHORTLIST.md).
+
 #### Deployment — `make compose-vllm-up`
 
 `docker-compose.vllm.yml` overlays a vLLM service onto the engine compose stack:

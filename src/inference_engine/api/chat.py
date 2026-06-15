@@ -41,6 +41,7 @@ from ..schemas import (
     ToolCallFunction,
     ToolCallFunctionDelta,
     Usage,
+    chat_content_text,
 )
 from . import _auto_eval, _tool_audit
 from .state import app_state
@@ -297,7 +298,7 @@ def _last_user_prompt(messages: list[ChatMessage]) -> str:
     """
     for m in reversed(messages):
         if m.role == "user":
-            return m.content
+            return chat_content_text(m.content)
     return ""
 
 

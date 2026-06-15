@@ -259,7 +259,7 @@ backends.
 | Field             | Type                       | Default | Notes                                                            |
 |-------------------|----------------------------|---------|------------------------------------------------------------------|
 | `model`           | string (**required**)      | —       | An id from `/v1/models`.                                         |
-| `messages`        | array (**required**)       | —       | `{role, content}`; roles: `system`, `user`, `assistant`, `tool`. |
+| `messages`        | array (**required**)       | —       | `{role, content}`; roles: `system`, `user`, `assistant`, `tool`. `content` can be a string or OpenAI-style `text`/`image_url` parts for vision backends. |
 | `max_tokens`      | int                        | `512`   | Upper bound on generated tokens.                                 |
 | `temperature`     | float `0.0–2.0`            | `0.7`   | Higher = more random. Use `0` for deterministic-ish output.      |
 | `top_p`           | float `0.0–1.0`            | `0.95`  | Nucleus sampling.                                                |
@@ -271,6 +271,29 @@ backends.
 | `tools`           | array                      | `null`  | OpenAI tool definitions; only for `tool_calling_mode: native`.   |
 | `tool_choice`     | string or object           | `null`  | `"auto"`, `"none"`, or a specific function.                    |
 | `auto_eval`       | object                     | `null`  | Inline LLM-as-judge scoring (see below).                        |
+
+### Vision / multimodal content
+
+For VLM backends, send OpenAI-style content parts. The engine accepts the
+request shape and forwards it to HTTP backends such as vLLM/Ollama fallback;
+actual image understanding depends on the selected model and runtime.
+
+```bash
+curl -s "$BASE/chat/completions" \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3-vl-8b:vllm",
+    "temperature": 0,
+    "response_format": {"type": "json_object"},
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Assess this vehicle photo. Return JSON."},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,<base64>", "detail": "low"}}
+      ]
+    }]
+  }'
+```
 
 ### Streaming (SSE)
 
