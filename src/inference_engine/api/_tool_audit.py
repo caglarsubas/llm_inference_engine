@@ -26,7 +26,7 @@ from typing import Any
 
 from ..config import settings
 from ..observability import Span
-from ..schemas import ChatMessage
+from ..schemas import ChatContent, ChatMessage, chat_content_text
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +119,10 @@ def set_timing_store(store: ToolCallTimingStore | None) -> None:
     _timing_store = store
 
 
-def _truncate(value: str | None, *, cap: int) -> tuple[str, bool]:
+def _truncate(value: ChatContent | None, *, cap: int) -> tuple[str, bool]:
     if value is None:
         return "", False
+    value = chat_content_text(value)
     if len(value) <= cap:
         return value, False
     return value[:cap], True

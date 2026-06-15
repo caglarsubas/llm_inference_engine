@@ -53,7 +53,7 @@ from ..cancellation import Cancellation
 from ..config import settings
 from ..observability import get_logger
 from ..registry import ModelDescriptor
-from ..schemas import ChatMessage
+from ..schemas import ChatMessage, chat_content_text
 from .base import GenerationParams, GenerationResult, InferenceAdapter, StreamChunk
 
 log = get_logger("adapter.mlx")
@@ -189,12 +189,12 @@ class MLXAdapter(InferenceAdapter):
     # ------------------------------------------------------------------
 
     def _format_prompt(self, messages: Iterable[ChatMessage]) -> str:
-        chat = [{"role": m.role, "content": m.content} for m in messages]
+        chat = [{"role": m.role, "content": chat_content_text(m.content)} for m in messages]
         if hasattr(self._tokenizer, "apply_chat_template"):
             return self._tokenizer.apply_chat_template(
                 chat, tokenize=False, add_generation_prompt=True
             )
-        return "\n".join(f"{m.role}: {m.content}" for m in messages) + "\nassistant:"
+        return "\n".join(f"{m['role']}: {m['content']}" for m in chat) + "\nassistant:"
 
     def _tokenize(self, text: str) -> list[int]:
         return list(self._tokenizer.encode(text))

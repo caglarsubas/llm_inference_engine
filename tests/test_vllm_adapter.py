@@ -224,6 +224,52 @@ async def test_generate_round_trip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_passes_multimodal_content_parts_through() -> None:
+    """VLM callers use OpenAI content parts; vLLM should receive them unchanged."""
+    captured: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(req.content))
+        return httpx.Response(200, json=_ok_chat_response(content='{"vehicle_visible":true}'))
+
+    adapter = VLLMAdapter()
+    await adapter.load(_make_descriptor(model_id="Qwen/Qwen3-VL-8B-Instruct"))
+    _install_transport(adapter, handler)
+
+    await adapter.generate(
+        [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Inspect this vehicle photo and return JSON."},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==",
+                            "detail": "low",
+                        },
+                    },
+                ],
+            )
+        ],
+        GenerationParams(max_tokens=64, temperature=0.0, json_mode=True),
+    )
+
+    assert captured[0]["model"] == "Qwen/Qwen3-VL-8B-Instruct"
+    assert captured[0]["response_format"] == {"type": "json_object"}
+    assert captured[0]["messages"][0]["content"] == [
+        {"type": "text", "text": "Inspect this vehicle photo and return JSON."},
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==",
+                "detail": "low",
+            },
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_generate_passes_tool_calls_through() -> None:
     """A request with tool_calls in the assistant message should round-trip
     cleanly (vLLM reads them just like OpenAI does)."""

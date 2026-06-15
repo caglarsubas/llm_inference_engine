@@ -44,7 +44,7 @@ from ..cancellation import Cancellation
 from ..config import settings
 from ..observability import get_logger
 from ..registry import ModelDescriptor
-from ..schemas import ChatMessage
+from ..schemas import ChatMessage, dump_chat_content
 from .base import (
     ContextLengthExceededError,
     EmbeddingResult,
@@ -352,7 +352,7 @@ class LlamaCppAdapter(InferenceAdapter):
     def _to_llama_messages(cls, messages: Iterable[ChatMessage]) -> list[dict]:
         out: list[dict] = []
         for m in messages:
-            entry: dict = {"role": m.role, "content": m.content}
+            entry: dict = {"role": m.role, "content": dump_chat_content(m.content)}
             if m.tool_calls is not None:
                 entry["tool_calls"] = [
                     {

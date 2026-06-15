@@ -30,9 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
-import statistics
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -178,7 +176,7 @@ def _print_report(report: _Report, *, stream: bool, concurrency: int) -> None:
     total = len(report.outcomes)
     ok_count = sum(1 for o in report.outcomes if o.ok)
     print()
-    print(f"=== summary ===")
+    print("=== summary ===")
     print(f"  concurrency={concurrency}  total={total}  ok={ok_count}  err={total - ok_count}  wall={wall:.2f}s")
 
     for model, items in by_model.items():

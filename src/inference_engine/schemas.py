@@ -5,7 +5,7 @@ Kept narrow on purpose — only the fields we actually serve. Add more as adapte
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
@@ -50,12 +50,51 @@ class ToolCall(BaseModel):
     function: ToolCallFunction
 
 
+class ChatTextContentPart(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ChatImageUrl(BaseModel):
+    url: str
+    detail: Literal["auto", "low", "high"] | None = None
+
+
+class ChatImageUrlContentPart(BaseModel):
+    type: Literal["image_url"]
+    image_url: ChatImageUrl
+
+
+ChatContentPart = Annotated[
+    ChatTextContentPart | ChatImageUrlContentPart,
+    Field(discriminator="type"),
+]
+ChatContent = str | list[ChatContentPart]
+
+
+def dump_chat_content(content: ChatContent | None):
+    """Return OpenAI-compatible chat content for backend request bodies."""
+    if isinstance(content, list):
+        return [part.model_dump(exclude_none=True) for part in content]
+    return content
+
+
+def chat_content_text(content: ChatContent | None) -> str:
+    """Extract only textual content from OpenAI chat content parts."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    return "\n".join(part.text for part in content if isinstance(part, ChatTextContentPart))
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     # Content is optional — assistant messages with only tool_calls have null
     # content, and tool result messages obviously have content but in JSON or
-    # plain text form.
-    content: str | None = None
+    # plain text form. User messages can also carry OpenAI-style multimodal
+    # content parts for VLM backends.
+    content: ChatContent | None = None
     # OpenAI extension for reasoning models (o-series, DeepSeek-R1, Nemotron).
     reasoning_content: str | None = None
     # Set on assistant messages that include function/tool invocations.
