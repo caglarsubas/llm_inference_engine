@@ -19,8 +19,9 @@
 #
 # So this overlay is meant for Linux GPU hosts. On a laptop without a GPU it
 # will fail with a clear error from vLLM at startup; the engine itself stays
-# up and serves the local llama.cpp / MLX models normally — vLLM-routed
-# requests will return 503 until vllm comes up.
+# up and serves the local llama.cpp / MLX models normally. Configured vLLM ids
+# remain in /v1/models.unavailable until vLLM comes up and lists the exact
+# configured model_id from its own /v1/models endpoint.
 #
 # Multi-model
 # -----------

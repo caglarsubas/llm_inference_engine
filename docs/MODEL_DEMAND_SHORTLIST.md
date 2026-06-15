@@ -8,8 +8,8 @@ served by this engine. Keep three states separate:
 
 - **installed**: appears from `uv run python scripts/list_models.py` or
   `GET /v1/models`.
-- **configured**: has a runtime endpoint, for example an entry in
-  `.vllm_models.json`.
+- **configured**: has a runtime endpoint in `.vllm_models.json`, and that
+  upstream's own `/v1/models` response lists the exact `model_id`.
 - **validated**: passes the same image-input and strict-JSON bakeoff harness
   as the production application.
 
@@ -52,24 +52,77 @@ text/reasoning baselines while still not being the final image-native model.
 | P2 | NVIDIA Nemotron VL | `Llama Nemotron Nano VL`, `Nemotron Nano V2 VL`, current `nemotron3:33b` | Enterprise/document-heavy VLM line; useful baseline if NVIDIA NIM is already in the stack. |
 | P2 | Aya Vision | `Aya Vision 8B`, `Aya Vision 32B` | Multilingual vision-language baseline; license must be reviewed before production use. |
 
+## Exact Provisioning IDs
+
+Copy entries from `.vllm_models.demanded.example.json` into the deployment's
+real `.vllm_models.json` only after each upstream server is running. The engine
+model id is what clients pass to this service; the upstream model id is what the
+vLLM/SGLang/NIM-compatible server must advertise from its own `/v1/models`.
+
+| Priority | Engine model id | Upstream model id |
+|---|---|---|
+| P0 | `qwen3-vl-8b-instruct:vllm` | `Qwen/Qwen3-VL-8B-Instruct` |
+| P0 | `qwen3-vl-32b-instruct:vllm` | `Qwen/Qwen3-VL-32B-Instruct` |
+| P0 | `qwen3-vl-30b-a3b-instruct:vllm` | `Qwen/Qwen3-VL-30B-A3B-Instruct` |
+| P0 | `qwen3-vl-235b-a22b-instruct:vllm` | `Qwen/Qwen3-VL-235B-A22B-Instruct` |
+| P0 | `glm-4.6v-flash:vllm` | `zai-org/GLM-4.6V-Flash` |
+| P0 | `glm-4.6v:vllm` | `zai-org/GLM-4.6V` |
+| P0 | `glm-4.5v:vllm` | `zai-org/GLM-4.5V` |
+| P0 | `glm-4.1v-9b-thinking:vllm` | `zai-org/GLM-4.1V-9B-Thinking` |
+| P0 | `minicpm-v-4.5:vllm` | `openbmb/MiniCPM-V-4_5` |
+| P0 | `minicpm-v-4.6:vllm` | `openbmb/MiniCPM-V-4.6` |
+| P0 | `internvl3.5-8b:vllm` | `OpenGVLab/InternVL3_5-8B` |
+| P0 | `internvl3.5-20b-a4b-preview:vllm` | `OpenGVLab/InternVL3_5-20B-A4B-Preview` |
+| P0 | `internvl3.5-241b-a28b:vllm` | `OpenGVLab/InternVL3_5-241B-A28B` |
+| P1 | `llama-4-scout-17b-16e-instruct:vllm` | `meta-llama/Llama-4-Scout-17B-16E-Instruct` |
+| P1 | `llama-4-maverick-17b-128e-instruct:vllm` | `meta-llama/Llama-4-Maverick-17B-128E-Instruct` |
+| P1 | `kimi-vl-a3b-instruct:vllm` | `moonshotai/Kimi-VL-A3B-Instruct` |
+| P1 | `kimi-k2.5:vllm` | `moonshotai/Kimi-K2.5` |
+| P2 | `deepseek-vl2-tiny:vllm` | `deepseek-ai/deepseek-vl2-tiny` |
+| P2 | `deepseek-vl2-small:vllm` | `deepseek-ai/deepseek-vl2-small` |
+| P2 | `deepseek-vl2:vllm` | `deepseek-ai/deepseek-vl2` |
+| P2 | `molmo2-4b:vllm` | `allenai/Molmo2-4B` |
+| P2 | `molmo2-8b:vllm` | `allenai/Molmo2-8B` |
+| P2 | `molmo2-o-7b:vllm` | `allenai/Molmo2-O-7B` |
+| P2 | `aya-vision-8b:vllm` | `CohereLabs/aya-vision-8b` |
+| P2 | `aya-vision-32b:vllm` | `CohereLabs/aya-vision-32b` |
+
+## Honest Rollout Gates
+
+1. Start one upstream model server on suitable hardware.
+2. Confirm that upstream returns the exact `model_id` from `GET /v1/models`.
+3. Copy only that entry into the live `.vllm_models.json`.
+4. Restart or reload this engine.
+5. Confirm this engine lists the model under `GET /v1/models.data`, not
+   `unavailable`.
+6. Run the strict vehicle-image smoke:
+
+```bash
+make vlm-smoke MODEL=qwen3-vl-8b-instruct:vllm IMAGE=/path/to/vehicle.jpg
+```
+
+Only models that pass that smoke should be handed to the FraudGuard benchmark
+as exposed candidates.
+
 ## Benchmark Exposure Status
 
 The current local endpoint exposes only installed local GGUF/MLX/Ollama
 fallback models plus any operator-configured vLLM upstreams. The following
-priority families are intentionally **not** exposed until an operator installs
-weights and configures a serving backend:
+priority families are intentionally **not** exposed in `/v1/models.data` until
+an operator installs weights, starts a serving backend, and the upstream probe
+passes:
 
 | Family | Current status | Reason |
 |---|---|---|
-| Qwen3-VL exact family | Not exposed | No exact Qwen3-VL weights are installed or configured. Nearby `qwen3.6:27b` is a local Ollama fallback candidate, not the requested Qwen3-VL id. |
-| GLM-V | Not exposed | No GLM-V weights are installed or configured. |
-| MiniCPM-V | Not exposed | No MiniCPM-V weights are installed or configured. |
-| InternVL | Not exposed | No InternVL weights are installed or configured. |
-| Llama 4 VLMs | Not exposed | No Llama 4 Scout/Maverick weights are installed; license and hardware fit still need review. |
-| Kimi multimodal | Not exposed | No Kimi-VL/Kimi-K2.5 weights are installed or configured. |
-| DeepSeek-VL2 | Not exposed | No DeepSeek-VL2 weights are installed or configured. |
-| Molmo 2 | Not exposed | No Molmo 2 weights are installed or configured. |
-| Aya Vision | Not exposed | No Aya Vision weights are installed; license requires production review. |
+| Qwen3-VL exact family | Not exposed | No exact Qwen3-VL upstream is configured and probe-ready. Nearby `qwen3.6:27b` is a local Ollama fallback candidate, not the requested Qwen3-VL id. |
+| GLM-V | Not exposed | No GLM-V upstream is configured and probe-ready. |
+| MiniCPM-V | Not exposed | No MiniCPM-V upstream is configured and probe-ready. |
+| InternVL | Not exposed | No InternVL upstream is configured and probe-ready. |
+| Llama 4 VLMs | Not exposed | No Llama 4 Scout/Maverick upstream is configured and probe-ready; license and hardware fit still need review. |
+| Kimi multimodal | Not exposed | No Kimi-VL/Kimi-K2.5 upstream is configured and probe-ready. |
+| DeepSeek-VL2 | Not exposed | No DeepSeek-VL2 upstream is configured and probe-ready. |
+| Molmo 2 | Not exposed | No Molmo 2 upstream is configured and probe-ready. |
+| Aya Vision | Not exposed | No Aya Vision upstream is configured and probe-ready; license requires production review. |
 
 Exposed local benchmark candidates:
 
@@ -149,7 +202,9 @@ Required benchmark log fields:
 - vLLM and SGLang candidates need CUDA-class server hardware; this repo's
   local Mac path is still useful for GGUF/MLX baselines.
 - Add `.vllm_models.json` entries only after the upstream model server exists.
-  The engine is the multiplexer; one vLLM process usually serves one model.
+  If a manifest gets ahead of runtime by accident, the engine keeps that id in
+  `unavailable` until the upstream `/v1/models` probe succeeds. The engine is
+  the multiplexer; one vLLM process usually serves one model.
 - The candidate list came from the application demand. Before production,
   verify each model id, license, model-card safety limits, context length,
   quantization availability, and image-input support against the upstream

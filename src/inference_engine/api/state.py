@@ -21,6 +21,7 @@ from ..registry import (
     OllamaRegistry,
     VLLMRegistry,
     get_probe,
+    get_vllm_probe,
 )
 
 
@@ -77,11 +78,14 @@ class AppState:
         # Probe-aware resolver: for each model id, walk sources in order and
         # pick the first descriptor whose adapter would actually load.  GGUFs
         # are checked via the load probe (gemma4 etc. fail here and fall
-        # through to ollama_http); non-GGUFs trust the source.  This keeps
-        # ``manager.get(id)`` and ``/v1/models`` agreeing on what's reachable.
+        # through to ollama_http); vLLM descriptors must also be present on
+        # the upstream's own /v1/models surface. This keeps ``manager.get(id)``
+        # and ``/v1/models`` agreeing on what's reachable.
         def _accept(desc: ModelDescriptor) -> bool:
             if desc.format == "gguf":
                 return get_probe().probe(desc).loadable
+            if desc.format == "vllm":
+                return get_vllm_probe().probe(desc).loadable
             return True
 
         self._accept = _accept
