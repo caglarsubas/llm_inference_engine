@@ -1,4 +1,4 @@
-from inference_engine.api.chat import _last_user_prompt
+from inference_engine.api.chat import _last_user_prompt, _repair_json_mode_content
 from inference_engine.schemas import ChatMessage, chat_content_text
 
 
@@ -27,3 +27,30 @@ def test_last_user_prompt_uses_text_parts_for_auto_eval_prompt() -> None:
     ]
 
     assert _last_user_prompt(messages) == "Find anomalies."
+
+
+def test_json_mode_repair_strips_trailing_code_fence_residue() -> None:
+    raw = (
+        '{\n'
+        '  "vehicle_visible": true,\n'
+        '  "damage_visible": true,\n'
+        '  "anomaly_score": 0.92,\n'
+        '  "confidence": 0.95\n'
+        '}\n'
+        '```'
+    )
+
+    assert _repair_json_mode_content(raw) == (
+        '{\n'
+        '  "vehicle_visible": true,\n'
+        '  "damage_visible": true,\n'
+        '  "anomaly_score": 0.92,\n'
+        '  "confidence": 0.95\n'
+        '}'
+    )
+
+
+def test_json_mode_repair_keeps_malformed_payload_unchanged() -> None:
+    raw = '{"vehicle_visible": true'
+
+    assert _repair_json_mode_content(raw) == raw

@@ -52,6 +52,36 @@ text/reasoning baselines while still not being the final image-native model.
 | P2 | NVIDIA Nemotron VL | `Llama Nemotron Nano VL`, `Nemotron Nano V2 VL`, current `nemotron3:33b` | Enterprise/document-heavy VLM line; useful baseline if NVIDIA NIM is already in the stack. |
 | P2 | Aya Vision | `Aya Vision 8B`, `Aya Vision 32B` | Multilingual vision-language baseline; license must be reviewed before production use. |
 
+## Benchmark Exposure Status
+
+The current local endpoint exposes only installed local GGUF/MLX/Ollama
+fallback models plus any operator-configured vLLM upstreams. The following
+priority families are intentionally **not** exposed until an operator installs
+weights and configures a serving backend:
+
+| Family | Current status | Reason |
+|---|---|---|
+| Qwen3-VL exact family | Not exposed | No exact Qwen3-VL weights are installed or configured. Nearby `qwen3.6:27b` is a local Ollama fallback candidate, not the requested Qwen3-VL id. |
+| GLM-V | Not exposed | No GLM-V weights are installed or configured. |
+| MiniCPM-V | Not exposed | No MiniCPM-V weights are installed or configured. |
+| InternVL | Not exposed | No InternVL weights are installed or configured. |
+| Llama 4 VLMs | Not exposed | No Llama 4 Scout/Maverick weights are installed; license and hardware fit still need review. |
+| Kimi multimodal | Not exposed | No Kimi-VL/Kimi-K2.5 weights are installed or configured. |
+| DeepSeek-VL2 | Not exposed | No DeepSeek-VL2 weights are installed or configured. |
+| Molmo 2 | Not exposed | No Molmo 2 weights are installed or configured. |
+| Aya Vision | Not exposed | No Aya Vision weights are installed; license requires production review. |
+
+Exposed local benchmark candidates:
+
+| Model id | Benchmark status |
+|---|---|
+| `ministral-3:3b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
+| `ministral-3:8b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
+| `ministral-3:14b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
+| `gemma4:31b` | Image + strict JSON smoke validated through the engine after the Ollama empty-response retry. |
+| `qwen3.6:27b` | Image + strict JSON smoke validated through the engine after empty-response retry and JSON fence cleanup; nearby local candidate, not an exact Qwen3-VL id. |
+| `nemotron3:33b` | Unsuitable for this image-scoring benchmark shape today: it remains empty after the Ollama empty-response retry. Keep it out of the strict JSON benchmark until its image prompt path is fixed upstream or replaced with a dedicated Nemotron VL id. |
+
 ## Serving Contract
 
 Expose each validated candidate through the engine's OpenAI-compatible
