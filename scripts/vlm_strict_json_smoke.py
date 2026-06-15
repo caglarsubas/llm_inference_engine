@@ -96,6 +96,38 @@ def _parse_json_content(content: str) -> dict[str, Any]:
     return parsed
 
 
+def _expectation_errors(
+    parsed: dict[str, Any],
+    *,
+    expect_vehicle_visible: bool | None = None,
+    expect_damage_visible: bool | None = None,
+    require_reasons: bool = False,
+    min_anomaly_score: float | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    if expect_vehicle_visible is not None and bool(parsed.get("vehicle_visible")) is not expect_vehicle_visible:
+        errors.append(
+            f"vehicle_visible expected {expect_vehicle_visible}, got {parsed.get('vehicle_visible')!r}"
+        )
+    if expect_damage_visible is not None and bool(parsed.get("damage_visible")) is not expect_damage_visible:
+        errors.append(
+            f"damage_visible expected {expect_damage_visible}, got {parsed.get('damage_visible')!r}"
+        )
+    if require_reasons:
+        reasons = parsed.get("reasons")
+        if not isinstance(reasons, list) or not reasons:
+            errors.append("reasons expected a non-empty list")
+    if min_anomaly_score is not None:
+        try:
+            anomaly_score = float(parsed.get("anomaly_score"))
+        except (TypeError, ValueError):
+            errors.append(f"anomaly_score expected numeric, got {parsed.get('anomaly_score')!r}")
+        else:
+            if anomaly_score < min_anomaly_score:
+                errors.append(f"anomaly_score expected >= {min_anomaly_score}, got {anomaly_score}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.environ.get("ENGINE_URL", DEFAULT_BASE_URL))
@@ -114,6 +146,27 @@ def main() -> int:
         "--api-key",
         default=os.environ.get("ENGINE_API_KEY") or os.environ.get("ENGINE_TOKEN"),
         help="Bearer token for AUTH_ENABLED deployments.",
+    )
+    parser.add_argument(
+        "--expect-vehicle-visible",
+        action="store_true",
+        help="Fail if the parsed JSON does not set vehicle_visible to true.",
+    )
+    parser.add_argument(
+        "--expect-damage-visible",
+        action="store_true",
+        help="Fail if the parsed JSON does not set damage_visible to true.",
+    )
+    parser.add_argument(
+        "--require-reasons",
+        action="store_true",
+        help="Fail if the parsed JSON does not include a non-empty reasons array.",
+    )
+    parser.add_argument(
+        "--min-anomaly-score",
+        type=float,
+        default=None,
+        help="Fail if anomaly_score is below this value.",
     )
     args = parser.parse_args()
 
@@ -135,7 +188,16 @@ def main() -> int:
         started = time.perf_counter()
         chat_response = client.post("/v1/chat/completions", json=payload)
         latency_ms = (time.perf_counter() - started) * 1000
-        chat_response.raise_for_status()
+        try:
+            chat_response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            print(
+                f"strict JSON smoke failed: chat returned HTTP "
+                f"{exc.response.status_code}",
+                file=sys.stderr,
+            )
+            print(exc.response.text[:1000], file=sys.stderr)
+            return 3
         body = chat_response.json()
 
     choice = (body.get("choices") or [{}])[0]
@@ -147,6 +209,18 @@ def main() -> int:
         print(f"strict JSON smoke failed: {exc}", file=sys.stderr)
         print(content[:1000], file=sys.stderr)
         return 3
+
+    errors = _expectation_errors(
+        parsed,
+        expect_vehicle_visible=True if args.expect_vehicle_visible else None,
+        expect_damage_visible=True if args.expect_damage_visible else None,
+        require_reasons=args.require_reasons,
+        min_anomaly_score=args.min_anomaly_score,
+    )
+    if errors:
+        print(f"strict JSON content smoke failed: {'; '.join(errors)}", file=sys.stderr)
+        print(json.dumps(parsed, indent=2, sort_keys=True), file=sys.stderr)
+        return 4
 
     result = {
         "model": args.model,
