@@ -64,12 +64,33 @@ from .base import (
 
 log = get_logger("adapter.ollama_http")
 
+_JSON_RETRY_MIN_TOKENS = 256
+_JSON_RETRY_SYSTEM_PROMPT = (
+    "Return only one compact valid JSON object. Follow the user requested "
+    "schema and keys exactly. Do not include markdown, prose, or code fences."
+)
+
 
 def _chat_timeout() -> httpx.Timeout:
     seconds = settings.chat_completion_timeout_seconds
     if seconds <= 0:
         return httpx.Timeout(None)
     return httpx.Timeout(seconds)
+
+
+def _has_image_content(messages: list[dict]) -> bool:
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                return True
+    return False
+
+
+def _prepend_json_retry_prompt(messages: list[dict]) -> list[dict]:
+    return [{"role": "system", "content": _JSON_RETRY_SYSTEM_PROMPT}, *messages]
 
 
 class OllamaHttpAdapter(InferenceAdapter):
@@ -203,6 +224,7 @@ class OllamaHttpAdapter(InferenceAdapter):
             "messages": self._to_messages(messages),
             "stream": False,
         }
+        should_retry_empty_json = params.json_mode and _has_image_content(body["messages"])
         assert self._client is not None
         try:
             r = await self._client.post("/v1/chat/completions", json=body)
@@ -210,6 +232,27 @@ class OllamaHttpAdapter(InferenceAdapter):
         except httpx.TimeoutException as exc:
             raise self._timeout_error() from exc
         data = r.json()
+
+        if should_retry_empty_json and self._content_from_response(data) == "":
+            retry_body = dict(body)
+            retry_body.pop("response_format", None)
+            retry_body["max_tokens"] = max(
+                int(retry_body.get("max_tokens") or 0),
+                _JSON_RETRY_MIN_TOKENS,
+            )
+            retry_body["messages"] = _prepend_json_retry_prompt(body["messages"])
+            log.warning(
+                "ollama_http.retry_empty_multimodal_json",
+                model=self._model_id,
+                original_max_tokens=body.get("max_tokens"),
+                retry_max_tokens=retry_body["max_tokens"],
+            )
+            try:
+                r = await self._client.post("/v1/chat/completions", json=retry_body)
+                r.raise_for_status()
+            except httpx.TimeoutException as exc:
+                raise self._timeout_error() from exc
+            data = r.json()
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -223,6 +266,12 @@ class OllamaHttpAdapter(InferenceAdapter):
             completion_tokens=int(usage.get("completion_tokens", 0)),
             tool_calls=list(tool_calls) if tool_calls else None,
         )
+
+    @staticmethod
+    def _content_from_response(data: dict) -> str:
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        return (message.get("content") or "").strip()
 
     async def stream(
         self,

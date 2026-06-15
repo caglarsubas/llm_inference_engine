@@ -274,8 +274,11 @@ def _normalize_blocking_result(
         tools_requested=bool(params.tools),
         expects_reasoning_prelude=expects_reasoning_prelude,
     )
+    content = normalized.content or ""
+    if params.json_mode and content:
+        content = _repair_json_mode_content(content)
     if (
-        normalized.content == result.text
+        content == result.text
         and normalized.tool_calls == result.tool_calls
         and normalized.reasoning_content is None
         and normalized.finish_reason == result.finish_reason
@@ -283,11 +286,55 @@ def _normalize_blocking_result(
         return result
     return replace(
         result,
-        text=normalized.content or "",
+        text=content,
         finish_reason=normalized.finish_reason,
         tool_calls=normalized.tool_calls,
         reasoning_content=normalized.reasoning_content or result.reasoning_content,
     )
+
+
+def _repair_json_mode_content(text: str) -> str:
+    """Return a parseable JSON payload when only fence residue surrounds it.
+
+    Some local VLMs satisfy a JSON prompt but leave a stray closing code fence
+    after the object. In JSON mode, keep the object and discard only that
+    non-JSON residue. Do not invent JSON when the payload itself is malformed.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return text
+    try:
+        json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    else:
+        return stripped
+
+    candidates = [stripped]
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        fenced = "\n".join(lines).strip()
+        if fenced:
+            candidates.append(fenced)
+
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        for marker in ("{", "["):
+            start = candidate.find(marker)
+            if start < 0:
+                continue
+            try:
+                _, end = decoder.raw_decode(candidate[start:])
+            except json.JSONDecodeError:
+                continue
+            suffix = candidate[start + end :].strip()
+            if suffix in ("", "```"):
+                return candidate[start : start + end].strip()
+    return text
 
 
 def _last_user_prompt(messages: list[ChatMessage]) -> str:
