@@ -124,7 +124,7 @@ passes:
 
 | Family | Current status | Reason |
 |---|---|---|
-| Qwen3-VL exact family | Partially exposed | `qwen3-vl-8b-instruct:vllm` is live through Docker Model Runner vLLM-Metal and passed the image + strict JSON smoke. Larger Qwen3-VL IDs still need upstream servers and smoke validation. Nearby `qwen3.6:27b` remains a local Ollama fallback candidate, not an exact Qwen3-VL id. |
+| Qwen3-VL exact family | Not exposed | The current Docker Model Runner artifact `huggingface.co/qwen/qwen3-vl-8b-instruct:latest` is reachable and can caption a full-size PNG in free text, but it fails FraudGuard's image-grounded strict JSON contract: resized 512/768px image data URLs are interpreted as blank/blue, and strict JSON prompts return `vehicle_visible=false`, `damage_visible=false`, empty `reasons`, and `anomaly_score=0.0` for a known damaged-vehicle photo. Keep `qwen3-vl-8b-instruct:vllm` out of `/v1/models.data` until a serving artifact passes the direct-upstream and engine-level content smoke. Nearby `qwen3.6:27b` remains a local Ollama fallback candidate, not an exact Qwen3-VL id. |
 | GLM-V | Not exposed | No GLM-V upstream is configured and probe-ready. |
 | MiniCPM-V | Partially exposed | `minicpm-v-4.5-gguf-q4-k-m:dmr` is live through a locally packaged Docker Model Runner llama.cpp GGUF plus multimodal projector and passed the vehicle-image strict JSON smoke. Full upstream `openbmb/MiniCPM-V-4_5` / `MiniCPM-V-4.6` vLLM-style IDs still need dedicated upstream servers and smoke validation. |
 | InternVL | Not exposed | No InternVL upstream is configured and probe-ready. |
@@ -138,7 +138,6 @@ Exposed local benchmark candidates:
 
 | Model id | Benchmark status |
 |---|---|
-| `qwen3-vl-8b-instruct:vllm` | Exact demanded Qwen3-VL candidate; Docker Model Runner vLLM-Metal upstream passed engine text JSON smoke and vehicle-image strict JSON smoke with `max_tokens=768`. |
 | `minicpm-v-4.5-gguf-q4-k-m:dmr` | Priority-list MiniCPM-V candidate; locally packaged `openbmb/MiniCPM-V-4_5-gguf` Q4_K_M with `mmproj-model-f16.gguf`, served by Docker Model Runner llama.cpp with `chat_template_kwargs.enable_thinking=false`, and passed vehicle-image strict JSON smoke with `max_tokens=768`. |
 | `ministral-3:3b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
 | `ministral-3:8b` | Image + strict JSON smoke validated in the FraudGuard endpoint report. |
@@ -160,6 +159,27 @@ Required request behavior:
 - Run the benchmark at fixed `temperature: 0`, fixed prompt, and fixed image
   preprocessing.
 - Return a stable model id from `GET /v1/models`; clients must not guess names.
+
+Before handing a model to FraudGuard, run both content-aware smokes on a known
+vehicle-damage image. These checks fail if the model merely returns parseable
+but visually blind JSON:
+
+```bash
+uv run python scripts/vlm_strict_json_smoke.py \
+  --base-url http://127.0.0.1:12434/engines \
+  --model huggingface.co/qwen/qwen3-vl-8b-instruct:latest \
+  --image /path/to/known-damaged-vehicle.png \
+  --expect-vehicle-visible \
+  --expect-damage-visible \
+  --require-reasons
+
+ENGINE_API_KEY=<key> uv run python scripts/vlm_strict_json_smoke.py \
+  --model qwen3-vl-8b-instruct:vllm \
+  --image /path/to/known-damaged-vehicle.png \
+  --expect-vehicle-visible \
+  --expect-damage-visible \
+  --require-reasons
+```
 
 Example vision request:
 
@@ -220,6 +240,11 @@ Required benchmark log fields:
 - For OpenAI-compatible upstreams that need model-specific template switches,
   set `chat_template_kwargs` on that model's `.vllm_models.json` entry so
   clients do not need to remember per-model runtime knobs.
+- OpenAI `data:image/...;base64,...` URLs are supported by the engine adapter.
+  Do not treat Qwen3-VL's current failure as a generic data-URL issue:
+  MiniCPM-V receives the same image-part shape correctly, and the Qwen artifact
+  can caption a full-size PNG in free text. Its failure is the current
+  Docker Model Runner/Qwen strict-JSON and resized-image path.
 - The candidate list came from the application demand. Before production,
   verify each model id, license, model-card safety limits, context length,
   quantization availability, and image-input support against the upstream
