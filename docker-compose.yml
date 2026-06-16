@@ -121,6 +121,18 @@ services:
       # disables the fallback (engine will mark unsupported models as
       # ``unavailable`` instead of routing them to ollama).
       OLLAMA_HTTP_ENDPOINT: ${OLLAMA_HTTP_ENDPOINT:-http://ollama:11434}
+      # Tenant-aware admission/scheduling. Keeps fairness in front of backend
+      # locks while the LB handles cross-replica routing.
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_GLOBAL_MAX_IN_FLIGHT: ${SCHEDULER_GLOBAL_MAX_IN_FLIGHT:-32}
+      SCHEDULER_TENANT_RESERVED_IN_FLIGHT: ${SCHEDULER_TENANT_RESERVED_IN_FLIGHT:-2}
+      SCHEDULER_RESOURCE_MAX_IN_FLIGHT: ${SCHEDULER_RESOURCE_MAX_IN_FLIGHT:-1}
+      SCHEDULER_VLLM_RESOURCE_MAX_IN_FLIGHT: ${SCHEDULER_VLLM_RESOURCE_MAX_IN_FLIGHT:-8}
+      SCHEDULER_MAX_QUEUE_PER_TENANT: ${SCHEDULER_MAX_QUEUE_PER_TENANT:-64}
+      SCHEDULER_QUEUE_TIMEOUT_SECONDS: ${SCHEDULER_QUEUE_TIMEOUT_SECONDS:-30}
+      SCHEDULER_RETRY_AFTER_SECONDS: ${SCHEDULER_RETRY_AFTER_SECONDS:-2}
+      SCHEDULER_WAIT_AGING_PRIORITY_PER_SECOND: ${SCHEDULER_WAIT_AGING_PRIORITY_PER_SECOND:-0.5}
+      SCHEDULER_TENANT_FAIRNESS_WEIGHT: ${SCHEDULER_TENANT_FAIRNESS_WEIGHT:-2.0}
     volumes:
       # Models are mounted read-only from the host. Override the host path
       # via OLLAMA_MODELS_HOST_DIR / MLX_MODELS_HOST_DIR in your .env.

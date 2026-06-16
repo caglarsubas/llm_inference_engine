@@ -15,6 +15,10 @@ from .state import app_state
 router = APIRouter()
 
 
+def _label_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
 @router.get("/v1/metrics", response_class=PlainTextResponse)
 async def metrics() -> str:
     lines: list[str] = []
@@ -52,5 +56,55 @@ async def metrics() -> str:
         labels = f'{{model="{name}",backend="{adapter.backend_name}"}}'
         lines.append(f"inference_engine_prefix_cache_capacity_bytes{labels} {cap}")
         lines.append(f"inference_engine_prefix_cache_size_bytes{labels} {size}")
+
+    sched = app_state.scheduler.snapshot()
+    lines.append("# HELP inference_engine_scheduler_enabled Tenant scheduler enabled flag.")
+    lines.append("# TYPE inference_engine_scheduler_enabled gauge")
+    lines.append(f"inference_engine_scheduler_enabled {1 if sched.enabled else 0}")
+    lines.append("# HELP inference_engine_scheduler_queued Requests waiting in tenant queues.")
+    lines.append("# TYPE inference_engine_scheduler_queued gauge")
+    lines.append(f"inference_engine_scheduler_queued {sched.total_queued}")
+    lines.append("# HELP inference_engine_scheduler_in_flight Requests currently holding scheduler slots.")
+    lines.append("# TYPE inference_engine_scheduler_in_flight gauge")
+    lines.append(f"inference_engine_scheduler_in_flight {sched.total_in_flight}")
+    lines.append("# HELP inference_engine_scheduler_accepted_total Requests accepted into scheduler queues.")
+    lines.append("# TYPE inference_engine_scheduler_accepted_total counter")
+    lines.append(f"inference_engine_scheduler_accepted_total {sched.accepted_total}")
+    lines.append("# HELP inference_engine_scheduler_rejected_total Requests rejected by tenant admission.")
+    lines.append("# TYPE inference_engine_scheduler_rejected_total counter")
+    lines.append(f"inference_engine_scheduler_rejected_total {sched.rejected_total}")
+    lines.append("# HELP inference_engine_scheduler_timed_out_total Requests timed out waiting for scheduler capacity.")
+    lines.append("# TYPE inference_engine_scheduler_timed_out_total counter")
+    lines.append(f"inference_engine_scheduler_timed_out_total {sched.timed_out_total}")
+    lines.append("# HELP inference_engine_scheduler_completed_total Requests released from scheduler slots.")
+    lines.append("# TYPE inference_engine_scheduler_completed_total counter")
+    lines.append(f"inference_engine_scheduler_completed_total {sched.completed_total}")
+    lines.append("# HELP inference_engine_scheduler_wait_seconds_total Total scheduler wait time.")
+    lines.append("# TYPE inference_engine_scheduler_wait_seconds_total counter")
+    lines.append(f"inference_engine_scheduler_wait_seconds_total {sched.wait_seconds_total:.6f}")
+    lines.append("# HELP inference_engine_scheduler_wait_observations_total Scheduler wait observations.")
+    lines.append("# TYPE inference_engine_scheduler_wait_observations_total counter")
+    lines.append(f"inference_engine_scheduler_wait_observations_total {sched.wait_observations_total}")
+    lines.append("# HELP inference_engine_scheduler_max_queue_wait_seconds Longest observed scheduler wait.")
+    lines.append("# TYPE inference_engine_scheduler_max_queue_wait_seconds gauge")
+    lines.append(f"inference_engine_scheduler_max_queue_wait_seconds {sched.max_queue_wait_seconds:.6f}")
+
+    lines.append("# HELP inference_engine_scheduler_queued_by_tenant Requests waiting by tenant.")
+    lines.append("# TYPE inference_engine_scheduler_queued_by_tenant gauge")
+    for tenant, count in sched.queued_by_tenant.items():
+        labels = f'{{tenant="{_label_value(tenant)}"}}'
+        lines.append(f"inference_engine_scheduler_queued_by_tenant{labels} {count}")
+
+    lines.append("# HELP inference_engine_scheduler_in_flight_by_tenant Active scheduler slots by tenant.")
+    lines.append("# TYPE inference_engine_scheduler_in_flight_by_tenant gauge")
+    for tenant, count in sched.in_flight_by_tenant.items():
+        labels = f'{{tenant="{_label_value(tenant)}"}}'
+        lines.append(f"inference_engine_scheduler_in_flight_by_tenant{labels} {count}")
+
+    lines.append("# HELP inference_engine_scheduler_in_flight_by_resource Active scheduler slots by backend/model resource.")
+    lines.append("# TYPE inference_engine_scheduler_in_flight_by_resource gauge")
+    for resource, count in sched.in_flight_by_resource.items():
+        labels = f'{{resource="{_label_value(resource)}"}}'
+        lines.append(f"inference_engine_scheduler_in_flight_by_resource{labels} {count}")
 
     return "\n".join(lines) + "\n"

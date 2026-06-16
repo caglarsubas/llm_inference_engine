@@ -30,6 +30,7 @@ from ..schemas import (
     CompletionResponse,
     Usage,
 )
+from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
@@ -66,6 +67,11 @@ def _params(req: CompletionRequest) -> GenerationParams:
     )
 
 
+def _estimated_completion_tokens(prompts: list[str], params: GenerationParams) -> int:
+    chars = sum(len(prompt) for prompt in prompts)
+    return max(1, (chars // 4) + len(prompts) * int(params.max_tokens or 0))
+
+
 @router.post("/v1/completions", response_model=CompletionResponse)
 async def create_completion(
     req: CompletionRequest,
@@ -77,47 +83,59 @@ async def create_completion(
 
     adapter, model_name = await _resolve(req.model)
     params = _params(req)
+    lease = await acquire_slot(
+        identity=identity,
+        adapter=adapter,
+        model_name=model_name,
+        workload="completions.run",
+        priority=5.0 if len(prompts) == 1 else -5.0,
+        estimated_tokens=_estimated_completion_tokens(prompts, params),
+    )
 
     completion_id = f"cmpl-{uuid.uuid4().hex}"
     choices: list[CompletionChoice] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
 
-    with span(
-        "completions.run",
-        **{
-            "gen_ai.system": adapter.backend_name,
-            "gen_ai.request.model": model_name,
-            "gen_ai.request.max_tokens": params.max_tokens,
-            "gen_ai.request.temperature": params.temperature,
-            "completion.batch_size": len(prompts),
-            **_identity_attrs(identity),
-        },
-    ) as s:
-        for index, prompt in enumerate(prompts):
-            try:
-                result = await adapter.complete(prompt, params)
-            except ContextLengthExceededError as exc:
-                raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
-            total_prompt_tokens += result.prompt_tokens
-            total_completion_tokens += result.completion_tokens
-            choices.append(
-                CompletionChoice(
-                    text=result.text or "",
-                    index=index,
-                    finish_reason=(
-                        result.finish_reason
-                        if result.finish_reason in ("stop", "length")
-                        else "stop"
-                    ),
-                )
-            )
-        s.bind(
+    try:
+        with span(
+            "completions.run",
             **{
-                "gen_ai.usage.input_tokens": total_prompt_tokens,
-                "gen_ai.usage.output_tokens": total_completion_tokens,
-            }
-        )
+                "gen_ai.system": adapter.backend_name,
+                "gen_ai.request.model": model_name,
+                "gen_ai.request.max_tokens": params.max_tokens,
+                "gen_ai.request.temperature": params.temperature,
+                "completion.batch_size": len(prompts),
+                **_identity_attrs(identity),
+                **scheduler_span_attrs(lease),
+            },
+        ) as s:
+            for index, prompt in enumerate(prompts):
+                try:
+                    result = await adapter.complete(prompt, params)
+                except ContextLengthExceededError as exc:
+                    raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+                total_prompt_tokens += result.prompt_tokens
+                total_completion_tokens += result.completion_tokens
+                choices.append(
+                    CompletionChoice(
+                        text=result.text or "",
+                        index=index,
+                        finish_reason=(
+                            result.finish_reason
+                            if result.finish_reason in ("stop", "length")
+                            else "stop"
+                        ),
+                    )
+                )
+            s.bind(
+                **{
+                    "gen_ai.usage.input_tokens": total_prompt_tokens,
+                    "gen_ai.usage.output_tokens": total_completion_tokens,
+                }
+            )
+    finally:
+        await app_state.scheduler.release(lease)
 
     return CompletionResponse(
         id=completion_id,
