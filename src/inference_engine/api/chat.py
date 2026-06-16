@@ -44,6 +44,7 @@ from ..schemas import (
     chat_content_text,
 )
 from . import _auto_eval, _tool_audit
+from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
@@ -89,6 +90,11 @@ def _identity_attrs(identity: Identity) -> dict:
         "prometa.tenant": identity.tenant,
         "prometa.key_id": identity.key_id,
     }
+
+
+def _estimated_chat_tokens(messages: list[ChatMessage], params: GenerationParams) -> int:
+    chars = sum(len(chat_content_text(m.content)) for m in messages)
+    return max(1, (chars // 4) + int(params.max_tokens or 0))
 
 
 def _intent_attrs(req: ChatCompletionRequest) -> dict:
@@ -157,10 +163,18 @@ async def chat_completions(
     params = _params_from_request(req)
 
     if req.stream:
+        lease = await acquire_slot(
+            identity=identity,
+            adapter=adapter,
+            model_name=model_name,
+            workload="chat.stream",
+            priority=30.0,
+            estimated_tokens=_estimated_chat_tokens(req.messages, params),
+        )
         return EventSourceResponse(
             _stream_response(
                 adapter, model_name, req.messages, params, identity, request,
-                auto_eval, policy, intent_attrs,
+                auto_eval, policy, intent_attrs, lease,
             )
         )
 
@@ -360,6 +374,14 @@ async def _blocking_response(
     policy: PolicyEntry | None = None,
     intent_attrs: dict | None = None,
 ) -> ChatCompletionResponse:
+    lease = await acquire_slot(
+        identity=identity,
+        adapter=adapter,
+        model_name=model_name,
+        workload="chat.generate",
+        priority=20.0,
+        estimated_tokens=_estimated_chat_tokens(messages, params),
+    )
     cache_size_before = getattr(adapter, "prefix_cache_size_bytes", 0)
     # Capability hints feed the normalizer's ``expects_reasoning_prelude``
     # knob — reasoning-family models (Nemotron, DeepSeek-R1, QwQ, …) have a
@@ -371,64 +393,70 @@ async def _blocking_response(
     caps = infer_model_capabilities(
         model_name, backend=adapter.backend_name, fmt=getattr(adapter, "format", "")
     )
-    with span(
-        "chat.generate",
-        **{
-            "gen_ai.system": adapter.backend_name,
-            "gen_ai.request.model": model_name,
-            "gen_ai.request.max_tokens": params.max_tokens,
-            "gen_ai.request.temperature": params.temperature,
-            "n_messages": len(messages),
-            **_identity_attrs(identity),
-            **(intent_attrs or {}),
-            **_prefix_cache_attrs(adapter),
-            **_auto_eval_attrs(auto_eval, policy),
-        },
-    ) as s:
-        # Audit inbound tool messages BEFORE generation — these record what
-        # tools the agent has already executed and is now feeding back.
-        n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
-        try:
-            result = await adapter.generate(messages, params)
-        except ContextLengthExceededError as exc:
-            # Prompt + forced generation overran the model's window. Answer with
-            # a deterministic, typed 400 so clients branch on the error type
-            # instead of pattern-matching an opaque 500 after a big tool result.
-            raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
-        except GenerationTimeoutError as exc:
-            s.bind(**_timeout_span_attrs(exc))
-            raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
-        # Single normalization seam: convert any leaked vendor markup
-        # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
-        # OpenAI fields. Backends that already returned ``tool_calls`` keep
-        # their ids — _normalize_blocking_result short-circuits on those.
-        result = _normalize_blocking_result(
-            result, params, expects_reasoning_prelude=bool(caps.get("reasoning"))
-        )
-        # Audit outbound tool calls AFTER generation — what the model
-        # decided to invoke this turn.
-        n_tool_calls = _tool_audit.emit_tool_calls(s, result.tool_calls)
-        if n_tool_results or n_tool_calls:
+    try:
+        with span(
+            "chat.generate",
+            **{
+                "gen_ai.system": adapter.backend_name,
+                "gen_ai.request.model": model_name,
+                "gen_ai.request.max_tokens": params.max_tokens,
+                "gen_ai.request.temperature": params.temperature,
+                "n_messages": len(messages),
+                **_identity_attrs(identity),
+                **(intent_attrs or {}),
+                **_prefix_cache_attrs(adapter),
+                **_auto_eval_attrs(auto_eval, policy),
+                **scheduler_span_attrs(lease),
+            },
+        ) as s:
+            # Audit inbound tool messages BEFORE generation — these record what
+            # tools the agent has already executed and is now feeding back.
+            n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
+            try:
+                result = await adapter.generate(messages, params)
+            except ContextLengthExceededError as exc:
+                # Prompt + forced generation overran the model's window. Answer with
+                # a deterministic, typed 400 so clients branch on the error type
+                # instead of pattern-matching an opaque 500 after a big tool result.
+                raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+            except GenerationTimeoutError as exc:
+                s.bind(**_timeout_span_attrs(exc))
+                raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
+            # Single normalization seam: convert any leaked vendor markup
+            # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
+            # OpenAI fields. Backends that already returned ``tool_calls`` keep
+            # their ids — _normalize_blocking_result short-circuits on those.
+            result = _normalize_blocking_result(
+                result, params, expects_reasoning_prelude=bool(caps.get("reasoning"))
+            )
+            # Audit outbound tool calls AFTER generation — what the model
+            # decided to invoke this turn.
+            n_tool_calls = _tool_audit.emit_tool_calls(s, result.tool_calls)
+            if n_tool_results or n_tool_calls:
+                s.bind(
+                    **{
+                        "tool_audit.tool_results_in": n_tool_results,
+                        "tool_audit.tool_calls_out": n_tool_calls,
+                    }
+                )
+            cache_size_after = getattr(adapter, "prefix_cache_size_bytes", 0)
+            post_attrs = _prefix_cache_post_call_attrs(adapter)
+            # llama.cpp emits a delta because its raw cache_size grows with each
+            # call; MLX exposes overlap directly so a delta is meaningless there.
+            if "prefix_cache.size_bytes" in post_attrs:
+                post_attrs["prefix_cache.size_delta_bytes"] = (
+                    cache_size_after - cache_size_before
+                )
             s.bind(
                 **{
-                    "tool_audit.tool_results_in": n_tool_results,
-                    "tool_audit.tool_calls_out": n_tool_calls,
+                    "gen_ai.usage.input_tokens": result.prompt_tokens,
+                    "gen_ai.usage.output_tokens": result.completion_tokens,
+                    "gen_ai.response.finish_reason": result.finish_reason,
+                    **post_attrs,
                 }
             )
-        cache_size_after = getattr(adapter, "prefix_cache_size_bytes", 0)
-        post_attrs = _prefix_cache_post_call_attrs(adapter)
-        # llama.cpp emits a delta because its raw cache_size grows with each
-        # call; MLX exposes overlap directly so a delta is meaningless there.
-        if "prefix_cache.size_bytes" in post_attrs:
-            post_attrs["prefix_cache.size_delta_bytes"] = cache_size_after - cache_size_before
-        s.bind(
-            **{
-                "gen_ai.usage.input_tokens": result.prompt_tokens,
-                "gen_ai.usage.output_tokens": result.completion_tokens,
-                "gen_ai.response.finish_reason": result.finish_reason,
-                **post_attrs,
-            }
-        )
+    finally:
+        await app_state.scheduler.release(lease)
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
 
@@ -510,6 +538,7 @@ async def _stream_response(
     auto_eval: AutoEvalSpec | None = None,
     policy: PolicyEntry | None = None,
     intent_attrs: dict | None = None,
+    scheduler_lease=None,
 ) -> AsyncIterator[dict]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -523,200 +552,205 @@ async def _stream_response(
         )
         return {"data": chunk.model_dump_json()}
 
-    yield _chunk(ChatCompletionDelta(role="assistant"))
+    try:
+        yield _chunk(ChatCompletionDelta(role="assistant"))
 
-    finish_reason: str | None = None
-    chunks_emitted = 0
-    cancelled = False
-    accumulated: list[str] = []
-    # Audit inbound tool messages first (same shape the blocking path uses).
-    n_tool_results = 0
-    n_tool_calls_streamed = 0
+        finish_reason: str | None = None
+        chunks_emitted = 0
+        cancelled = False
+        accumulated: list[str] = []
+        # Audit inbound tool messages first (same shape the blocking path uses).
+        n_tool_results = 0
+        n_tool_calls_streamed = 0
 
-    # Streaming normalizer — converts leaked Nemotron/DeepSeek-R1 vendor XML
-    # in the text stream into OpenAI ``reasoning_content`` + ``tool_calls``
-    # deltas before they reach the client. Backends that emit structured
-    # ``tool_call_deltas`` (vLLM tool parser, llama.cpp grammar) bypass this:
-    # their tool_calls flow through untouched on the dedicated channel.
-    caps = infer_model_capabilities(
-        model_name, backend=adapter.backend_name, fmt=getattr(adapter, "format", "")
-    )
-    normalizer = StreamNormalizer(
-        tools_requested=bool(params.tools),
-        expects_reasoning_prelude=bool(caps.get("reasoning")),
-    )
-    next_tool_index = 0
+        # Streaming normalizer — converts leaked Nemotron/DeepSeek-R1 vendor XML
+        # in the text stream into OpenAI ``reasoning_content`` + ``tool_calls``
+        # deltas before they reach the client. Backends that emit structured
+        # ``tool_call_deltas`` (vLLM tool parser, llama.cpp grammar) bypass this:
+        # their tool_calls flow through untouched on the dedicated channel.
+        caps = infer_model_capabilities(
+            model_name, backend=adapter.backend_name, fmt=getattr(adapter, "format", "")
+        )
+        normalizer = StreamNormalizer(
+            tools_requested=bool(params.tools),
+            expects_reasoning_prelude=bool(caps.get("reasoning")),
+        )
+        next_tool_index = 0
 
-    def _ingest(deltas: list[StreamDelta]) -> list[dict]:
-        """Convert StreamNormalizer output into SSE-shaped chunks."""
-        nonlocal next_tool_index, chunks_emitted
-        out: list[dict] = []
-        for d in deltas:
-            if d.content:
-                chunks_emitted += 1
-                accumulated.append(d.content)
-                out.append(_chunk(ChatCompletionDelta(content=d.content)))
-            if d.reasoning_content:
-                chunks_emitted += 1
-                out.append(
-                    _chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content))
-                )
-            if d.tool_call:
-                tc = d.tool_call
-                fn = tc.get("function") or {}
-                idx = next_tool_index
-                next_tool_index += 1
-                # Emit the full call as a single delta — the inner XML can't
-                # be streamed token-by-token in OpenAI shape anyway, so we
-                # deliver it as one ``{id, type, function: {name, args}}``
-                # chunk and let the reassembler treat it like any other.
-                reassembler.feed(
-                    [
-                        {
-                            "index": idx,
-                            "id": tc.get("id"),
-                            "type": tc.get("type", "function"),
-                            "function": {
-                                "name": fn.get("name", ""),
-                                "arguments": fn.get("arguments", ""),
-                            },
-                        }
-                    ]
-                )
-                out.append(
-                    _chunk(
-                        ChatCompletionDelta(
-                            tool_calls=[
-                                ToolCallDelta(
-                                    index=idx,
-                                    id=tc.get("id"),
-                                    type=tc.get("type", "function"),
-                                    function=ToolCallFunctionDelta(
-                                        name=fn.get("name", ""),
-                                        arguments=fn.get("arguments", ""),
-                                    ),
-                                )
-                            ]
-                        )
+        def _ingest(deltas: list[StreamDelta]) -> list[dict]:
+            """Convert StreamNormalizer output into SSE-shaped chunks."""
+            nonlocal next_tool_index, chunks_emitted
+            out: list[dict] = []
+            for d in deltas:
+                if d.content:
+                    chunks_emitted += 1
+                    accumulated.append(d.content)
+                    out.append(_chunk(ChatCompletionDelta(content=d.content)))
+                if d.reasoning_content:
+                    chunks_emitted += 1
+                    out.append(
+                        _chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content))
                     )
-                )
-        return out
-
-    async with watch_disconnect(request) as cancel:
-        reassembler = _tool_audit.ToolCallReassembler()
-        with span(
-            "chat.stream",
-            **{
-                "gen_ai.system": adapter.backend_name,
-                "gen_ai.request.model": model_name,
-                "n_messages": len(messages),
-                **_identity_attrs(identity),
-                **(intent_attrs or {}),
-                **_auto_eval_attrs(auto_eval, policy),
-            },
-        ) as s:
-            n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
-            try:
-                async for piece in adapter.stream(messages, params, cancel=cancel):
-                    if piece.text:
-                        for chunk in _ingest(normalizer.feed(piece.text)):
-                            yield chunk
-                    if piece.tool_call_deltas:
-                        # Backend already produced structured deltas — flush
-                        # any text the normalizer was holding back (it can't
-                        # interleave with structured calls cleanly) and pass
-                        # the deltas through.
-                        for chunk in _ingest(normalizer.flush()):
-                            yield chunk
-                        reassembler.feed(piece.tool_call_deltas)
-                        # Re-base our own tool index past whatever the backend
-                        # emitted so post-flush normalized calls don't collide.
-                        next_tool_index = max(
-                            next_tool_index,
-                            max(int(d.get("index", 0)) for d in piece.tool_call_deltas) + 1,
-                        )
-                        yield _chunk(
+                if d.tool_call:
+                    tc = d.tool_call
+                    fn = tc.get("function") or {}
+                    idx = next_tool_index
+                    next_tool_index += 1
+                    # Emit the full call as a single delta — the inner XML can't
+                    # be streamed token-by-token in OpenAI shape anyway, so we
+                    # deliver it as one ``{id, type, function: {name, args}}``
+                    # chunk and let the reassembler treat it like any other.
+                    reassembler.feed(
+                        [
+                            {
+                                "index": idx,
+                                "id": tc.get("id"),
+                                "type": tc.get("type", "function"),
+                                "function": {
+                                    "name": fn.get("name", ""),
+                                    "arguments": fn.get("arguments", ""),
+                                },
+                            }
+                        ]
+                    )
+                    out.append(
+                        _chunk(
                             ChatCompletionDelta(
                                 tool_calls=[
                                     ToolCallDelta(
-                                        index=int(d.get("index", 0)),
-                                        id=d.get("id"),
-                                        type=d.get("type"),
-                                        function=(
-                                            ToolCallFunctionDelta(**(d.get("function") or {}))
-                                            if d.get("function") is not None
-                                            else None
+                                        index=idx,
+                                        id=tc.get("id"),
+                                        type=tc.get("type", "function"),
+                                        function=ToolCallFunctionDelta(
+                                            name=fn.get("name", ""),
+                                            arguments=fn.get("arguments", ""),
                                         ),
                                     )
-                                    for d in piece.tool_call_deltas
                                 ]
                             )
                         )
-                    if piece.finish_reason:
-                        finish_reason = piece.finish_reason
-                # Drain any held-back text now that the adapter is done.
-                for chunk in _ingest(normalizer.flush()):
-                    yield chunk
-                # If the normalizer parsed tool calls out of the text stream,
-                # the canonical finish_reason is ``tool_calls`` regardless of
-                # what the adapter signalled.
-                if normalizer.has_tool_calls():
-                    finish_reason = "tool_calls"
-            except ContextLengthExceededError as exc:
-                # The SSE response line is already open (we sent the role
-                # delta), so we can't downgrade to a 400 here. Emit a typed
-                # terminal ``error`` event — same payload shape as the blocking
-                # 400 body — then stop. Clients keying on ``type`` get the same
-                # signal on both paths.
-                finish_reason = "error"
-                s.bind(**{"error.type": "context_length_exceeded"})
-                yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
-                return
-            except GenerationTimeoutError as exc:
-                finish_reason = "timeout"
-                s.bind(**_timeout_span_attrs(exc))
-                yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
-                return
-            finally:
-                cancelled = bool(cancel)
-                if not cancelled:
-                    n_tool_calls_streamed = _tool_audit.emit_tool_calls(
-                        s, reassembler.assembled() if reassembler.has_calls() else None
                     )
-                s.bind(
-                    **{
-                        "gen_ai.response.finish_reason": (
-                            "cancelled" if cancelled else (finish_reason or "stop")
-                        ),
-                        "stream.chunks_emitted": chunks_emitted,
-                        "stream.cancelled": cancelled,
-                        "stream.cancel_reason": cancel.reason or "",
-                        "tool_audit.tool_results_in": n_tool_results,
-                        "tool_audit.tool_calls_out": n_tool_calls_streamed,
-                        **_prefix_cache_post_call_attrs(adapter),
-                    }
-                )
+            return out
 
-    if cancelled:
-        # Client is gone — no point sending the trailing frames or running
-        # evals on a partial response. SSE closes naturally on generator exit.
-        return
+        async with watch_disconnect(request) as cancel:
+            reassembler = _tool_audit.ToolCallReassembler()
+            with span(
+                "chat.stream",
+                **{
+                    "gen_ai.system": adapter.backend_name,
+                    "gen_ai.request.model": model_name,
+                    "n_messages": len(messages),
+                    **_identity_attrs(identity),
+                    **(intent_attrs or {}),
+                    **_auto_eval_attrs(auto_eval, policy),
+                    **scheduler_span_attrs(scheduler_lease),
+                },
+            ) as s:
+                n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
+                try:
+                    async for piece in adapter.stream(messages, params, cancel=cancel):
+                        if piece.text:
+                            for chunk in _ingest(normalizer.feed(piece.text)):
+                                yield chunk
+                        if piece.tool_call_deltas:
+                            # Backend already produced structured deltas — flush
+                            # any text the normalizer was holding back (it can't
+                            # interleave with structured calls cleanly) and pass
+                            # the deltas through.
+                            for chunk in _ingest(normalizer.flush()):
+                                yield chunk
+                            reassembler.feed(piece.tool_call_deltas)
+                            # Re-base our own tool index past whatever the backend
+                            # emitted so post-flush normalized calls don't collide.
+                            next_tool_index = max(
+                                next_tool_index,
+                                max(int(d.get("index", 0)) for d in piece.tool_call_deltas) + 1,
+                            )
+                            yield _chunk(
+                                ChatCompletionDelta(
+                                    tool_calls=[
+                                        ToolCallDelta(
+                                            index=int(d.get("index", 0)),
+                                            id=d.get("id"),
+                                            type=d.get("type"),
+                                            function=(
+                                                ToolCallFunctionDelta(**(d.get("function") or {}))
+                                                if d.get("function") is not None
+                                                else None
+                                            ),
+                                        )
+                                        for d in piece.tool_call_deltas
+                                    ]
+                                )
+                            )
+                        if piece.finish_reason:
+                            finish_reason = piece.finish_reason
+                    # Drain any held-back text now that the adapter is done.
+                    for chunk in _ingest(normalizer.flush()):
+                        yield chunk
+                    # If the normalizer parsed tool calls out of the text stream,
+                    # the canonical finish_reason is ``tool_calls`` regardless of
+                    # what the adapter signalled.
+                    if normalizer.has_tool_calls():
+                        finish_reason = "tool_calls"
+                except ContextLengthExceededError as exc:
+                    # The SSE response line is already open (we sent the role
+                    # delta), so we can't downgrade to a 400 here. Emit a typed
+                    # terminal ``error`` event — same payload shape as the blocking
+                    # 400 body — then stop. Clients keying on ``type`` get the same
+                    # signal on both paths.
+                    finish_reason = "error"
+                    s.bind(**{"error.type": "context_length_exceeded"})
+                    yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
+                    return
+                except GenerationTimeoutError as exc:
+                    finish_reason = "timeout"
+                    s.bind(**_timeout_span_attrs(exc))
+                    yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
+                    return
+                finally:
+                    cancelled = bool(cancel)
+                    if not cancelled:
+                        n_tool_calls_streamed = _tool_audit.emit_tool_calls(
+                            s, reassembler.assembled() if reassembler.has_calls() else None
+                        )
+                    s.bind(
+                        **{
+                            "gen_ai.response.finish_reason": (
+                                "cancelled" if cancelled else (finish_reason or "stop")
+                            ),
+                            "stream.chunks_emitted": chunks_emitted,
+                            "stream.cancelled": cancelled,
+                            "stream.cancel_reason": cancel.reason or "",
+                            "tool_audit.tool_results_in": n_tool_results,
+                            "tool_audit.tool_calls_out": n_tool_calls_streamed,
+                            **_prefix_cache_post_call_attrs(adapter),
+                        }
+                    )
 
-    yield _chunk(ChatCompletionDelta(), finish=finish_reason or "stop")
-    yield {"data": "[DONE]"}
+        if cancelled:
+            # Client is gone — no point sending the trailing frames or running
+            # evals on a partial response. SSE closes naturally on generator exit.
+            return
 
-    # Background auto-eval kicks off after the stream is delivered. Blocking
-    # mode is rejected upfront in chat_completions(); only background reaches
-    # here.
-    if auto_eval is not None and auto_eval.mode == "background":
-        _auto_eval.run_background(
-            app_state.eval_runner,
-            app_state.rubric_registry,
-            auto_eval,
-            default_judge_model=settings.default_judge_model,
-            prompt=_last_user_prompt(messages),
-            response="".join(accumulated),
-            candidate_model=model_name,
-            candidate_completion_id=completion_id,
-            identity=identity,
-        )
+        yield _chunk(ChatCompletionDelta(), finish=finish_reason or "stop")
+        yield {"data": "[DONE]"}
+
+        # Background auto-eval kicks off after the stream is delivered. Blocking
+        # mode is rejected upfront in chat_completions(); only background reaches
+        # here.
+        if auto_eval is not None and auto_eval.mode == "background":
+            _auto_eval.run_background(
+                app_state.eval_runner,
+                app_state.rubric_registry,
+                auto_eval,
+                default_judge_model=settings.default_judge_model,
+                prompt=_last_user_prompt(messages),
+                response="".join(accumulated),
+                candidate_model=model_name,
+                candidate_completion_id=completion_id,
+                identity=identity,
+            )
+    finally:
+        if scheduler_lease is not None:
+            await app_state.scheduler.release(scheduler_lease)

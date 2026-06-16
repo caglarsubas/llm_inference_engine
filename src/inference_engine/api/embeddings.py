@@ -32,6 +32,7 @@ from ..schemas import (
     EmbeddingResponse,
     Usage,
 )
+from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
@@ -60,38 +61,51 @@ async def create_embeddings(
         raise HTTPException(status_code=400, detail="input must contain at least one string")
 
     adapter, model_name = await _resolve(req.model)
+    estimated_tokens = max(1, sum(len(item) for item in inputs) // 4)
+    lease = await acquire_slot(
+        identity=identity,
+        adapter=adapter,
+        model_name=model_name,
+        workload="embeddings.run",
+        priority=-10.0,
+        estimated_tokens=estimated_tokens,
+    )
 
-    with span(
-        "embeddings.run",
-        **{
-            "gen_ai.system": adapter.backend_name,
-            "gen_ai.request.model": model_name,
-            "embedding.batch_size": len(inputs),
-            **_identity_attrs(identity),
-        },
-    ) as s:
-        try:
-            outcome = await app_state.embed_coalescer.submit(adapter, inputs)
-        except EmbeddingsNotSupportedError as exc:
-            raise HTTPException(
-                status_code=501,
-                detail=f"embeddings not supported by {exc} backend",
-            ) from exc
-
-        dims = len(outcome.embeddings[0]) if outcome.embeddings else 0
-        s.bind(
+    try:
+        with span(
+            "embeddings.run",
             **{
-                "gen_ai.usage.input_tokens": outcome.prompt_tokens,
-                "embedding.dimensions": dims,
-                # Dynamic-batching observability — every embedding span
-                # carries enough to reconstruct who batched with whom.
-                "batch.id": outcome.batch_id,
-                "batch.coalesced_with": outcome.coalesced_with,
-                "batch.total_inputs": outcome.total_inputs,
-                "batch.wait_ms": round(outcome.wait_ms, 2),
-                "batch.adapter_action": outcome.adapter_action,
-            }
-        )
+                "gen_ai.system": adapter.backend_name,
+                "gen_ai.request.model": model_name,
+                "embedding.batch_size": len(inputs),
+                **_identity_attrs(identity),
+                **scheduler_span_attrs(lease),
+            },
+        ) as s:
+            try:
+                outcome = await app_state.embed_coalescer.submit(adapter, inputs)
+            except EmbeddingsNotSupportedError as exc:
+                raise HTTPException(
+                    status_code=501,
+                    detail=f"embeddings not supported by {exc} backend",
+                ) from exc
+
+            dims = len(outcome.embeddings[0]) if outcome.embeddings else 0
+            s.bind(
+                **{
+                    "gen_ai.usage.input_tokens": outcome.prompt_tokens,
+                    "embedding.dimensions": dims,
+                    # Dynamic-batching observability — every embedding span
+                    # carries enough to reconstruct who batched with whom.
+                    "batch.id": outcome.batch_id,
+                    "batch.coalesced_with": outcome.coalesced_with,
+                    "batch.total_inputs": outcome.total_inputs,
+                    "batch.wait_ms": round(outcome.wait_ms, 2),
+                    "batch.adapter_action": outcome.adapter_action,
+                }
+            )
+    finally:
+        await app_state.scheduler.release(lease)
 
     return EmbeddingResponse(
         data=[

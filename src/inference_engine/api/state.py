@@ -115,5 +115,8 @@ class AppState:
         from ._batcher import EmbedCoalescer  # noqa: PLC0415 — avoid early import cycle
         self.embed_coalescer = EmbedCoalescer()
 
+        from ..scheduler import TenantScheduler  # noqa: PLC0415 — avoid eager settings cycles
+        self.scheduler = TenantScheduler()
+
 
 app_state = AppState()

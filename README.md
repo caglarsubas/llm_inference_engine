@@ -135,6 +135,38 @@ Anonymous traffic (no Authorization header) hashes to a single bucket and effect
 
 **Cross-instance state is not shared.** Process-global stores (tool-timing, embed coalescer, prefix cache) are per-replica. That's fine for cache-warming workloads (each replica warms separately) but it means signals like `tool.execution_ms` only fire when both turns of a tool exchange land on the same replica. With sticky sessions via HAProxy/Traefik, this works; with plain round-robin, it's best-effort. For real distributed state, plug Redis behind the audit module — out of scope here.
 
+### Tenant-aware scheduling inside each replica
+
+Horizontal replicas add capacity; they do not, by themselves, protect one tenant from another tenant's burst once requests land on the same replica/model. The engine adds a process-local tenant scheduler in front of backend calls for `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, and `/v1/rerank`.
+
+Dispatch policy:
+
+- Requests enter per-tenant queues, not one process-wide FIFO.
+- Local serialized backends (`llama_cpp`, `mlx`) default to one active slot per model resource, so requests do not pile up inside `adapter._lock` ahead of the scheduler.
+- vLLM-backed resources default to eight active slots so the upstream continuous batcher can still work.
+- Each tenant gets a soft active-slot reservation (`SCHEDULER_TENANT_RESERVED_IN_FLIGHT`). A tenant can borrow extra idle capacity while nobody else waits; when another tenant queues, new dispatches favor tenants below their reservation.
+- Workload lanes are prioritized as: streaming chat, blocking chat, single completions, bulk completions/rerank, embeddings. Wait-time aging and tenant-fairness boost keep lower-priority work from starving.
+- A full tenant queue returns `429 tenant_queue_full` with `Retry-After`; a queue wait timeout returns `503 tenant_queue_timeout`.
+
+Every generation/embed/rerank span carries `scheduler.*` attributes: enabled flag, resource, workload, priority, estimated tokens, queue depth at submit, tenant queue depth at submit, and wait time.
+
+### Horizontal scaling policy
+
+For local Compose, scale manually:
+
+```bash
+make compose-up-scale REPLICAS=4
+make compose-up-sticky REPLICAS=4
+```
+
+For production, keep the same engine contract but run under Swarm/Kubernetes and autoscale on saturation signals rather than CPU alone:
+
+- Scale out when `inference_engine_scheduler_queued > 0` for a sustained window, when `inference_engine_scheduler_max_queue_wait_seconds` crosses the tenant SLO, or when the rate of `inference_engine_scheduler_rejected_total` / `inference_engine_scheduler_timed_out_total` is non-zero.
+- Scale out when p95/p99 route latency rises while `inference_engine_scheduler_in_flight_by_resource` is pinned at the configured cap.
+- Scale out vLLM lanes on token throughput plus queue wait; scale local GGUF/MLX lanes on queue wait plus active resource saturation.
+- Scale in only when queues are empty, scheduler in-flight is low, and loaded model churn is stable for several windows.
+- Use nginx round-robin for stateless/batch traffic; use HAProxy sticky routing for multi-turn agent traffic where prefix cache and tool timing matter.
+
 ### What's installed in the container
 
 - llama-cpp-python compiled from source (CPU-only by default, CUDA build with `CMAKE_ARGS="-DGGML_CUDA=on"`)
@@ -275,6 +307,7 @@ src/inference_engine/
 ├── main.py              # FastAPI app + lifespan + module-level OTel wiring + load_keys()
 ├── config.py            # pydantic-settings (.env-driven)
 ├── manager.py           # ModelManager — LRU multi-model hot-keep, per-format dispatch
+├── scheduler.py         # TenantScheduler — per-tenant queues, fair dispatch, admission limits
 ├── observability.py     # span() bridges structlog + OTel; Span.bind() mutates both
 ├── otel.py              # OTel SDK setup, NoOp span shim, FastAPI auto-instrumentation
 ├── auth.py              # bearer-token auth, Identity, key index, FastAPI dependency
@@ -294,6 +327,7 @@ src/inference_engine/
 │   ├── rerank.py        # /v1/rerank — Cohere/Jina-shaped relevance via embedding cosine
 │   ├── evals.py         # /v1/evals/rubrics + /v1/evals/run
 │   ├── admin.py         # /v1/admin/policies:reload (hot-reload of auto-eval policy)
+│   ├── _scheduling.py   # shared API helpers for scheduler admission/span attrs
 │   ├── _auto_eval.py    # blocking + background batch helpers for chat-attached eval
 │   ├── _batcher.py      # EmbedCoalescer — dynamic batching for /v1/embeddings
 │   ├── _tool_audit.py   # gen_ai.tool_call / gen_ai.tool_result event emission with truncation
@@ -379,6 +413,16 @@ All knobs live in `.env` (see `.env.example`):
 | `BATCH_ENABLED`          | `true`                                                                                   | Coalesce concurrent `/v1/embeddings` requests; `false` = pass-through                      |
 | `BATCH_MAX_WAIT_MS`      | `10`                                                                                     | Wait window before flushing a partial batch                                                |
 | `BATCH_MAX_SIZE`         | `32`                                                                                     | Force flush when queued inputs hit this count                                              |
+| `SCHEDULER_ENABLED`      | `true`                                                                                   | Tenant-aware admission and fair dispatch before backend locks                              |
+| `SCHEDULER_GLOBAL_MAX_IN_FLIGHT` | `32`                                                                            | Max scheduler slots active in one engine replica                                           |
+| `SCHEDULER_TENANT_RESERVED_IN_FLIGHT` | `2`                                                                        | Soft per-tenant active slot reservation; tenants can borrow idle capacity                  |
+| `SCHEDULER_RESOURCE_MAX_IN_FLIGHT` | `1`                                                                              | Default per-model/backend dispatch cap; keeps local serialized adapters fair               |
+| `SCHEDULER_VLLM_RESOURCE_MAX_IN_FLIGHT` | `8`                                                                         | Per-model dispatch cap for vLLM-backed models                                              |
+| `SCHEDULER_MAX_QUEUE_PER_TENANT` | `64`                                                                             | Per-tenant queue depth before `429 tenant_queue_full`                                      |
+| `SCHEDULER_QUEUE_TIMEOUT_SECONDS` | `30`                                                                           | Max wait for scheduler capacity before `503 tenant_queue_timeout`; `0` disables timeout    |
+| `SCHEDULER_RETRY_AFTER_SECONDS` | `2`                                                                              | `Retry-After` header on scheduler admission failures                                       |
+| `SCHEDULER_WAIT_AGING_PRIORITY_PER_SECOND` | `0.5`                                                                    | Wait-time aging added to dispatch priority                                                 |
+| `SCHEDULER_TENANT_FAIRNESS_WEIGHT` | `2.0`                                                                         | Boost for tenants that have not recently received a dispatch                               |
 | `OTEL_ENABLED`           | `false`                                                                                  | Master switch — when true, sets up OTLP/gRPC exporter    |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`                                                              | Any OTLP/gRPC collector (Jaeger, otel-collector, …)      |
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
@@ -530,7 +574,7 @@ Open Grafana, then **Dashboards → Inference Engine → Inference Engine — Ov
 * **Token throughput** — input / output tokens/sec by tenant, plus a combined-by-model panel.
 * **Tenant × model traffic matrix** — last-5m request count per `(tenant, model)` pair as a heatmap, the panel Prometa uses to spot tenant-specific routing skew.
 * **Eval signals (LLM-as-a-Judge)** — `eval.run` rate by rubric + p95 latency by rubric, populated by the auto-eval policy or explicit `/v1/evals/*` calls.
-* **Operational health** — loaded models per replica, loaded model bytes, prefix-cache size by model. These are scraped from the engine's own `/v1/metrics` (Prometheus exposition), not from OTel — they're cheap counters/gauges the engine maintains directly.
+* **Operational health** — loaded models per replica, loaded model bytes, prefix-cache size by model, and tenant scheduler pressure. These are scraped from the engine's own `/v1/metrics` (Prometheus exposition), not from OTel — they're cheap counters/gauges the engine maintains directly.
 
 Trace correlation is wired both ways: any series in a metric panel can be clicked to land on the matching trace in Jaeger (via `exemplarTraceIdDestinations` on the Prometheus datasource), and Jaeger spans link back to the metric series via `tracesToMetrics`.
 
@@ -539,7 +583,7 @@ Trace correlation is wired both ways: any series in a metric panel can be clicke
 * **Tenant labels show `anonymous` until `AUTH_ENABLED=true`.** The default obs stack has auth off, so all bearer tokens hit the same anonymous tenant — the dashboard surfaces this in the "Active tenants" tile (will read 1, not 2). Turn auth on (`AUTH_ENABLED=true` + a configured `auth_token_map`) and the tenant breakdowns light up.
 * **First minute is empty.** spanmetrics flushes every 15 s and Prometheus scrapes every 15 s, so panels need ~30 s of traffic before they read non-zero. `make obs-load` is the friction-free way to seed.
 * **Cumulative temporality.** spanmetrics is configured with `AGGREGATION_TEMPORALITY_CUMULATIVE`, so all PromQL panels use `rate(...)` over a 5-minute window. Don't switch to `irate` — the cumulative reset behavior at 5-minute reset windows produces spikes that aren't real traffic.
-* **Engine-native metrics aren't OTLP.** `inference_engine_*` gauges (loaded models, prefix-cache size) are scraped straight off `engine:8080/v1/metrics` — they don't need the OTel collector at all. The collector pipeline only carries the trace-derived metrics.
+* **Engine-native metrics aren't OTLP.** `inference_engine_*` gauges (loaded models, prefix-cache size, scheduler queue/in-flight pressure) are scraped straight off `engine:8080/v1/metrics` — they don't need the OTel collector at all. The collector pipeline only carries the trace-derived metrics.
 
 Need a different overlay? `obs-up` composes on top of `docker-compose.yml`, so you can add `-f docker-compose.haproxy.yml` for sticky LB or `-f docker-compose.vllm.yml` for a vLLM upstream and the dashboard keeps working — `gen_ai.system` will surface `vllm` alongside `llama_cpp` and the panels split by backend.
 
@@ -854,7 +898,7 @@ Clients then send `model: "llama-3.2-1b-instruct:vllm"` or `"llama-3.2-3b-instru
 
 ### Dynamic batching (embeddings)
 
-Concurrent `/v1/embeddings` requests for the same loaded adapter merge into a single underlying `adapter.embed()` call within a small wait window. **Per-adapter capability detection** picks the right inner path automatically:
+Concurrent `/v1/embeddings` requests first pass through tenant-aware admission, then requests for the same loaded adapter merge into a single underlying `adapter.embed()` call within a small wait window. **Per-adapter capability detection** picks the right inner path automatically:
 
 * **Encoder embedding GGUFs** (bge, nomic, e5, …) → `adapter_action="batch"`. One forward pass on the concatenated inputs; real GPU batching.
 * **Chat-model GGUFs misused for embedding** → first batch attempt hits `llama_decode returned -1`, the adapter caches `supports_batched_embed=False`, and every subsequent call goes straight to `adapter_action="serial"` (or `"fallback"` on the very first call where the probe runs and falls through). HTTP-level coalescing still happens; the inner GPU work just serializes.
@@ -892,7 +936,7 @@ Same workload on an encoder embedding GGUF reports `adapter_action="batch"` inst
 
 #### Out of scope: dynamic batching for chat completions
 
-`/v1/chat/completions` is **not** dynamically batched. Continuous batching for autoregressive decode (vLLM-style) requires reimplementing the inference loop on top of `llama_cpp` ctypes / `mlx.core` — multi-round project, not a one-shot. Today, concurrent chat requests for the same adapter serialize through the per-adapter lock (round 6's concurrency design). Documented here so the trade-off is visible rather than implied: for high-QPS chat workloads, plug a dedicated continuous-batching backend (vLLM, SGLang) behind the existing `InferenceAdapter` ABC.
+`/v1/chat/completions` is **not** dynamically batched. Continuous batching for autoregressive decode (vLLM-style) requires reimplementing the inference loop on top of `llama_cpp` ctypes / `mlx.core` — multi-round project, not a one-shot. Today, concurrent local chat requests for the same adapter are admitted by the tenant scheduler, then serialize through the per-adapter lock (round 6's concurrency design). Documented here so the trade-off is visible rather than implied: for high-QPS chat workloads, plug a dedicated continuous-batching backend (vLLM, SGLang) behind the existing `InferenceAdapter` ABC.
 
 ### `/v1/embeddings`
 
@@ -1293,6 +1337,7 @@ Two locks, sized to the contention they actually protect against:
 
 * **`ModelManager._meta_lock`** — held only for microsecond-scale `OrderedDict` mutations (cache lookup + LRU `move_to_end`, eviction loop). A cache hit on model B never blocks behind a cold load of model A.
 * **`ModelManager._key_locks[key]`** — one per model id. Held for the duration of `adapter.load()`. Concurrent `get(X)` calls on the same model dedupe (the second sees a cache hit when it acquires the lock); concurrent `get(A)` and `get(B)` proceed in parallel.
+* **`TenantScheduler`** — one per engine replica. Holds per-tenant queues and dispatches into backend resources with soft per-tenant reservations, idle borrowing, wait-time aging, and per-resource caps.
 * **`adapter._lock`** — per-adapter, held during `generate()` / `stream()`. Required because `llama_cpp.Llama` isn't thread-safe; calls to the same model serialise. Calls to *different* adapters run in parallel.
 
 Memory-budget enforcement is approximate during racing cold loads: two adapters can briefly coexist before the second's eviction step runs. The next `get()` reconciles. This is acceptable for a soft budget.

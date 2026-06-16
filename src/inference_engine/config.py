@@ -102,6 +102,40 @@ class Settings(BaseSettings):
     batch_max_wait_ms: float = Field(default=10.0, ge=0.0)
     batch_max_size: int = Field(default=32, ge=1)
 
+    # Tenant-aware admission and scheduling. This queue lives inside each
+    # engine replica so it can sit in front of backend locks; cross-replica
+    # routing remains the load balancer's job.
+    scheduler_enabled: bool = Field(default=True)
+    scheduler_global_max_in_flight: int = Field(default=32, ge=1)
+    scheduler_tenant_reserved_in_flight: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Soft per-tenant concurrency cap. Tenants can borrow above this "
+            "while no other tenant is queued; once another tenant waits, new "
+            "dispatches favor tenants below their reserved cap."
+        ),
+    )
+    scheduler_resource_max_in_flight: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Default per-model/backend dispatch cap. Local llama.cpp and MLX "
+            "adapters serialize internally, so keeping this at 1 prevents a "
+            "single tenant from filling the adapter lock queue ahead of others."
+        ),
+    )
+    scheduler_vllm_resource_max_in_flight: int = Field(
+        default=8,
+        ge=1,
+        description="Per-model dispatch cap for vLLM-backed models.",
+    )
+    scheduler_max_queue_per_tenant: int = Field(default=64, ge=1)
+    scheduler_queue_timeout_seconds: float = Field(default=30.0, ge=0.0)
+    scheduler_retry_after_seconds: int = Field(default=2, ge=0)
+    scheduler_wait_aging_priority_per_second: float = Field(default=0.5, ge=0.0)
+    scheduler_tenant_fairness_weight: float = Field(default=2.0, ge=0.0)
+
     # MLX prompt cache. Multi-slot LRU keyed by token-prefix overlap. Each slot
     # holds an independent KV state for one prefix; lookup picks the slot with
     # the longest matching prefix. ``MLX_PREFIX_CACHE_MAX_SLOTS=1`` reproduces

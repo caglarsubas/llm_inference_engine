@@ -32,6 +32,7 @@ from ..auth import Identity, require_identity
 from ..manager import ModelNotFoundError
 from ..observability import span
 from ..schemas import RerankRequest, RerankResponse, RerankResult, Usage
+from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
@@ -71,59 +72,72 @@ async def rerank(
     identity: Identity = Depends(require_identity),
 ) -> RerankResponse:
     adapter, model_name = await _resolve(req.model)
+    estimated_tokens = max(1, (len(req.query) + sum(len(doc) for doc in req.documents)) // 4)
+    lease = await acquire_slot(
+        identity=identity,
+        adapter=adapter,
+        model_name=model_name,
+        workload="rerank.run",
+        priority=-5.0,
+        estimated_tokens=estimated_tokens,
+    )
 
-    with span(
-        "rerank.run",
-        **{
-            "gen_ai.system": adapter.backend_name,
-            "gen_ai.request.model": model_name,
-            "rerank.documents_count": len(req.documents),
-            "rerank.top_n": req.top_n if req.top_n is not None else len(req.documents),
-            **_identity_attrs(identity),
-        },
-    ) as s:
-        # Embed query + documents in a single coalescer submit so they share
-        # one underlying batched call when the model supports it.
-        try:
-            outcome = await app_state.embed_coalescer.submit(
-                adapter, [req.query, *req.documents]
-            )
-        except EmbeddingsNotSupportedError as exc:
-            raise HTTPException(
-                status_code=501,
-                detail=f"rerank not supported by {exc} backend (no embeddings)",
-            ) from exc
-
-        if len(outcome.embeddings) != 1 + len(req.documents):
-            # Defensive — shouldn't happen, but if the backend silently dropped
-            # an input we surface it loudly rather than mis-ranking.
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"embedding batch size mismatch: expected {1 + len(req.documents)}, "
-                    f"got {len(outcome.embeddings)}"
-                ),
-            )
-
-        query_vec = outcome.embeddings[0]
-        doc_vecs = outcome.embeddings[1:]
-
-        # Score every doc, then sort descending by relevance. Stable sort
-        # keeps original index order when scores tie (important for caller
-        # determinism on degenerate inputs).
-        scored = [(i, _cosine(query_vec, dv)) for i, dv in enumerate(doc_vecs)]
-        scored.sort(key=lambda t: t[1], reverse=True)
-        if req.top_n is not None:
-            scored = scored[: req.top_n]
-
-        s.bind(
+    try:
+        with span(
+            "rerank.run",
             **{
-                "gen_ai.usage.input_tokens": outcome.prompt_tokens,
-                "embedding.dimensions": len(query_vec),
-                "rerank.results_returned": len(scored),
-                "batch.adapter_action": outcome.adapter_action,
-            }
-        )
+                "gen_ai.system": adapter.backend_name,
+                "gen_ai.request.model": model_name,
+                "rerank.documents_count": len(req.documents),
+                "rerank.top_n": req.top_n if req.top_n is not None else len(req.documents),
+                **_identity_attrs(identity),
+                **scheduler_span_attrs(lease),
+            },
+        ) as s:
+            # Embed query + documents in a single coalescer submit so they share
+            # one underlying batched call when the model supports it.
+            try:
+                outcome = await app_state.embed_coalescer.submit(
+                    adapter, [req.query, *req.documents]
+                )
+            except EmbeddingsNotSupportedError as exc:
+                raise HTTPException(
+                    status_code=501,
+                    detail=f"rerank not supported by {exc} backend (no embeddings)",
+                ) from exc
+
+            if len(outcome.embeddings) != 1 + len(req.documents):
+                # Defensive — shouldn't happen, but if the backend silently dropped
+                # an input we surface it loudly rather than mis-ranking.
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"embedding batch size mismatch: expected {1 + len(req.documents)}, "
+                        f"got {len(outcome.embeddings)}"
+                    ),
+                )
+
+            query_vec = outcome.embeddings[0]
+            doc_vecs = outcome.embeddings[1:]
+
+            # Score every doc, then sort descending by relevance. Stable sort
+            # keeps original index order when scores tie (important for caller
+            # determinism on degenerate inputs).
+            scored = [(i, _cosine(query_vec, dv)) for i, dv in enumerate(doc_vecs)]
+            scored.sort(key=lambda t: t[1], reverse=True)
+            if req.top_n is not None:
+                scored = scored[: req.top_n]
+
+            s.bind(
+                **{
+                    "gen_ai.usage.input_tokens": outcome.prompt_tokens,
+                    "embedding.dimensions": len(query_vec),
+                    "rerank.results_returned": len(scored),
+                    "batch.adapter_action": outcome.adapter_action,
+                }
+            )
+    finally:
+        await app_state.scheduler.release(lease)
 
     results = [
         RerankResult(
