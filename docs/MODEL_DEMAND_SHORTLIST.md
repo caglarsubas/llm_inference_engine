@@ -114,6 +114,28 @@ For Docker Model Runner upstreams, use the Docker-advertised model id in
 `qwen3-vl-8b-instruct:vllm`. The engine's `name`/`tag` stay stable for
 clients, while `model_id` must match the upstream exactly.
 
+## OpenRouter Large-Model Catalog
+
+The OpenRouter lane covers demanded models above the local/vLLM operating
+budget when they are open-weight, non-proprietary, and larger than 50B
+parameters. The committed `.openrouter_models.example.json` is the current
+copy-ready catalog; it was checked against OpenRouter's live `/api/v1/models`
+surface on 2026-06-17 and includes 22 large candidates.
+
+Key image-capable OpenRouter entries for this vehicle-photo workflow:
+
+| Engine model id | OpenRouter model id | Modality |
+|---|---|---|
+| `qwen3-vl-235b-a22b-instruct:openrouter` | `qwen/qwen3-vl-235b-a22b-instruct` | `text+image->text` |
+| `qwen3-vl-235b-a22b-thinking:openrouter` | `qwen/qwen3-vl-235b-a22b-thinking` | `text+image->text` |
+| `qwen3.5-122b-a10b:openrouter` | `qwen/qwen3.5-122b-a10b` | `text+image+video->text` |
+| `qwen2.5-vl-72b-instruct:openrouter` | `qwen/qwen2.5-vl-72b-instruct` | `text+image->text` |
+
+Text-only OpenRouter entries in the same file are useful for general chat,
+reasoning, or LLM-as-judge fallback, but they should not be counted as
+vehicle-image candidates until they accept image content parts and pass the
+strict JSON smoke.
+
 ## Benchmark Exposure Status
 
 The current local endpoint exposes only installed local GGUF/MLX/Ollama
