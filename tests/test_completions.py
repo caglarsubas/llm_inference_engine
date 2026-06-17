@@ -13,9 +13,11 @@ from inference_engine.adapters import (
     InferenceAdapter,
     StreamChunk,
 )
-from inference_engine.adapters.base import GenerationResult
+from inference_engine.adapters.base import GenerationResult, GenerationTimeoutError
 from inference_engine.cancellation import Cancellation
+from inference_engine.config import settings
 from inference_engine.main import app
+from inference_engine.manager import ModelNotFoundError
 from inference_engine.registry import ModelDescriptor
 from inference_engine.schemas import CompletionRequest
 
@@ -141,6 +143,35 @@ class _StubCompletionAdapter(InferenceAdapter):
         )
 
 
+class _FailingLocalCompletionAdapter(_StubCompletionAdapter):
+    backend_name = "ollama_http"
+
+    async def complete(
+        self, prompt: str, params: GenerationParams, cancel: Cancellation | None = None
+    ) -> GenerationResult:
+        raise GenerationTimeoutError(
+            timeout_seconds=3.0,
+            backend=self.backend_name,
+            model="stub-cmpl:1",
+        )
+
+
+class _OpenRouterCompletionAdapter(_StubCompletionAdapter):
+    backend_name = "openrouter"
+    request_key_source = "openrouter-api-key"
+
+    async def complete(
+        self, prompt: str, params: GenerationParams, cancel: Cancellation | None = None
+    ) -> GenerationResult:
+        self.complete_calls.append(prompt)
+        return GenerationResult(
+            text=f"openrouter -> {prompt}",
+            finish_reason="stop",
+            prompt_tokens=6,
+            completion_tokens=4,
+        )
+
+
 def _stub_descriptor(name: str = "stub-cmpl:1") -> ModelDescriptor:
     return ModelDescriptor(
         name=name.split(":")[0],
@@ -176,6 +207,39 @@ def patched_manager(monkeypatch):
 
     box.set_adapter = _set  # type: ignore[attr-defined]
     return box
+
+
+def test_route_timeout_uses_openrouter_completion_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openrouter_fallback_enabled", True)
+    monkeypatch.setattr(settings, "openrouter_fallback_model", "")
+    monkeypatch.setattr(settings, "openrouter_fallback_backends", "llama_cpp,ollama_http,vllm")
+
+    local_adapter = _FailingLocalCompletionAdapter()
+    fallback_adapter = _OpenRouterCompletionAdapter()
+
+    async def _fake_get(model_id: str):
+        if model_id == "stub-cmpl:1":
+            return local_adapter, _stub_descriptor(model_id)
+        if model_id == "stub-cmpl:openrouter":
+            return fallback_adapter, _stub_descriptor(model_id)
+        raise ModelNotFoundError(model_id)
+
+    from inference_engine.api.state import app_state  # noqa: PLC0415
+
+    monkeypatch.setattr(app_state.manager, "get", _fake_get)
+
+    client = TestClient(app)
+    r = client.post("/v1/completions", json={"model": "stub-cmpl:1", "prompt": ["a", "b"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == "stub-cmpl:openrouter"
+    assert body["request_key_source"] == "openrouter-api-key"
+    assert body["fallback_from_model"] == "stub-cmpl:1"
+    assert body["fallback_from_backend"] == "ollama_http"
+    assert body["fallback_reason"] == "generation_timeout"
+    assert body["fallback_error_type"] == "GenerationTimeoutError"
+    assert [c["text"] for c in body["choices"]] == ["openrouter -> a", "openrouter -> b"]
+    assert fallback_adapter.complete_calls == ["a", "b"]
 
 
 def test_route_single_prompt_returns_one_choice(patched_manager) -> None:

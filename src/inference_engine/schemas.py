@@ -286,6 +286,10 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     request_key_source: str = "local-inference"
+    fallback_from_model: str | None = None
+    fallback_from_backend: str | None = None
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None
     choices: list[ChatCompletionChoice]
     usage: Usage
     evals: list[AutoEvalResult] | None = None
@@ -335,6 +339,10 @@ class ChatCompletionChunk(BaseModel):
     created: int
     model: str
     request_key_source: str = "local-inference"
+    fallback_from_model: str | None = None
+    fallback_from_backend: str | None = None
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None
     choices: list[ChatCompletionChunkChoice]
 
 
@@ -371,6 +379,10 @@ class CompletionResponse(BaseModel):
     created: int
     model: str
     request_key_source: str = "local-inference"
+    fallback_from_model: str | None = None
+    fallback_from_backend: str | None = None
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None
     choices: list[CompletionChoice]
     usage: Usage
 

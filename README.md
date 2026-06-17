@@ -405,6 +405,9 @@ All knobs live in `.env` (see `.env.example`):
 | `OPENROUTER_API_KEY`     | `""`                                                                                    | OpenRouter bearer token; keep only in ignored runtime env |
 | `OPENROUTER_ENDPOINT`    | `https://openrouter.ai/api`                                                             | OpenRouter OpenAI-compatible base before `/v1`           |
 | `OPENROUTER_MIN_PARAMETER_COUNT_B` | `50`                                                                           | OpenRouter gate: configured model must be strictly larger |
+| `OPENROUTER_FALLBACK_ENABLED` | `true`                                                                             | Retry eligible local generation failures on OpenRouter   |
+| `OPENROUTER_FALLBACK_MODEL` | `""`                                                                                  | Explicit fallback model; empty derives `<name>:openrouter` |
+| `OPENROUTER_FALLBACK_BACKENDS` | `llama_cpp,ollama_http,vllm`                                                     | Local backend names eligible for OpenRouter fallback     |
 | `PREFER_MLX_OVER_GGUF`   | `true`                                                                                   | On a name collision, MLX wins (faster on Apple Silicon)  |
 | `DEFAULT_MODEL`          | `llama3.2:3b`                                                                            | Used by smoke test by default                            |
 | `CHAT_COMPLETION_TIMEOUT_SECONDS` | `120`                                                                            | HTTP-backed chat deadline; `0` disables. Keep below public proxy caps. |
@@ -954,6 +957,15 @@ and stamps every inference span/response with:
 The flag is returned as `request_key_source` on completion, embedding, rerank,
 and streaming chunk payloads, and as `llm.request.key_source` on model request
 spans.
+
+When `OPENROUTER_FALLBACK_ENABLED=true`, generation errors from the configured
+local backend names in `OPENROUTER_FALLBACK_BACKENDS` retry once on OpenRouter.
+By default, the retry target is the same exposed model name with the
+`openrouter` tag, e.g. `gemma4:26b` falls back to `gemma4:openrouter`; set
+`OPENROUTER_FALLBACK_MODEL` to force a single shared fallback. Context-window
+errors stay client-visible 400s and do not fallback. Streaming requests only
+fallback before the first assistant chunk is emitted, so clients never receive
+a response stitched across providers.
 
 ### Dynamic batching (embeddings)
 
