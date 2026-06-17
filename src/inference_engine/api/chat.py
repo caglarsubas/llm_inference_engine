@@ -92,6 +92,14 @@ def _identity_attrs(identity: Identity) -> dict:
     }
 
 
+def _request_key_source(adapter: InferenceAdapter) -> str:
+    return getattr(adapter, "request_key_source", "local-inference")
+
+
+def _request_key_attrs(adapter: InferenceAdapter) -> dict:
+    return {"llm.request.key_source": _request_key_source(adapter)}
+
+
 def _estimated_chat_tokens(messages: list[ChatMessage], params: GenerationParams) -> int:
     chars = sum(len(chat_content_text(m.content)) for m in messages)
     return max(1, (chars // 4) + int(params.max_tokens or 0))
@@ -131,8 +139,9 @@ async def _resolve(
             model=model_id,
             **_identity_attrs(identity),
             **(intent_attrs or {}),
-        ):
+        ) as s:
             adapter, desc = await app_state.manager.get(model_id)
+            s.bind(**_request_key_attrs(adapter))
     except ModelNotFoundError:
         raise HTTPException(status_code=404, detail=f"model not found: {model_id!r}") from None
     return adapter, desc.qualified_name
@@ -402,6 +411,7 @@ async def _blocking_response(
                 "gen_ai.request.max_tokens": params.max_tokens,
                 "gen_ai.request.temperature": params.temperature,
                 "n_messages": len(messages),
+                **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
                 **(intent_attrs or {}),
                 **_prefix_cache_attrs(adapter),
@@ -507,6 +517,7 @@ async def _blocking_response(
         id=completion_id,
         created=int(time.time()),
         model=model_name,
+        request_key_source=_request_key_source(adapter),
         choices=[
             ChatCompletionChoice(
                 index=0,
@@ -548,6 +559,7 @@ async def _stream_response(
             id=completion_id,
             created=created,
             model=model_name,
+            request_key_source=_request_key_source(adapter),
             choices=[ChatCompletionChunkChoice(index=0, delta=delta, finish_reason=finish)],
         )
         return {"data": chunk.model_dump_json()}
@@ -640,6 +652,7 @@ async def _stream_response(
                     "gen_ai.system": adapter.backend_name,
                     "gen_ai.request.model": model_name,
                     "n_messages": len(messages),
+                    **_request_key_attrs(adapter),
                     **_identity_attrs(identity),
                     **(intent_attrs or {}),
                     **_auto_eval_attrs(auto_eval, policy),

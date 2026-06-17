@@ -4,6 +4,7 @@
 .env
 .auth_keys.json
 .auto_eval_policies.json
+.openrouter_models.json
 __pycache__
 **/__pycache__
 *.pyc

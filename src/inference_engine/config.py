@@ -23,6 +23,35 @@ class Settings(BaseSettings):
             ".vllm_models.example.json."
         ),
     )
+    openrouter_models_file: Path = Field(
+        default=Path(".openrouter_models.json"),
+        description=(
+            "JSON config mapping engine model ids to OpenRouter model ids. "
+            "Entries are admitted only when they are open-weight, "
+            "non-proprietary, and larger than OPENROUTER_MIN_PARAMETER_COUNT_B."
+        ),
+    )
+    openrouter_api_key: str = Field(
+        default="",
+        description="OpenRouter bearer token. Keep it in ignored runtime env only.",
+    )
+    openrouter_endpoint: str = Field(
+        default="https://openrouter.ai/api",
+        description="OpenRouter OpenAI-compatible base URL before /v1.",
+    )
+    openrouter_min_parameter_count_b: float = Field(
+        default=50.0,
+        ge=0.0,
+        description="Minimum parameter count, in billions, for OpenRouter routing.",
+    )
+    openrouter_http_referer: str = Field(
+        default="",
+        description="Optional OpenRouter HTTP-Referer attribution header.",
+    )
+    openrouter_app_title: str = Field(
+        default="llm-inference-engine",
+        description="Optional OpenRouter X-Title attribution header.",
+    )
     vllm_upstream_probe_timeout_seconds: float = Field(
         default=1.0,
         ge=0.05,

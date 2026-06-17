@@ -31,6 +31,12 @@ def test_mlx_descriptor_yields_mlx_adapter() -> None:
     assert adapter.backend_name == "mlx"
 
 
+def test_openrouter_descriptor_yields_openrouter_adapter() -> None:
+    adapter = _build_adapter_for(_desc("openrouter"))
+    assert adapter.backend_name == "openrouter"
+    assert adapter.request_key_source == "openrouter-api-key"
+
+
 def test_unknown_format_raises() -> None:
     with pytest.raises(ValueError):
         _build_adapter_for(_desc("onnx"))

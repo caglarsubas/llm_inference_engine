@@ -178,6 +178,7 @@ class InferenceAdapter(ABC):
     """Abstract base for all inference backends."""
 
     backend_name: str = "abstract"
+    request_key_source: str = "local-inference"
 
     @abstractmethod
     async def load(self, descriptor: ModelDescriptor) -> None: ...

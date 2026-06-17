@@ -285,6 +285,7 @@ class ChatCompletionResponse(BaseModel):
     object: Literal["chat.completion"] = "chat.completion"
     created: int
     model: str
+    request_key_source: str = "local-inference"
     choices: list[ChatCompletionChoice]
     usage: Usage
     evals: list[AutoEvalResult] | None = None
@@ -333,6 +334,7 @@ class ChatCompletionChunk(BaseModel):
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
     created: int
     model: str
+    request_key_source: str = "local-inference"
     choices: list[ChatCompletionChunkChoice]
 
 
@@ -368,6 +370,7 @@ class CompletionResponse(BaseModel):
     object: Literal["text_completion"] = "text_completion"
     created: int
     model: str
+    request_key_source: str = "local-inference"
     choices: list[CompletionChoice]
     usage: Usage
 
@@ -393,6 +396,7 @@ class EmbeddingResponse(BaseModel):
     object: Literal["list"] = "list"
     data: list[EmbeddingObject]
     model: str
+    request_key_source: str = "local-inference"
     usage: Usage
 
 
@@ -425,6 +429,7 @@ class RerankResponse(BaseModel):
     object: Literal["rerank"] = "rerank"
     created: int
     model: str
+    request_key_source: str = "local-inference"
     results: list[RerankResult]
     usage: Usage
 
@@ -439,6 +444,7 @@ class ModelInfo(BaseModel):
     backend: str = "llama_cpp"
     format: str = "gguf"
     model_path: str | None = None
+    request_key_source: str = "local-inference"
     # Capability hints for clients (model registry, UI badges).
     # ``reasoning``/``thinking`` mean the underlying model emits private chain
     # of thought; the engine strips it into a separate channel before clients

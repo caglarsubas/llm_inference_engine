@@ -336,10 +336,12 @@ src/inference_engine/
 │   ├── base.py          # InferenceAdapter ABC (stream/generate accept cancel=)
 │   ├── llama_cpp.py     # llama-cpp-python implementation (GGUF) — streaming cancel
 │   ├── mlx_lm.py        # mlx-lm implementation (Apple Silicon native) — streaming cancel
+│   ├── openrouter_adapter.py # OpenRouter OpenAI-compatible client
 │   └── vllm_adapter.py  # vLLM HTTP client (continuous batching on a CUDA upstream)
 └── registry/
     ├── ollama.py        # parses Ollama manifests → ModelDescriptor
     ├── mlx.py           # scans MLX model directories
+    ├── openrouter.py    # parses .openrouter_models.json + policy gate
     ├── vllm.py          # parses .vllm_models.json (HTTP endpoints, no local files)
     └── composite.py     # merges multiple registry sources
 Dockerfile                      # multi-stage build, llama-cpp-python from source, non-root runtime
@@ -398,6 +400,11 @@ All knobs live in `.env` (see `.env.example`):
 |--------------------------|------------------------------------------------------------------------------------------|----------------------------------------------------------|
 | `OLLAMA_MODELS_DIR`      | `/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models`                  | Root with `manifests/` and `blobs/`                      |
 | `MLX_MODELS_DIR`         | `~/.cache/inference_engine/mlx`                                                          | Where `download_mlx_model.py` snapshots HF repos         |
+| `VLLM_MODELS_FILE`       | `.vllm_models.json`                                                                      | Config file for OpenAI-compatible vLLM/DMR upstreams     |
+| `OPENROUTER_MODELS_FILE` | `.openrouter_models.json`                                                               | Config file for large open-weight OpenRouter models      |
+| `OPENROUTER_API_KEY`     | `""`                                                                                    | OpenRouter bearer token; keep only in ignored runtime env |
+| `OPENROUTER_ENDPOINT`    | `https://openrouter.ai/api`                                                             | OpenRouter OpenAI-compatible base before `/v1`           |
+| `OPENROUTER_MIN_PARAMETER_COUNT_B` | `50`                                                                           | OpenRouter gate: configured model must be strictly larger |
 | `PREFER_MLX_OVER_GGUF`   | `true`                                                                                   | On a name collision, MLX wins (faster on Apple Silicon)  |
 | `DEFAULT_MODEL`          | `llama3.2:3b`                                                                            | Used by smoke test by default                            |
 | `CHAT_COMPLETION_TIMEOUT_SECONDS` | `120`                                                                            | HTTP-backed chat deadline; `0` disables. Keep below public proxy caps. |
@@ -895,6 +902,50 @@ Clients then send `model: "llama-3.2-1b-instruct:vllm"` or `"llama-3.2-3b-instru
 - **One model per vLLM process.** Multi-model = multiple vLLM containers on different ports + multiple `.vllm_models.json` entries. The engine is the multiplexer.
 - **No prefix-cache introspection on vLLM.** vLLM's PagedAttention is excellent but its OpenAI-compatible HTTP API doesn't expose per-call hit counts the way our local adapters do. `prefix_cache_*` properties on `VLLMAdapter` report `disabled` so the chat span attrs stay uniform across backends.
 - **Embeddings unsupported.** `VLLMAdapter.embed()` raises `EmbeddingsNotSupportedError`; `/v1/embeddings` against a vLLM model returns 501. Continue to use llama.cpp for embeddings (round 15) or wire a separate vLLM container with an embedding model + a custom adapter override.
+
+### OpenRouter gate for large open-weight models
+
+OpenRouter is a second OpenAI-compatible HTTP lane for cases where the demanded
+model is larger than the local lane should carry. It is deliberately
+config-driven and policy-gated: a `.openrouter_models.json` entry is accepted
+only when `parameter_count_b` is strictly greater than
+`OPENROUTER_MIN_PARAMETER_COUNT_B` (default `50`), `open_weight=true`, and
+`proprietary=false`. If `open_source` is present it cannot be `false`.
+
+```json
+[
+  {
+    "name": "llama-3.1-70b-instruct",
+    "tag": "openrouter",
+    "model_id": "meta-llama/llama-3.1-70b-instruct",
+    "parameter_count_b": 70,
+    "open_weight": true,
+    "open_source": true,
+    "proprietary": false
+  }
+]
+```
+
+Set the bearer only in ignored runtime env:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+Clients then send `model: "llama-3.1-70b-instruct:openrouter"`. The engine
+adds `Authorization: Bearer $OPENROUTER_API_KEY` upstream, probes
+OpenRouter's `/v1/models` before listing the model under `/v1/models.data`,
+and stamps every inference span/response with:
+
+| value | meaning |
+|-------|---------|
+| `local-inference` | local llama.cpp, MLX, vLLM, Ollama-HTTP, or other no-provider-key paths |
+| `openrouter-api-key` | OpenRouter-backed request using `OPENROUTER_API_KEY` |
+| `openai-api-key` | reserved flag for a future direct OpenAI provider lane |
+
+The flag is returned as `request_key_source` on completion, embedding, rerank,
+and streaming chunk payloads, and as `llm.request.key_source` on model request
+spans.
 
 ### Dynamic batching (embeddings)
 

@@ -40,6 +40,14 @@ def _identity_attrs(identity: Identity) -> dict:
     return {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
 
 
+def _request_key_source(adapter: InferenceAdapter) -> str:
+    return getattr(adapter, "request_key_source", "local-inference")
+
+
+def _request_key_attrs(adapter: InferenceAdapter) -> dict:
+    return {"llm.request.key_source": _request_key_source(adapter)}
+
+
 async def _resolve(model_id: str) -> tuple[InferenceAdapter, str]:
     try:
         adapter, desc = await app_state.manager.get(model_id)
@@ -106,6 +114,7 @@ async def create_completion(
                 "gen_ai.request.max_tokens": params.max_tokens,
                 "gen_ai.request.temperature": params.temperature,
                 "completion.batch_size": len(prompts),
+                **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
                 **scheduler_span_attrs(lease),
             },
@@ -141,6 +150,7 @@ async def create_completion(
         id=completion_id,
         created=int(time.time()),
         model=model_name,
+        request_key_source=_request_key_source(adapter),
         choices=choices,
         usage=Usage(
             prompt_tokens=total_prompt_tokens,

@@ -43,6 +43,14 @@ def _identity_attrs(identity: Identity) -> dict:
     return {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
 
 
+def _request_key_source(adapter: InferenceAdapter) -> str:
+    return getattr(adapter, "request_key_source", "local-inference")
+
+
+def _request_key_attrs(adapter: InferenceAdapter) -> dict:
+    return {"llm.request.key_source": _request_key_source(adapter)}
+
+
 async def _resolve(model_id: str) -> tuple[InferenceAdapter, str]:
     try:
         adapter, desc = await app_state.manager.get(model_id)
@@ -78,6 +86,7 @@ async def create_embeddings(
                 "gen_ai.system": adapter.backend_name,
                 "gen_ai.request.model": model_name,
                 "embedding.batch_size": len(inputs),
+                **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
                 **scheduler_span_attrs(lease),
             },
@@ -113,6 +122,7 @@ async def create_embeddings(
             for i, vec in enumerate(outcome.embeddings)
         ],
         model=model_name,
+        request_key_source=_request_key_source(adapter),
         usage=Usage(
             prompt_tokens=outcome.prompt_tokens,
             completion_tokens=0,
