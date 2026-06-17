@@ -19,6 +19,8 @@ from inference_engine.registry import (
 )
 from inference_engine.schemas import ChatMessage
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _write_models(path: Path, entries: list[dict]) -> None:
     path.write_text(json.dumps(entries), encoding="utf-8")
@@ -76,6 +78,24 @@ def test_registry_parses_large_open_weight_entry(tmp_path: Path) -> None:
     assert desc.endpoint == "https://openrouter.ai/api"
     assert desc.params["model_id"] == "meta-llama/llama-3.1-70b-instruct"
     assert desc.params["request_key_source"] == "openrouter-api-key"
+
+
+def test_example_catalog_is_policy_compliant() -> None:
+    reg = OpenRouterRegistry(
+        ROOT / ".openrouter_models.example.json",
+        default_endpoint="https://openrouter.ai/api",
+        min_parameter_count_b=50,
+    )
+
+    descs = reg.list_models()
+    assert len(descs) >= 20
+    assert len({d.qualified_name for d in descs}) == len(descs)
+    assert all(d.format == "openrouter" for d in descs)
+    assert all(d.params["request_key_source"] == "openrouter-api-key" for d in descs)
+    assert all(float(d.params["parameter_count_b"]) > 50 for d in descs)
+    assert {"qwen3-vl-235b-a22b-instruct:openrouter", "hermes-4-405b:openrouter"} <= {
+        d.qualified_name for d in descs
+    }
 
 
 @pytest.mark.parametrize(

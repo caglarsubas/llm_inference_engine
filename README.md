@@ -912,6 +912,14 @@ only when `parameter_count_b` is strictly greater than
 `OPENROUTER_MIN_PARAMETER_COUNT_B` (default `50`), `open_weight=true`, and
 `proprietary=false`. If `open_source` is present it cannot be `false`.
 
+The committed `.openrouter_models.example.json` is a curated operator catalog
+of current OpenRouter ids verified against `https://openrouter.ai/api/v1/models`
+on 2026-06-17. It includes large Llama, Qwen, Nemotron, Nous/Hermes, Mixtral,
+and selected Llama-finetune lanes. Copy only the entries you want to expose
+into the ignored runtime `.openrouter_models.json`.
+
+Single-entry shape:
+
 ```json
 [
   {
