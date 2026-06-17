@@ -43,7 +43,7 @@ from ..schemas import (
     Usage,
     chat_content_text,
 )
-from . import _auto_eval, _tool_audit
+from . import _auto_eval, _fallback, _tool_audit
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -373,7 +373,7 @@ def _last_user_prompt(messages: list[ChatMessage]) -> str:
     return ""
 
 
-async def _blocking_response(
+async def _generate_blocking_once(
     adapter: InferenceAdapter,
     model_name: str,
     messages: list[ChatMessage],
@@ -382,7 +382,8 @@ async def _blocking_response(
     auto_eval: AutoEvalSpec | None = None,
     policy: PolicyEntry | None = None,
     intent_attrs: dict | None = None,
-) -> ChatCompletionResponse:
+    fallback_info: _fallback.FallbackInfo | None = None,
+):
     lease = await acquire_slot(
         identity=identity,
         adapter=adapter,
@@ -416,6 +417,7 @@ async def _blocking_response(
                 **(intent_attrs or {}),
                 **_prefix_cache_attrs(adapter),
                 **_auto_eval_attrs(auto_eval, policy),
+                **_fallback.span_attrs(fallback_info),
                 **scheduler_span_attrs(lease),
             },
         ) as s:
@@ -424,14 +426,15 @@ async def _blocking_response(
             n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
             try:
                 result = await adapter.generate(messages, params)
-            except ContextLengthExceededError as exc:
+            except ContextLengthExceededError:
                 # Prompt + forced generation overran the model's window. Answer with
                 # a deterministic, typed 400 so clients branch on the error type
                 # instead of pattern-matching an opaque 500 after a big tool result.
-                raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+                s.bind(**{"error.type": "context_length_exceeded"})
+                raise
             except GenerationTimeoutError as exc:
                 s.bind(**_timeout_span_attrs(exc))
-                raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
+                raise
             # Single normalization seam: convert any leaked vendor markup
             # (Nemotron <tool_call>, DeepSeek-R1 </think>, etc.) into structured
             # OpenAI fields. Backends that already returned ``tool_calls`` keep
@@ -468,6 +471,75 @@ async def _blocking_response(
     finally:
         await app_state.scheduler.release(lease)
 
+    return result
+
+
+def _raise_generation_http_error(exc: Exception) -> None:
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, ContextLengthExceededError):
+        raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+    if isinstance(exc, GenerationTimeoutError):
+        raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
+    raise exc
+
+
+async def _blocking_response(
+    adapter: InferenceAdapter,
+    model_name: str,
+    messages: list[ChatMessage],
+    params: GenerationParams,
+    identity: Identity,
+    auto_eval: AutoEvalSpec | None = None,
+    policy: PolicyEntry | None = None,
+    intent_attrs: dict | None = None,
+) -> ChatCompletionResponse:
+    active_adapter = adapter
+    active_model_name = model_name
+    fallback_info: _fallback.FallbackInfo | None = None
+
+    try:
+        result = await _generate_blocking_once(
+            active_adapter,
+            active_model_name,
+            messages,
+            params,
+            identity,
+            auto_eval,
+            policy,
+            intent_attrs,
+        )
+    except ContextLengthExceededError as exc:
+        _raise_generation_http_error(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        fallback = await _fallback.resolve_openrouter_fallback(
+            adapter=active_adapter,
+            model_name=active_model_name,
+            exc=exc,
+            identity=identity,
+            intent_attrs=intent_attrs,
+        )
+        if fallback is None:
+            _raise_generation_http_error(exc)
+
+        active_adapter, active_model_name, fallback_info = fallback
+        try:
+            result = await _generate_blocking_once(
+                active_adapter,
+                active_model_name,
+                messages,
+                params,
+                identity,
+                auto_eval,
+                policy,
+                intent_attrs,
+                fallback_info,
+            )
+        except Exception as fallback_exc:
+            _raise_generation_http_error(fallback_exc)
+
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
 
     eval_results = None
@@ -481,7 +553,7 @@ async def _blocking_response(
                 default_judge_model=settings.default_judge_model,
                 prompt=prompt_for_eval,
                 response=result.text,
-                candidate_model=model_name,
+                candidate_model=active_model_name,
                 candidate_completion_id=completion_id,
                 identity=identity,
             )
@@ -494,7 +566,7 @@ async def _blocking_response(
                 default_judge_model=settings.default_judge_model,
                 prompt=prompt_for_eval,
                 response=result.text,
-                candidate_model=model_name,
+                candidate_model=active_model_name,
                 candidate_completion_id=completion_id,
                 identity=identity,
             )
@@ -516,8 +588,9 @@ async def _blocking_response(
     return ChatCompletionResponse(
         id=completion_id,
         created=int(time.time()),
-        model=model_name,
-        request_key_source=_request_key_source(adapter),
+        model=active_model_name,
+        request_key_source=_request_key_source(active_adapter),
+        **_fallback.response_fields(fallback_info),
         choices=[
             ChatCompletionChoice(
                 index=0,
@@ -550,6 +623,7 @@ async def _stream_response(
     policy: PolicyEntry | None = None,
     intent_attrs: dict | None = None,
     scheduler_lease=None,
+    fallback_info: _fallback.FallbackInfo | None = None,
 ) -> AsyncIterator[dict]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -560,15 +634,15 @@ async def _stream_response(
             created=created,
             model=model_name,
             request_key_source=_request_key_source(adapter),
+            **_fallback.response_fields(fallback_info),
             choices=[ChatCompletionChunkChoice(index=0, delta=delta, finish_reason=finish)],
         )
         return {"data": chunk.model_dump_json()}
 
     try:
-        yield _chunk(ChatCompletionDelta(role="assistant"))
-
         finish_reason: str | None = None
         chunks_emitted = 0
+        role_emitted = False
         cancelled = False
         accumulated: list[str] = []
         # Audit inbound tool messages first (same shape the blocking path uses).
@@ -646,6 +720,53 @@ async def _stream_response(
 
         async with watch_disconnect(request) as cancel:
             reassembler = _tool_audit.ToolCallReassembler()
+
+            def _piece_events(piece) -> list[dict]:
+                """Convert one backend stream piece into zero or more SSE chunks."""
+                nonlocal finish_reason, next_tool_index, role_emitted
+
+                events: list[dict] = []
+                if not role_emitted:
+                    events.append(_chunk(ChatCompletionDelta(role="assistant")))
+                    role_emitted = True
+
+                if piece.text:
+                    events.extend(_ingest(normalizer.feed(piece.text)))
+                if piece.tool_call_deltas:
+                    # Backend already produced structured deltas — flush any
+                    # text the normalizer was holding back (it cannot interleave
+                    # with structured calls cleanly) and pass the deltas through.
+                    events.extend(_ingest(normalizer.flush()))
+                    reassembler.feed(piece.tool_call_deltas)
+                    # Re-base our own tool index past whatever the backend emitted
+                    # so post-flush normalized calls do not collide.
+                    next_tool_index = max(
+                        next_tool_index,
+                        max(int(d.get("index", 0)) for d in piece.tool_call_deltas) + 1,
+                    )
+                    events.append(
+                        _chunk(
+                            ChatCompletionDelta(
+                                tool_calls=[
+                                    ToolCallDelta(
+                                        index=int(d.get("index", 0)),
+                                        id=d.get("id"),
+                                        type=d.get("type"),
+                                        function=(
+                                            ToolCallFunctionDelta(**(d.get("function") or {}))
+                                            if d.get("function") is not None
+                                            else None
+                                        ),
+                                    )
+                                    for d in piece.tool_call_deltas
+                                ]
+                            )
+                        )
+                    )
+                if piece.finish_reason:
+                    finish_reason = piece.finish_reason
+                return events
+
             with span(
                 "chat.stream",
                 **{
@@ -656,48 +777,27 @@ async def _stream_response(
                     **_identity_attrs(identity),
                     **(intent_attrs or {}),
                     **_auto_eval_attrs(auto_eval, policy),
+                    **_fallback.span_attrs(fallback_info),
                     **scheduler_span_attrs(scheduler_lease),
                 },
             ) as s:
                 n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
                 try:
-                    async for piece in adapter.stream(messages, params, cancel=cancel):
-                        if piece.text:
-                            for chunk in _ingest(normalizer.feed(piece.text)):
-                                yield chunk
-                        if piece.tool_call_deltas:
-                            # Backend already produced structured deltas — flush
-                            # any text the normalizer was holding back (it can't
-                            # interleave with structured calls cleanly) and pass
-                            # the deltas through.
-                            for chunk in _ingest(normalizer.flush()):
-                                yield chunk
-                            reassembler.feed(piece.tool_call_deltas)
-                            # Re-base our own tool index past whatever the backend
-                            # emitted so post-flush normalized calls don't collide.
-                            next_tool_index = max(
-                                next_tool_index,
-                                max(int(d.get("index", 0)) for d in piece.tool_call_deltas) + 1,
-                            )
-                            yield _chunk(
-                                ChatCompletionDelta(
-                                    tool_calls=[
-                                        ToolCallDelta(
-                                            index=int(d.get("index", 0)),
-                                            id=d.get("id"),
-                                            type=d.get("type"),
-                                            function=(
-                                                ToolCallFunctionDelta(**(d.get("function") or {}))
-                                                if d.get("function") is not None
-                                                else None
-                                            ),
-                                        )
-                                        for d in piece.tool_call_deltas
-                                    ]
-                                )
-                            )
-                        if piece.finish_reason:
-                            finish_reason = piece.finish_reason
+                    pieces = adapter.stream(messages, params, cancel=cancel)
+                    try:
+                        first_piece = await anext(pieces)
+                    except StopAsyncIteration:
+                        first_piece = None
+
+                    if first_piece is not None:
+                        for chunk in _piece_events(first_piece):
+                            yield chunk
+                    async for piece in pieces:
+                        for chunk in _piece_events(piece):
+                            yield chunk
+                    if not role_emitted:
+                        yield _chunk(ChatCompletionDelta(role="assistant"))
+                        role_emitted = True
                     # Drain any held-back text now that the adapter is done.
                     for chunk in _ingest(normalizer.flush()):
                         yield chunk
@@ -707,19 +807,127 @@ async def _stream_response(
                     if normalizer.has_tool_calls():
                         finish_reason = "tool_calls"
                 except ContextLengthExceededError as exc:
-                    # The SSE response line is already open (we sent the role
-                    # delta), so we can't downgrade to a 400 here. Emit a typed
-                    # terminal ``error`` event — same payload shape as the blocking
-                    # 400 body — then stop. Clients keying on ``type`` get the same
-                    # signal on both paths.
+                    # The SSE response line may already be open, so we cannot
+                    # reliably downgrade to a 400 here. Emit a typed terminal
+                    # error event with the same payload shape as the blocking
+                    # 400 body.
                     finish_reason = "error"
                     s.bind(**{"error.type": "context_length_exceeded"})
                     yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
                     return
                 except GenerationTimeoutError as exc:
+                    if not role_emitted and chunks_emitted == 0:
+                        fallback = await _fallback.resolve_openrouter_fallback(
+                            adapter=adapter,
+                            model_name=model_name,
+                            exc=exc,
+                            identity=identity,
+                            intent_attrs=intent_attrs,
+                        )
+                        if fallback is not None:
+                            fallback_adapter, fallback_model_name, stream_fallback_info = fallback
+                            finish_reason = "fallback"
+                            s.bind(
+                                **{
+                                    "llm.fallback.dispatched": True,
+                                    "llm.fallback.to_model": fallback_model_name,
+                                    "llm.fallback.to_backend": fallback_adapter.backend_name,
+                                }
+                            )
+                            if scheduler_lease is not None:
+                                await app_state.scheduler.release(scheduler_lease)
+                                scheduler_lease = None
+                            fallback_lease = await acquire_slot(
+                                identity=identity,
+                                adapter=fallback_adapter,
+                                model_name=fallback_model_name,
+                                workload="chat.stream",
+                                priority=30.0,
+                                estimated_tokens=_estimated_chat_tokens(messages, params),
+                            )
+                            async for chunk in _stream_response(
+                                fallback_adapter,
+                                fallback_model_name,
+                                messages,
+                                params,
+                                identity,
+                                request,
+                                auto_eval,
+                                policy,
+                                intent_attrs,
+                                fallback_lease,
+                                stream_fallback_info,
+                            ):
+                                yield chunk
+                            return
                     finish_reason = "timeout"
                     s.bind(**_timeout_span_attrs(exc))
                     yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
+                    return
+                except Exception as exc:
+                    if not role_emitted and chunks_emitted == 0:
+                        fallback = await _fallback.resolve_openrouter_fallback(
+                            adapter=adapter,
+                            model_name=model_name,
+                            exc=exc,
+                            identity=identity,
+                            intent_attrs=intent_attrs,
+                        )
+                        if fallback is not None:
+                            fallback_adapter, fallback_model_name, stream_fallback_info = fallback
+                            finish_reason = "fallback"
+                            s.bind(
+                                **{
+                                    "llm.fallback.dispatched": True,
+                                    "llm.fallback.to_model": fallback_model_name,
+                                    "llm.fallback.to_backend": fallback_adapter.backend_name,
+                                }
+                            )
+                            if scheduler_lease is not None:
+                                await app_state.scheduler.release(scheduler_lease)
+                                scheduler_lease = None
+                            fallback_lease = await acquire_slot(
+                                identity=identity,
+                                adapter=fallback_adapter,
+                                model_name=fallback_model_name,
+                                workload="chat.stream",
+                                priority=30.0,
+                                estimated_tokens=_estimated_chat_tokens(messages, params),
+                            )
+                            async for chunk in _stream_response(
+                                fallback_adapter,
+                                fallback_model_name,
+                                messages,
+                                params,
+                                identity,
+                                request,
+                                auto_eval,
+                                policy,
+                                intent_attrs,
+                                fallback_lease,
+                                stream_fallback_info,
+                            ):
+                                yield chunk
+                            return
+                    finish_reason = "error"
+                    s.bind(
+                        **{
+                            "error.type": exc.__class__.__name__,
+                            "gen_ai.response.finish_reason": "error",
+                        }
+                    )
+                    yield {
+                        "event": "error",
+                        "data": json.dumps(
+                            {
+                                "error": {
+                                    "message": str(exc),
+                                    "type": "backend_error",
+                                    "code": "backend_error",
+                                }
+                            }
+                        ),
+                    }
                     return
                 finally:
                     cancelled = bool(cancel)

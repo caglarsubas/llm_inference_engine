@@ -52,6 +52,28 @@ class Settings(BaseSettings):
         default="llm-inference-engine",
         description="Optional OpenRouter X-Title attribution header.",
     )
+    openrouter_fallback_enabled: bool = Field(
+        default=True,
+        description=(
+            "When a configured local backend fails during generation, retry the "
+            "request on an OpenRouter-backed model when one is available."
+        ),
+    )
+    openrouter_fallback_model: str = Field(
+        default="",
+        description=(
+            "Optional explicit OpenRouter fallback model id exposed by this "
+            "engine, e.g. 'llama-3.1-70b-instruct:openrouter'. Empty means "
+            "derive '<requested-name>:openrouter' from the failed model."
+        ),
+    )
+    openrouter_fallback_backends: str = Field(
+        default="llama_cpp,ollama_http,vllm",
+        description=(
+            "Comma-separated backend_name values eligible for OpenRouter "
+            "fallback after timeout or backend error."
+        ),
+    )
     vllm_upstream_probe_timeout_seconds: float = Field(
         default=1.0,
         ge=0.05,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 
@@ -12,6 +13,9 @@ from fastapi import HTTPException
 from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
 from inference_engine.adapters.base import GenerationResult, GenerationTimeoutError
 from inference_engine.adapters.ollama_http import OllamaHttpAdapter
+from inference_engine.api.state import app_state
+from inference_engine.config import settings
+from inference_engine.manager import ModelNotFoundError
 from inference_engine.api.chat import _blocking_response, _stream_response
 from inference_engine.auth import Identity
 from inference_engine.registry import ModelDescriptor
@@ -52,6 +56,67 @@ class _TimeoutAdapter(InferenceAdapter):
         yield  # pragma: no cover - marks this as an async generator
 
 
+class _LocalTimeoutAdapter(_TimeoutAdapter):
+    backend_name = "llama_cpp"
+
+
+class _LocalErrorAdapter(_TimeoutAdapter):
+    backend_name = "vllm"
+
+    async def generate(
+        self, messages: Iterable, params: GenerationParams, cancel=None
+    ) -> GenerationResult:
+        raise RuntimeError("upstream died")
+
+
+class _OpenRouterFallbackAdapter(_TimeoutAdapter):
+    backend_name = "openrouter"
+    request_key_source = "openrouter-api-key"
+
+    async def generate(
+        self, messages: Iterable, params: GenerationParams, cancel=None
+    ) -> GenerationResult:
+        return GenerationResult(
+            text="answered by OpenRouter",
+            finish_reason="stop",
+            prompt_tokens=7,
+            completion_tokens=5,
+        )
+
+    async def stream(
+        self, messages: Iterable, params: GenerationParams, cancel=None
+    ) -> AsyncIterator[StreamChunk]:
+        yield StreamChunk(text="streamed by OpenRouter", finish_reason="stop")
+
+
+def _openrouter_descriptor(name: str = "gemma4:openrouter") -> ModelDescriptor:
+    return ModelDescriptor(
+        name=name.split(":")[0],
+        tag=name.split(":")[1],
+        namespace="openrouter",
+        registry="openrouter",
+        model_path=Path(f"openrouter://{name}"),
+        format="openrouter",
+        params={"request_key_source": "openrouter-api-key"},
+        size_bytes=0,
+    )
+
+
+def _install_openrouter_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "openrouter_fallback_enabled", True)
+    monkeypatch.setattr(settings, "openrouter_fallback_model", "")
+    monkeypatch.setattr(settings, "openrouter_fallback_backends", "llama_cpp,ollama_http,vllm")
+
+    fallback_adapter = _OpenRouterFallbackAdapter()
+
+    async def _fake_get(model_id: str):
+        if model_id == "gemma4:openrouter":
+            return fallback_adapter, _openrouter_descriptor(model_id)
+        raise ModelNotFoundError(model_id)
+
+    monkeypatch.setattr(app_state.manager, "get", _fake_get)
+
+
 @pytest.mark.asyncio
 async def test_blocking_timeout_maps_to_typed_504() -> None:
     identity = Identity(tenant="dev", key_id="sk-x")
@@ -69,6 +134,50 @@ async def test_blocking_timeout_maps_to_typed_504() -> None:
     assert ei.value.detail["timeout_seconds"] == 12.5
     assert ei.value.detail["backend"] == "fake-timeout"
     assert ei.value.detail["model"] == "gemma4:26b"
+
+
+@pytest.mark.asyncio
+async def test_blocking_timeout_uses_openrouter_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_openrouter_fallback(monkeypatch)
+    identity = Identity(tenant="dev", key_id="sk-x")
+
+    response = await _blocking_response(
+        _LocalTimeoutAdapter(),
+        "gemma4:26b",
+        [ChatMessage(role="user", content="score this answer")],
+        GenerationParams(),
+        identity,
+    )
+
+    assert response.model == "gemma4:openrouter"
+    assert response.request_key_source == "openrouter-api-key"
+    assert response.fallback_from_model == "gemma4:26b"
+    assert response.fallback_from_backend == "llama_cpp"
+    assert response.fallback_reason == "generation_timeout"
+    assert response.fallback_error_type == "GenerationTimeoutError"
+    assert response.choices[0].message.content == "answered by OpenRouter"
+
+
+@pytest.mark.asyncio
+async def test_blocking_backend_error_uses_openrouter_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_openrouter_fallback(monkeypatch)
+    identity = Identity(tenant="dev", key_id="sk-x")
+
+    response = await _blocking_response(
+        _LocalErrorAdapter(),
+        "gemma4:26b",
+        [ChatMessage(role="user", content="score this answer")],
+        GenerationParams(),
+        identity,
+    )
+
+    assert response.model == "gemma4:openrouter"
+    assert response.request_key_source == "openrouter-api-key"
+    assert response.fallback_from_backend == "vllm"
+    assert response.fallback_reason == "backend_error"
+    assert response.fallback_error_type == "RuntimeError"
 
 
 @pytest.mark.asyncio
@@ -95,6 +204,48 @@ async def test_streaming_timeout_emits_terminal_error_event() -> None:
     assert len(error_events) == 1
     assert "generation_timeout" in error_events[0]["data"]
     assert not any(e.get("data") == "[DONE]" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_timeout_uses_openrouter_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_openrouter_fallback(monkeypatch)
+    identity = Identity(tenant="dev", key_id="sk-x")
+
+    class _Req:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    events = [
+        chunk
+        async for chunk in _stream_response(
+            _LocalTimeoutAdapter(),
+            "gemma4:26b",
+            [ChatMessage(role="user", content="score this answer")],
+            GenerationParams(),
+            identity,
+            _Req(),
+        )
+    ]
+
+    assert not any(e.get("event") == "error" for e in events)
+    assert events[-1]["data"] == "[DONE]"
+    payloads = [
+        json.loads(e["data"])
+        for e in events
+        if e.get("data") and e.get("data") != "[DONE]"
+    ]
+    assert payloads
+    assert all(p["model"] == "gemma4:openrouter" for p in payloads)
+    assert all(p["request_key_source"] == "openrouter-api-key" for p in payloads)
+    assert payloads[0]["fallback_from_model"] == "gemma4:26b"
+    assert payloads[0]["fallback_from_backend"] == "llama_cpp"
+    assert any(
+        choice["delta"].get("content") == "streamed by OpenRouter"
+        for payload in payloads
+        for choice in payload["choices"]
+    )
 
 
 def _ollama_descriptor(endpoint: str = "http://ollama:11434") -> ModelDescriptor:

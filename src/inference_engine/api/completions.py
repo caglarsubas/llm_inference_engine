@@ -20,7 +20,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..adapters import ContextLengthExceededError, GenerationParams, InferenceAdapter
+from ..adapters import (
+    ContextLengthExceededError,
+    GenerationParams,
+    GenerationTimeoutError,
+    InferenceAdapter,
+)
 from ..auth import Identity, require_identity
 from ..manager import ModelNotFoundError
 from ..observability import span
@@ -30,6 +35,7 @@ from ..schemas import (
     CompletionResponse,
     Usage,
 )
+from . import _fallback
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -91,6 +97,79 @@ async def create_completion(
 
     adapter, model_name = await _resolve(req.model)
     params = _params(req)
+
+    active_adapter = adapter
+    active_model_name = model_name
+    fallback_info: _fallback.FallbackInfo | None = None
+
+    try:
+        choices, total_prompt_tokens, total_completion_tokens = await _complete_once(
+            active_adapter,
+            active_model_name,
+            prompts,
+            params,
+            identity,
+        )
+    except ContextLengthExceededError as exc:
+        _raise_generation_http_error(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        fallback = await _fallback.resolve_openrouter_fallback(
+            adapter=active_adapter,
+            model_name=active_model_name,
+            exc=exc,
+            identity=identity,
+        )
+        if fallback is None:
+            _raise_generation_http_error(exc)
+
+        active_adapter, active_model_name, fallback_info = fallback
+        try:
+            choices, total_prompt_tokens, total_completion_tokens = await _complete_once(
+                active_adapter,
+                active_model_name,
+                prompts,
+                params,
+                identity,
+                fallback_info,
+            )
+        except Exception as fallback_exc:
+            _raise_generation_http_error(fallback_exc)
+
+    return CompletionResponse(
+        id=f"cmpl-{uuid.uuid4().hex}",
+        created=int(time.time()),
+        model=active_model_name,
+        request_key_source=_request_key_source(active_adapter),
+        **_fallback.response_fields(fallback_info),
+        choices=choices,
+        usage=Usage(
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            total_tokens=total_prompt_tokens + total_completion_tokens,
+        ),
+    )
+
+
+def _raise_generation_http_error(exc: Exception) -> None:
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, ContextLengthExceededError):
+        raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+    if isinstance(exc, GenerationTimeoutError):
+        raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
+    raise exc
+
+
+async def _complete_once(
+    adapter: InferenceAdapter,
+    model_name: str,
+    prompts: list[str],
+    params: GenerationParams,
+    identity: Identity,
+    fallback_info: _fallback.FallbackInfo | None = None,
+) -> tuple[list[CompletionChoice], int, int]:
     lease = await acquire_slot(
         identity=identity,
         adapter=adapter,
@@ -100,7 +179,6 @@ async def create_completion(
         estimated_tokens=_estimated_completion_tokens(prompts, params),
     )
 
-    completion_id = f"cmpl-{uuid.uuid4().hex}"
     choices: list[CompletionChoice] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -116,14 +194,26 @@ async def create_completion(
                 "completion.batch_size": len(prompts),
                 **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
+                **_fallback.span_attrs(fallback_info),
                 **scheduler_span_attrs(lease),
             },
         ) as s:
             for index, prompt in enumerate(prompts):
                 try:
                     result = await adapter.complete(prompt, params)
-                except ContextLengthExceededError as exc:
-                    raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
+                except ContextLengthExceededError:
+                    s.bind(**{"error.type": "context_length_exceeded"})
+                    raise
+                except GenerationTimeoutError as exc:
+                    s.bind(
+                        **{
+                            "error.type": "generation_timeout",
+                            "gen_ai.response.finish_reason": "timeout",
+                        }
+                    )
+                    if exc.timeout_seconds is not None:
+                        s.bind(**{"generation.timeout_seconds": exc.timeout_seconds})
+                    raise
                 total_prompt_tokens += result.prompt_tokens
                 total_completion_tokens += result.completion_tokens
                 choices.append(
@@ -146,15 +236,4 @@ async def create_completion(
     finally:
         await app_state.scheduler.release(lease)
 
-    return CompletionResponse(
-        id=completion_id,
-        created=int(time.time()),
-        model=model_name,
-        request_key_source=_request_key_source(adapter),
-        choices=choices,
-        usage=Usage(
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            total_tokens=total_prompt_tokens + total_completion_tokens,
-        ),
-    )
+    return choices, total_prompt_tokens, total_completion_tokens
