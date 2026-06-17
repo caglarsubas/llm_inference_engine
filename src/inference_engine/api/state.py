@@ -19,7 +19,9 @@ from ..registry import (
     ModelDescriptor,
     OllamaHttpRegistry,
     OllamaRegistry,
+    OpenRouterRegistry,
     VLLMRegistry,
+    get_openrouter_probe,
     get_probe,
     get_vllm_probe,
 )
@@ -40,6 +42,10 @@ def _build_adapter_for(descriptor: ModelDescriptor) -> InferenceAdapter:
         from ..adapters.vllm_adapter import VLLMAdapter  # noqa: PLC0415
 
         return VLLMAdapter()
+    if descriptor.format == "openrouter":
+        from ..adapters.openrouter_adapter import OpenRouterAdapter  # noqa: PLC0415
+
+        return OpenRouterAdapter()
     if descriptor.format == "ollama_http":
         # Lazy import — keeps the cold-import path quick when the operator
         # hasn't configured an Ollama fallback (OLLAMA_HTTP_ENDPOINT="").
@@ -55,6 +61,11 @@ class AppState:
         ollama = OllamaRegistry(settings.ollama_models_dir)
         mlx = MLXRegistry(settings.mlx_models_dir)
         vllm = VLLMRegistry(settings.vllm_models_file)
+        openrouter = OpenRouterRegistry(
+            settings.openrouter_models_file,
+            default_endpoint=settings.openrouter_endpoint,
+            min_parameter_count_b=settings.openrouter_min_parameter_count_b,
+        )
         # vLLM listed first so an explicitly-configured continuous-batching
         # path always wins over a local GGUF/MLX of the same qualified_name.
         # Local-format ordering (mlx-vs-gguf) follows the existing toggle.
@@ -64,7 +75,7 @@ class AppState:
         # llama.cpp / MLX can serve in-process wins on latency, only
         # llama.cpp-rejected GGUFs fall through to the HTTP path.  Empty
         # endpoint → registry stays inert; nothing to wire up.
-        sources: tuple = (vllm, *local_sources)
+        sources: tuple = (openrouter, vllm, *local_sources)
         if settings.ollama_http_endpoint:
             ollama_http = OllamaHttpRegistry(settings.ollama_http_endpoint)
             sources = (*sources, ollama_http)
@@ -86,6 +97,8 @@ class AppState:
                 return get_probe().probe(desc).loadable
             if desc.format == "vllm":
                 return get_vllm_probe().probe(desc).loadable
+            if desc.format == "openrouter":
+                return get_openrouter_probe().probe(desc).loadable
             return True
 
         self._accept = _accept

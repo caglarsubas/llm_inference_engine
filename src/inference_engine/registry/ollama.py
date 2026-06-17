@@ -30,7 +30,7 @@ log = get_logger("registry.ollama")
 
 OLLAMA_MEDIA_PREFIX = "application/vnd.ollama.image."
 
-ModelFormat = Literal["gguf", "mlx", "vllm"]
+ModelFormat = Literal["gguf", "mlx", "vllm", "openrouter", "ollama_http"]
 
 
 @dataclass(frozen=True)
@@ -40,8 +40,8 @@ class ModelDescriptor:
     `model_path` points to whatever local artifact the format expects:
       * gguf → a single .gguf file (or content-addressed Ollama blob)
       * mlx  → a directory containing config.json + .safetensors + tokenizer files
-      * vllm → a synthetic placeholder (e.g. ``Path("vllm://<endpoint>")``)
-               since the real model lives behind an HTTP endpoint, not on disk.
+      * vllm/openrouter/ollama_http → a synthetic placeholder since the real
+        model lives behind an HTTP endpoint, not on disk.
 
     For HTTP-served backends (vllm), ``endpoint`` carries the base URL of the
     upstream server and ``params['model_id']`` carries the model name vLLM was

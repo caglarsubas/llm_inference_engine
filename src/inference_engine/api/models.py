@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import require_identity
-from ..registry import OllamaRegistry, get_probe, get_vllm_probe
+from ..registry import OllamaRegistry, get_openrouter_probe, get_probe, get_vllm_probe
 from ..response_normalize import infer_model_capabilities
 from ..schemas import ModelInfo, ModelList, UnavailableModel
 from .state import app_state
@@ -13,8 +13,15 @@ _BACKEND_FOR_FORMAT = {
     "gguf": "llama_cpp",
     "mlx": "mlx",
     "vllm": "vllm",
+    "openrouter": "openrouter",
     "ollama_http": "ollama_http",
 }
+
+
+def _request_key_source_for_format(fmt: str) -> str:
+    if fmt == "openrouter":
+        return "openrouter-api-key"
+    return "local-inference"
 
 
 def _to_info(desc) -> ModelInfo:
@@ -26,6 +33,7 @@ def _to_info(desc) -> ModelInfo:
         backend=backend,
         format=desc.format,
         model_path=str(desc.model_path),
+        request_key_source=_request_key_source_for_format(desc.format),
         **caps,
     )
 
@@ -73,6 +81,8 @@ async def list_models(_=Depends(require_identity)) -> ModelList:
             return probe.probe(desc).loadable
         if desc.format == "vllm":
             return get_vllm_probe().probe(desc).loadable
+        if desc.format == "openrouter":
+            return get_openrouter_probe().probe(desc).loadable
         return True
 
     loadable, rejected = app_state.registry.list_loadable(_accept)
@@ -100,6 +110,17 @@ async def list_models(_=Depends(require_identity)) -> ModelList:
                 UnavailableModel(
                     id=desc.qualified_name,
                     reason=result.reason or "vllm_unavailable",
+                    detail=result.detail,
+                    backend=_BACKEND_FOR_FORMAT.get(desc.format, "unknown"),
+                    format=desc.format,
+                )
+            )
+        elif desc.format == "openrouter":
+            result = get_openrouter_probe().probe(desc)
+            unavailable.append(
+                UnavailableModel(
+                    id=desc.qualified_name,
+                    reason=result.reason or "openrouter_unavailable",
                     detail=result.detail,
                     backend=_BACKEND_FOR_FORMAT.get(desc.format, "unknown"),
                     format=desc.format,
@@ -142,6 +163,10 @@ async def get_model(model_id: str, _=Depends(require_identity)) -> ModelInfo:
     def _accept(desc) -> bool:
         if desc.format == "gguf":
             return probe.probe(desc).loadable
+        if desc.format == "vllm":
+            return get_vllm_probe().probe(desc).loadable
+        if desc.format == "openrouter":
+            return get_openrouter_probe().probe(desc).loadable
         return True
 
     desc = app_state.registry.resolve(model_id, _accept)

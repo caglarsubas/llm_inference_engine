@@ -8,6 +8,7 @@ __pycache__/
 .auth_keys.json
 .auto_eval_policies.json
 .vllm_models.json
+.openrouter_models.json
 .DS_Store
 dist/
 build/

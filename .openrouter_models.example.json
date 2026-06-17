@@ -1,0 +1,12 @@
+[
+  {
+    "name": "llama-3.1-70b-instruct",
+    "tag": "openrouter",
+    "model_id": "meta-llama/llama-3.1-70b-instruct",
+    "parameter_count_b": 70,
+    "open_weight": true,
+    "open_source": true,
+    "proprietary": false,
+    "size_bytes": 140000000000
+  }
+]

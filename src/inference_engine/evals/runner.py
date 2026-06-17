@@ -94,6 +94,9 @@ class EvalRunner:
             "gen_ai.system": adapter.backend_name,
             "gen_ai.request.model": judge_model,
             "gen_ai.request.temperature": params.temperature,
+            "llm.request.key_source": getattr(
+                adapter, "request_key_source", "local-inference"
+            ),
         }
         if candidate_model:
             attrs["eval.candidate.model"] = candidate_model

@@ -15,7 +15,7 @@ def resource_key(adapter: InferenceAdapter, model_name: str) -> str:
 
 
 def resource_limit(adapter: InferenceAdapter) -> int:
-    if adapter.backend_name == "vllm":
+    if adapter.backend_name in {"vllm", "openrouter"}:
         return settings.scheduler_vllm_resource_max_in_flight
     return settings.scheduler_resource_max_in_flight
 

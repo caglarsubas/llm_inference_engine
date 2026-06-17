@@ -68,6 +68,8 @@ def _chat_timeout() -> httpx.Timeout:
 
 class VLLMAdapter(InferenceAdapter):
     backend_name = "vllm"
+    descriptor_format = "vllm"
+    request_key_source = "local-inference"
 
     def __init__(self) -> None:
         self._descriptor: ModelDescriptor | None = None
@@ -89,20 +91,27 @@ class VLLMAdapter(InferenceAdapter):
     # ------------------------------------------------------------------
 
     async def load(self, descriptor: ModelDescriptor) -> None:
-        if descriptor.format != "vllm":
-            raise ValueError(f"VLLMAdapter only handles vllm, got {descriptor.format!r}")
+        if descriptor.format != self.descriptor_format:
+            raise ValueError(
+                f"{self.__class__.__name__} only handles {self.descriptor_format}, "
+                f"got {descriptor.format!r}"
+            )
         if not descriptor.endpoint:
-            raise ValueError(f"vLLM descriptor {descriptor.qualified_name} missing endpoint")
+            raise ValueError(
+                f"{self.__class__.__name__} descriptor "
+                f"{descriptor.qualified_name} missing endpoint"
+            )
         model_id = descriptor.params.get("model_id") if descriptor.params else None
         if not model_id:
             raise ValueError(
-                f"vLLM descriptor {descriptor.qualified_name} missing params['model_id']"
+                f"{self.__class__.__name__} descriptor "
+                f"{descriptor.qualified_name} missing params['model_id']"
             )
         chat_template_kwargs = descriptor.params.get("chat_template_kwargs")
         if chat_template_kwargs is not None and not isinstance(chat_template_kwargs, dict):
             raise ValueError(
-                f"vLLM descriptor {descriptor.qualified_name} params['chat_template_kwargs'] "
-                "must be an object"
+                f"{self.__class__.__name__} descriptor {descriptor.qualified_name} "
+                "params['chat_template_kwargs'] must be an object"
             )
 
         # Idempotent — re-loading the same descriptor is a no-op.
@@ -119,12 +128,17 @@ class VLLMAdapter(InferenceAdapter):
         self._endpoint = descriptor.endpoint
         self._model_id = str(model_id)
         self._chat_template_kwargs = dict(chat_template_kwargs) if chat_template_kwargs else None
-        self._client = httpx.AsyncClient(base_url=self._endpoint, timeout=_chat_timeout())
+        self._client = httpx.AsyncClient(
+            base_url=self._endpoint,
+            timeout=_chat_timeout(),
+            headers=self._headers(),
+        )
         log.info(
             "loaded",
             model=descriptor.qualified_name,
             endpoint=self._endpoint,
             model_id=self._model_id,
+            key_source=self.request_key_source,
         )
 
     async def unload(self) -> None:
@@ -143,6 +157,9 @@ class VLLMAdapter(InferenceAdapter):
     # ------------------------------------------------------------------
     # Request / response translation
     # ------------------------------------------------------------------
+
+    def _headers(self) -> dict[str, str]:
+        return {}
 
     @staticmethod
     def _to_messages(messages: Iterable[ChatMessage]) -> list[dict]:

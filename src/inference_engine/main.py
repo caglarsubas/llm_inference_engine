@@ -10,7 +10,7 @@ from .config import settings
 from .evals import load_policy
 from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
-from .registry import get_probe
+from .registry import get_openrouter_probe, get_probe, get_vllm_probe
 
 # Configure tracing at import time so the global TracerProvider is set before
 # any span is created or any FastAPI middleware is built. configure_tracing()
@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     def _accept(desc):
         if desc.format == "gguf":
             return probe.probe(desc).loadable
+        if desc.format == "vllm":
+            return get_vllm_probe().probe(desc).loadable
+        if desc.format == "openrouter":
+            return get_openrouter_probe().probe(desc).loadable
         return True
 
     loadable, rejected = app_state.registry.list_loadable(_accept)
@@ -51,6 +55,24 @@ async def lifespan(app: FastAPI):
                 {
                     "model": desc.qualified_name,
                     "reason": result.reason or "load_failed",
+                    "detail": result.detail,
+                }
+            )
+        elif desc.format == "vllm":
+            result = get_vllm_probe().probe(desc)
+            unavailable.append(
+                {
+                    "model": desc.qualified_name,
+                    "reason": result.reason or "vllm_unavailable",
+                    "detail": result.detail,
+                }
+            )
+        elif desc.format == "openrouter":
+            result = get_openrouter_probe().probe(desc)
+            unavailable.append(
+                {
+                    "model": desc.qualified_name,
+                    "reason": result.reason or "openrouter_unavailable",
                     "detail": result.detail,
                 }
             )
@@ -71,6 +93,7 @@ async def lifespan(app: FastAPI):
         ollama_models_dir=str(settings.ollama_models_dir),
         mlx_models_dir=str(settings.mlx_models_dir),
         ollama_http_endpoint=settings.ollama_http_endpoint or "<disabled>",
+        openrouter_models_file=str(settings.openrouter_models_file),
         n_available=len(loadable),
         n_unavailable=len(unavailable),
         n_skipped=len(skipped),
