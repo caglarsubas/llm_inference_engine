@@ -525,6 +525,10 @@ class ModelCatalogEntry(BaseModel):
     max_image_side_px: int | None = None
     max_image_pixels: int | None = None
     supports_json_mode: bool | None = None
+    supports_strict_image_json: bool | None = None
+    strict_image_json_status: str | None = None
+    strict_image_json_checked_at: str | None = None
+    strict_image_json_detail: str | None = None
     family: str | None = None
     profile: str | None = None
     parameter_count_b: float | None = None

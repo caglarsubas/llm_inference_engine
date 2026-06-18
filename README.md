@@ -997,6 +997,10 @@ or strict JSON workloads:
       "context_length": 262144,
       "max_image_side_px": null,
       "supports_json_mode": true,
+      "supports_strict_image_json": false,
+      "strict_image_json_status": "unstable",
+      "strict_image_json_checked_at": "2026-06-19",
+      "strict_image_json_detail": "Issue #38 12-row FraudGuard smoke parsed 2/12; keep out until repeated full-shape smoke passes.",
       "request_key_source": "openrouter-api-key"
     }
   ],
@@ -1010,6 +1014,16 @@ their own preprocessing cap, such as the FraudGuard 512px smoke setting, in
 that case. OpenRouter routes are provider-backed external inference. Treat
 them as benchmark-only until the deployment owner has approved the selected
 model/provider for production and commercial use.
+
+`supports_images` and `supports_json_mode` are independent capability hints.
+Benchmark harnesses that require image input and parseable JSON in one call
+should require `supports_strict_image_json=true`. If the field is `false`, the
+entry stays visible for operators but should be skipped before expensive
+pilots; `strict_image_json_status`, `strict_image_json_checked_at`, and
+`strict_image_json_detail` explain the last strict smoke result. Upstream
+OpenRouter 4xx/5xx failures surface through typed engine 502 payloads with
+`detail.type="upstream_http_error"`, `detail.upstream_status_code`, and the
+bounded upstream error body under `detail.detail`.
 
 ### Dynamic batching (embeddings)
 

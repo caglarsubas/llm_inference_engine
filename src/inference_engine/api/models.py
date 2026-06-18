@@ -167,6 +167,26 @@ def _catalog_entry(desc) -> ModelCatalogEntry:
         supports_json_mode=(
             bool(supports_json_mode) if supports_json_mode is not None else None
         ),
+        supports_strict_image_json=(
+            bool(params["supports_strict_image_json"])
+            if params.get("supports_strict_image_json") is not None
+            else None
+        ),
+        strict_image_json_status=(
+            str(params["strict_image_json_status"])
+            if params.get("strict_image_json_status") is not None
+            else None
+        ),
+        strict_image_json_checked_at=(
+            str(params["strict_image_json_checked_at"])
+            if params.get("strict_image_json_checked_at") is not None
+            else None
+        ),
+        strict_image_json_detail=(
+            str(params["strict_image_json_detail"])
+            if params.get("strict_image_json_detail") is not None
+            else None
+        ),
         family=str(params["family"]) if params.get("family") is not None else None,
         profile=str(params["profile"]) if params.get("profile") is not None else None,
         parameter_count_b=(

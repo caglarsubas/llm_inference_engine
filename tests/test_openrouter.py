@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from inference_engine.adapters.base import GenerationParams
+from inference_engine.adapters.base import GenerationParams, UpstreamGenerationError
 from inference_engine.adapters.openrouter_adapter import OpenRouterAdapter
 from inference_engine.api import models as models_api
 from inference_engine.config import settings
@@ -63,6 +63,10 @@ def _descriptor(
             "context_length": 131072,
             "max_image_side_px": 1024,
             "supports_json_mode": True,
+            "supports_strict_image_json": False,
+            "strict_image_json_status": "failed",
+            "strict_image_json_checked_at": "2026-06-18",
+            "strict_image_json_detail": "parse coverage 0/12",
             "family": "Llama",
             "profile": "vision",
         },
@@ -103,6 +107,25 @@ def test_example_catalog_is_policy_compliant() -> None:
     assert {"qwen3-vl-235b-a22b-instruct:openrouter", "hermes-4-405b:openrouter"} <= {
         d.qualified_name for d in descs
     }
+    qwen3_vl = {
+        d.qualified_name: d
+        for d in descs
+        if d.qualified_name.startswith("qwen3-vl-235b-a22b")
+    }
+    assert qwen3_vl
+    assert all(d.params["supports_strict_image_json"] is False for d in qwen3_vl.values())
+    assert (
+        qwen3_vl["qwen3-vl-235b-a22b-instruct:openrouter"].params[
+            "strict_image_json_status"
+        ]
+        == "unstable"
+    )
+    assert (
+        qwen3_vl["qwen3-vl-235b-a22b-thinking:openrouter"].params[
+            "strict_image_json_status"
+        ]
+        == "failed"
+    )
 
 
 @pytest.mark.parametrize(
@@ -226,6 +249,47 @@ async def test_openrouter_adapter_posts_with_key_source_and_bearer(
     assert captured_body[0]["model"] == "meta-llama/llama-3.1-70b-instruct"
 
 
+@pytest.mark.asyncio
+async def test_openrouter_adapter_preserves_upstream_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openrouter_api_key", "sk-or-test")
+
+    def handler(req: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "message": "provider rejected image input",
+                    "code": "provider_error",
+                }
+            },
+        )
+
+    adapter = OpenRouterAdapter()
+    await adapter.load(_descriptor())
+    assert adapter._client is not None  # noqa: SLF001
+    adapter._client = httpx.AsyncClient(  # noqa: SLF001
+        base_url=adapter._client.base_url,  # noqa: SLF001
+        headers=adapter._client.headers,  # noqa: SLF001
+        transport=httpx.MockTransport(handler),
+        timeout=30.0,
+    )
+
+    with pytest.raises(UpstreamGenerationError) as ei:
+        await adapter.generate(
+            [ChatMessage(role="user", content="score this image")],
+            GenerationParams(max_tokens=16),
+        )
+
+    assert ei.value.error_type == "upstream_http_error"
+    assert ei.value.upstream_status_code == 429
+    assert ei.value.backend == "openrouter"
+    assert ei.value.model == "meta-llama/llama-3.1-70b-instruct"
+    assert "provider rejected image input" in ei.value.detail
+    assert "provider_error" in ei.value.detail
+
+
 class _Source:
     def __init__(self, descriptor: ModelDescriptor) -> None:
         self.descriptor = descriptor
@@ -291,4 +355,8 @@ async def test_models_data_returns_openrouter_catalog_metadata(
     assert entry.context_length == 131072
     assert entry.max_image_side_px == 1024
     assert entry.supports_json_mode is True
+    assert entry.supports_strict_image_json is False
+    assert entry.strict_image_json_status == "failed"
+    assert entry.strict_image_json_checked_at == "2026-06-18"
+    assert entry.strict_image_json_detail == "parse coverage 0/12"
     assert entry.request_key_source == "openrouter-api-key"

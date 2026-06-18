@@ -124,17 +124,22 @@ surface on 2026-06-17 and includes 22 large candidates.
 
 Key image-capable OpenRouter entries for this vehicle-photo workflow:
 
-| Engine model id | OpenRouter model id | Modality |
-|---|---|---|
-| `qwen3-vl-235b-a22b-instruct:openrouter` | `qwen/qwen3-vl-235b-a22b-instruct` | `text+image->text` |
-| `qwen3-vl-235b-a22b-thinking:openrouter` | `qwen/qwen3-vl-235b-a22b-thinking` | `text+image->text` |
-| `qwen3.5-122b-a10b:openrouter` | `qwen/qwen3.5-122b-a10b` | `text+image+video->text` |
-| `qwen2.5-vl-72b-instruct:openrouter` | `qwen/qwen2.5-vl-72b-instruct` | `text+image->text` |
+| Engine model id | OpenRouter model id | Modality | Strict image+JSON status |
+|---|---|---|---|
+| `qwen3-vl-235b-a22b-instruct:openrouter` | `qwen/qwen3-vl-235b-a22b-instruct` | `text+image->text` | Unstable: issue #38 12-row smoke parsed 2/12 with repeated OpenRouter HTTP errors; a later six-image engine smoke passed only with a warm probe cache. |
+| `qwen3-vl-235b-a22b-thinking:openrouter` | `qwen/qwen3-vl-235b-a22b-thinking` | `text+image->text` | Failed: six-image engine smoke had 0/6 final-content JSON; five rows placed JSON in `reasoning_content`, and one row timed out at 90s. |
+| `qwen3.5-122b-a10b:openrouter` | `qwen/qwen3.5-122b-a10b` | `text+image+video->text` | Unvalidated; require a passing strict smoke before pilots. |
+| `qwen2.5-vl-72b-instruct:openrouter` | `qwen/qwen2.5-vl-72b-instruct` | `text+image->text` | Unvalidated; require a passing strict smoke before pilots. |
 
 Text-only OpenRouter entries in the same file are useful for general chat,
 reasoning, or LLM-as-judge fallback, but they should not be counted as
 vehicle-image candidates until they accept image content parts and pass the
 strict JSON smoke.
+
+For OpenRouter VLMs, `/v1/models.data` exposes the combined benchmark contract
+as `supports_strict_image_json`. FraudGuard-style harnesses should select only
+entries with that field set to `true`; entries marked `false` remain visible to
+operators but should be skipped before any expensive image+JSON pilot.
 
 ## Benchmark Exposure Status
 
