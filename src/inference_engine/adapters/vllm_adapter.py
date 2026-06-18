@@ -36,6 +36,7 @@ Limits documented honestly:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
 
@@ -54,6 +55,7 @@ from .base import (
     GenerationTimeoutError,
     InferenceAdapter,
     StreamChunk,
+    UpstreamGenerationError,
 )
 
 log = get_logger("adapter.vllm")
@@ -64,6 +66,11 @@ def _chat_timeout() -> httpx.Timeout:
     if seconds <= 0:
         return httpx.Timeout(None)
     return httpx.Timeout(seconds)
+
+
+def _deadline_seconds() -> float | None:
+    seconds = settings.chat_completion_timeout_seconds
+    return seconds if seconds > 0 else None
 
 
 class VLLMAdapter(InferenceAdapter):
@@ -234,9 +241,10 @@ class VLLMAdapter(InferenceAdapter):
         }
         assert self._client is not None
         try:
-            r = await self._client.post("/v1/chat/completions", json=body)
-            r.raise_for_status()
+            r = await self._post_with_deadline("/v1/chat/completions", body)
         except httpx.TimeoutException as exc:
+            raise self._timeout_error() from exc
+        except TimeoutError as exc:
             raise self._timeout_error() from exc
         data = r.json()
 
@@ -303,6 +311,10 @@ class VLLMAdapter(InferenceAdapter):
                     )
         except httpx.TimeoutException as exc:
             raise self._timeout_error() from exc
+        except httpx.HTTPStatusError as exc:
+            raise self._upstream_http_error(exc) from exc
+        except httpx.RequestError as exc:
+            raise self._upstream_request_error(exc) from exc
 
     # ------------------------------------------------------------------
     # complete (legacy /v1/completions pass-through)
@@ -333,9 +345,10 @@ class VLLMAdapter(InferenceAdapter):
 
         assert self._client is not None
         try:
-            r = await self._client.post("/v1/completions", json=body)
-            r.raise_for_status()
+            r = await self._post_with_deadline("/v1/completions", body)
         except httpx.TimeoutException as exc:
+            raise self._timeout_error() from exc
+        except TimeoutError as exc:
             raise self._timeout_error() from exc
         data = r.json()
         choice = (data.get("choices") or [{}])[0]
@@ -382,6 +395,48 @@ class VLLMAdapter(InferenceAdapter):
             timeout_seconds=settings.chat_completion_timeout_seconds,
             backend=self.backend_name,
             model=self._model_id or "",
+        )
+
+    async def _post_with_deadline(self, path: str, body: dict) -> httpx.Response:
+        assert self._client is not None
+        deadline = _deadline_seconds()
+        try:
+            if deadline is None:
+                response = await self._client.post(path, json=body)
+            else:
+                async with asyncio.timeout(deadline):
+                    response = await self._client.post(path, json=body)
+            response.raise_for_status()
+            return response
+        except httpx.TimeoutException:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise self._upstream_http_error(exc) from exc
+        except httpx.RequestError as exc:
+            raise self._upstream_request_error(exc) from exc
+
+    def _upstream_http_error(self, exc: httpx.HTTPStatusError) -> UpstreamGenerationError:
+        detail = ""
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            detail = exc.response.text[:500]
+        else:
+            detail = json.dumps(payload, sort_keys=True)[:500]
+        return UpstreamGenerationError(
+            error_type="upstream_http_error",
+            upstream_status_code=exc.response.status_code,
+            backend=self.backend_name,
+            model=self._model_id or "",
+            detail=detail,
+        )
+
+    def _upstream_request_error(self, exc: httpx.RequestError) -> UpstreamGenerationError:
+        return UpstreamGenerationError(
+            error_type="upstream_request_error",
+            backend=self.backend_name,
+            model=self._model_id or "",
+            detail=str(exc).splitlines()[0][:500] if str(exc) else exc.__class__.__name__,
         )
 
 

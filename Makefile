@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models smoke vlm-smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init smoke vlm-smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -207,6 +207,14 @@ share-logs:
 
 list-models:
 	uv run python scripts/list_models.py
+
+openrouter-models-init:
+	@if [ -f .openrouter_models.json ]; then \
+	  echo ".openrouter_models.json already exists; leaving it unchanged"; \
+	else \
+	  cp .openrouter_models.example.json .openrouter_models.json; \
+	  echo "created ignored runtime manifest .openrouter_models.json from example catalog"; \
+	fi
 
 smoke:
 	uv run python scripts/smoke_test.py

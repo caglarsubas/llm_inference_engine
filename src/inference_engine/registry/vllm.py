@@ -75,14 +75,26 @@ class VLLMRegistry:
             except KeyError as exc:
                 raise ValueError(f"vLLM entry {i} missing required field: {exc.args[0]}") from exc
 
-            params = {"model_id": model_id}
+            params = {"model_id": model_id, "provider": "vllm", "supports_json_mode": True}
             chat_template_kwargs = entry.get("chat_template_kwargs")
             if chat_template_kwargs is not None:
                 if not isinstance(chat_template_kwargs, dict):
                     raise ValueError(
                         f"vLLM entry {i} chat_template_kwargs must be an object"
-                    )
+                )
                 params["chat_template_kwargs"] = chat_template_kwargs
+            for field in (
+                "family",
+                "profile",
+                "modality",
+                "context_length",
+                "max_image_size",
+                "max_image_side_px",
+                "max_image_pixels",
+                "supports_json_mode",
+            ):
+                if field in entry:
+                    params[field] = entry[field]
 
             desc = ModelDescriptor(
                 name=name,

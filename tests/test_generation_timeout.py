@@ -11,7 +11,11 @@ import pytest
 from fastapi import HTTPException
 
 from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
-from inference_engine.adapters.base import GenerationResult, GenerationTimeoutError
+from inference_engine.adapters.base import (
+    GenerationResult,
+    GenerationTimeoutError,
+    UpstreamGenerationError,
+)
 from inference_engine.adapters.ollama_http import OllamaHttpAdapter
 from inference_engine.api.state import app_state
 from inference_engine.config import settings
@@ -67,6 +71,21 @@ class _LocalErrorAdapter(_TimeoutAdapter):
         self, messages: Iterable, params: GenerationParams, cancel=None
     ) -> GenerationResult:
         raise RuntimeError("upstream died")
+
+
+class _UpstreamErrorAdapter(_TimeoutAdapter):
+    backend_name = "vllm"
+
+    async def generate(
+        self, messages: Iterable, params: GenerationParams, cancel=None
+    ) -> GenerationResult:
+        raise UpstreamGenerationError(
+            error_type="upstream_http_error",
+            upstream_status_code=502,
+            backend=self.backend_name,
+            model="gemma4:31b",
+            detail='{"error":"capacity"}',
+        )
 
 
 class _OpenRouterFallbackAdapter(_TimeoutAdapter):
@@ -178,6 +197,25 @@ async def test_blocking_backend_error_uses_openrouter_fallback(
     assert response.fallback_from_backend == "vllm"
     assert response.fallback_reason == "backend_error"
     assert response.fallback_error_type == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_blocking_upstream_error_maps_to_typed_502() -> None:
+    identity = Identity(tenant="dev", key_id="sk-x")
+    with pytest.raises(HTTPException) as ei:
+        await _blocking_response(
+            _UpstreamErrorAdapter(),
+            "gemma4:31b",
+            [ChatMessage(role="user", content="score this image")],
+            GenerationParams(),
+            identity,
+        )
+
+    assert ei.value.status_code == 502
+    assert ei.value.detail["type"] == "upstream_http_error"
+    assert ei.value.detail["upstream_status_code"] == 502
+    assert ei.value.detail["backend"] == "vllm"
+    assert ei.value.detail["model"] == "gemma4:31b"
 
 
 @pytest.mark.asyncio

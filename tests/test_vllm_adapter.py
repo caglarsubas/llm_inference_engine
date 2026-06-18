@@ -8,6 +8,7 @@ that returns canned responses keyed by URL — same way real vLLM would.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -15,10 +16,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from inference_engine.adapters import EmbeddingsNotSupportedError, GenerationTimeoutError
+from inference_engine.adapters import (
+    EmbeddingsNotSupportedError,
+    GenerationTimeoutError,
+    UpstreamGenerationError,
+)
 from inference_engine.adapters.base import GenerationParams
 from inference_engine.adapters.vllm_adapter import VLLMAdapter
 from inference_engine.cancellation import Cancellation
+from inference_engine.config import settings
 from inference_engine.registry import ModelDescriptor, VLLMRegistry
 from inference_engine.schemas import (
     ChatMessage,
@@ -403,6 +409,28 @@ async def test_generate_timeout_raises_typed_error() -> None:
     assert ei.value.error_detail()["type"] == "generation_timeout"
 
 
+@pytest.mark.asyncio
+async def test_generate_wall_clock_deadline_raises_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "chat_completion_timeout_seconds", 0.01)
+
+    async def handler(req: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=_ok_chat_response(content="too late"))
+
+    adapter = VLLMAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+
+    with pytest.raises(GenerationTimeoutError) as ei:
+        await adapter.generate([ChatMessage(role="user", content="x")], GenerationParams())
+
+    assert ei.value.timeout_seconds == 0.01
+    assert ei.value.backend == "vllm"
+    assert ei.value.model == "test-model"
+
+
 def _sse(events: list[dict]) -> Iterator[bytes]:
     """Build an SSE stream body from a list of OpenAI-shaped event dicts."""
     for e in events:
@@ -591,8 +619,8 @@ async def test_unload_closes_client_and_clears_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_error_propagates_as_httpstatuserror() -> None:
-    """A 500 from vLLM bubbles up so the chat route can map it to the client."""
+async def test_http_error_maps_to_typed_upstream_error() -> None:
+    """A 500 from vLLM keeps enough detail for the route/client payload."""
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "out of capacity"})
 
@@ -600,5 +628,11 @@ async def test_http_error_propagates_as_httpstatuserror() -> None:
     await adapter.load(_make_descriptor())
     _install_transport(adapter, handler)
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(UpstreamGenerationError) as ei:
         await adapter.generate([ChatMessage(role="user", content="x")], GenerationParams())
+
+    assert ei.value.error_type == "upstream_http_error"
+    assert ei.value.upstream_status_code == 500
+    assert ei.value.backend == "vllm"
+    assert ei.value.model == "test-model"
+    assert "out of capacity" in ei.value.detail

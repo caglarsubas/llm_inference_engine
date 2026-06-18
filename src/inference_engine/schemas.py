@@ -502,3 +502,39 @@ class ModelList(BaseModel):
     # Empty for clients that pre-date this field — fully backwards-compatible
     # with the previous schema (additional pydantic field with a default).
     unavailable: list[UnavailableModel] = Field(default_factory=list)
+
+
+class ModelCatalogEntry(BaseModel):
+    """Machine-readable operator catalog for benchmark and UI clients."""
+
+    id: str
+    object: Literal["model"] = "model"
+    provider: str = "local"
+    backend: str = "llama_cpp"
+    format: str = "gguf"
+    registry: str = ""
+    namespace: str = ""
+    model_path: str | None = None
+    upstream_model_id: str | None = None
+    request_key_source: str = "local-inference"
+    size_bytes: int = 0
+    modality: str | None = None
+    supports_images: bool | None = None
+    context_length: int | None = None
+    max_image_size: str | None = None
+    max_image_side_px: int | None = None
+    max_image_pixels: int | None = None
+    supports_json_mode: bool | None = None
+    family: str | None = None
+    profile: str | None = None
+    parameter_count_b: float | None = None
+    open_weight: bool | None = None
+    proprietary: bool | None = None
+    commercial_use: str | bool | None = None
+    benchmark_only: bool | None = None
+
+
+class ModelCatalog(BaseModel):
+    object: Literal["model_catalog"] = "model_catalog"
+    data: list[ModelCatalogEntry]
+    unavailable: list[UnavailableModel] = Field(default_factory=list)
