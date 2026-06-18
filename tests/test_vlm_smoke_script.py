@@ -27,6 +27,37 @@ def test_vlm_smoke_payload_uses_configured_token_budget() -> None:
     assert payload["response_format"] == {"type": "json_object"}
 
 
+def test_available_status_returns_catalog_entry() -> None:
+    smoke = _load_smoke_module()
+
+    ok, reason, entry = smoke._available_status(  # noqa: SLF001
+        {"data": [{"id": "qwen3-vl-235b-a22b-instruct:openrouter", "backend": "openrouter"}]},
+        "qwen3-vl-235b-a22b-instruct:openrouter",
+    )
+
+    assert ok is True
+    assert reason == ""
+    assert entry == {"id": "qwen3-vl-235b-a22b-instruct:openrouter", "backend": "openrouter"}
+
+
+def test_contract_skip_reason_uses_strict_image_json_metadata() -> None:
+    smoke = _load_smoke_module()
+
+    reason = smoke._contract_skip_reason(  # noqa: SLF001
+        {
+            "supports_strict_image_json": False,
+            "strict_image_json_status": "failed",
+            "strict_image_json_checked_at": "2026-06-18",
+            "strict_image_json_detail": "parse coverage 0/12",
+        }
+    )
+
+    assert "supports_strict_image_json=false" in reason
+    assert "status=failed" in reason
+    assert "checked_at=2026-06-18" in reason
+    assert "parse coverage 0/12" in reason
+
+
 def test_expectation_errors_accepts_vehicle_damage_hit() -> None:
     smoke = _load_smoke_module()
 

@@ -100,6 +100,10 @@ class OpenRouterRegistry:
             "openrouter_name",
             "commercial_use",
             "benchmark_only",
+            "supports_strict_image_json",
+            "strict_image_json_status",
+            "strict_image_json_checked_at",
+            "strict_image_json_detail",
         ):
             if field in entry:
                 params[field] = entry[field]

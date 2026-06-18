@@ -216,6 +216,7 @@ async def test_blocking_upstream_error_maps_to_typed_502() -> None:
     assert ei.value.detail["upstream_status_code"] == 502
     assert ei.value.detail["backend"] == "vllm"
     assert ei.value.detail["model"] == "gemma4:31b"
+    assert ei.value.detail["detail"] == '{"error":"capacity"}'
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,8 @@
 Usage:
     uv run python scripts/vlm_strict_json_smoke.py \
       --model qwen3-vl-8b-instruct:vllm \
-      --image /path/to/vehicle.jpg
+      --image /path/to/vehicle-a.jpg \
+      --image /path/to/vehicle-b.jpg
 """
 
 from __future__ import annotations
@@ -37,18 +38,36 @@ def _headers(api_key: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
-def _available_status(payload: dict[str, Any], model: str) -> tuple[bool, str]:
+def _available_status(payload: dict[str, Any], model: str) -> tuple[bool, str, dict[str, Any] | None]:
     data = payload.get("data") or []
-    if any(isinstance(entry, dict) and entry.get("id") == model for entry in data):
-        return True, ""
+    for entry in data:
+        if isinstance(entry, dict) and entry.get("id") == model:
+            return True, "", entry
 
     unavailable = payload.get("unavailable") or []
     for entry in unavailable:
         if isinstance(entry, dict) and entry.get("id") == model:
             reason = entry.get("reason") or "unavailable"
             detail = entry.get("detail") or ""
-            return False, f"{model} is unavailable: {reason} {detail}".strip()
-    return False, f"{model} is not present in /v1/models.data"
+            return False, f"{model} is unavailable: {reason} {detail}".strip(), entry
+    return False, f"{model} is not present in /v1/models.data", None
+
+
+def _contract_skip_reason(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    if entry.get("supports_strict_image_json") is not False:
+        return ""
+
+    status = entry.get("strict_image_json_status") or "unsupported"
+    checked_at = entry.get("strict_image_json_checked_at")
+    detail = entry.get("strict_image_json_detail") or ""
+    parts = ["supports_strict_image_json=false", f"status={status}"]
+    if checked_at:
+        parts.append(f"checked_at={checked_at}")
+    if detail:
+        parts.append(str(detail))
+    return "; ".join(parts)
 
 
 def _chat_payload(model: str, image_url: str, *, max_tokens: int) -> dict[str, Any]:
@@ -128,11 +147,112 @@ def _expectation_errors(
     return errors
 
 
+def _run_one_image(
+    client: httpx.Client,
+    *,
+    model: str,
+    image: Path,
+    max_tokens: int,
+    expect_vehicle_visible: bool | None,
+    expect_damage_visible: bool | None,
+    require_reasons: bool,
+    min_anomaly_score: float | None,
+) -> dict[str, Any]:
+    payload = _chat_payload(model, _data_url(image), max_tokens=max_tokens)
+    started = time.perf_counter()
+    try:
+        chat_response = client.post("/v1/chat/completions", json=payload)
+        latency_ms = (time.perf_counter() - started) * 1000
+        chat_response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return {
+            "image": str(image),
+            "ok": False,
+            "latency_ms": round(latency_ms, 2),
+            "error_type": "http_error",
+            "http_status": exc.response.status_code,
+            "detail": exc.response.text[:1000],
+        }
+    except httpx.RequestError as exc:
+        latency_ms = (time.perf_counter() - started) * 1000
+        return {
+            "image": str(image),
+            "ok": False,
+            "latency_ms": round(latency_ms, 2),
+            "error_type": "request_error",
+            "detail": str(exc).splitlines()[0][:1000] if str(exc) else exc.__class__.__name__,
+        }
+
+    try:
+        body = chat_response.json()
+    except ValueError as exc:
+        return {
+            "image": str(image),
+            "ok": False,
+            "latency_ms": round(latency_ms, 2),
+            "error_type": "bad_response_json",
+            "detail": str(exc),
+            "content": chat_response.text[:1000],
+        }
+
+    choice = (body.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = message.get("content") or ""
+    reasoning_content = message.get("reasoning_content")
+    try:
+        parsed = _parse_json_content(content)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {
+            "image": str(image),
+            "ok": False,
+            "latency_ms": round(latency_ms, 2),
+            "finish_reason": choice.get("finish_reason"),
+            "error_type": "json_parse_error",
+            "detail": str(exc),
+            "content": content[:1000],
+            "reasoning_content_present": bool(reasoning_content),
+        }
+
+    errors = _expectation_errors(
+        parsed,
+        expect_vehicle_visible=expect_vehicle_visible,
+        expect_damage_visible=expect_damage_visible,
+        require_reasons=require_reasons,
+        min_anomaly_score=min_anomaly_score,
+    )
+    if errors:
+        return {
+            "image": str(image),
+            "ok": False,
+            "latency_ms": round(latency_ms, 2),
+            "finish_reason": choice.get("finish_reason"),
+            "error_type": "expectation_error",
+            "errors": errors,
+            "parsed": parsed,
+        }
+
+    return {
+        "image": str(image),
+        "ok": True,
+        "latency_ms": round(latency_ms, 2),
+        "finish_reason": choice.get("finish_reason"),
+        "usage": body.get("usage") or {},
+        "parsed": parsed,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.environ.get("ENGINE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--model", default=os.environ.get("ENGINE_MODEL"))
-    parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument(
+        "--image",
+        type=Path,
+        action="append",
+        dest="images",
+        required=True,
+        help="Image to score. Repeat --image for a batch smoke.",
+    )
     parser.add_argument(
         "--max-tokens",
         type=int,
@@ -168,70 +288,70 @@ def main() -> int:
         default=None,
         help="Fail if anomaly_score is below this value.",
     )
+    parser.add_argument(
+        "--ignore-contract-metadata",
+        action="store_true",
+        help=(
+            "Run even when /v1/models.data marks supports_strict_image_json=false. "
+            "Use this for revalidation; benchmark harnesses should normally skip."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.model:
         parser.error("--model is required, or set ENGINE_MODEL")
-    if not args.image.is_file():
-        parser.error(f"--image does not exist or is not a file: {args.image}")
+    missing = [path for path in args.images if not path.is_file()]
+    if missing:
+        parser.error(f"--image does not exist or is not a file: {missing[0]}")
 
     headers = _headers(args.api_key)
     with httpx.Client(base_url=args.base_url.rstrip("/"), headers=headers, timeout=600.0) as client:
-        models_response = client.get("/v1/models")
+        models_response = client.get("/v1/models.data")
         models_response.raise_for_status()
-        ok, reason = _available_status(models_response.json(), args.model)
+        ok, reason, catalog_entry = _available_status(models_response.json(), args.model)
         if not ok:
             print(reason, file=sys.stderr)
             return 2
 
-        payload = _chat_payload(args.model, _data_url(args.image), max_tokens=args.max_tokens)
-        started = time.perf_counter()
-        chat_response = client.post("/v1/chat/completions", json=payload)
-        latency_ms = (time.perf_counter() - started) * 1000
-        try:
-            chat_response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+        contract_skip_reason = _contract_skip_reason(catalog_entry)
+        if contract_skip_reason and not args.ignore_contract_metadata:
             print(
-                f"strict JSON smoke failed: chat returned HTTP "
-                f"{exc.response.status_code}",
+                f"{args.model} is marked unavailable for strict image+JSON: "
+                f"{contract_skip_reason}",
                 file=sys.stderr,
             )
-            print(exc.response.text[:1000], file=sys.stderr)
-            return 3
-        body = chat_response.json()
+            return 2
 
-    choice = (body.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    content = message.get("content") or ""
-    try:
-        parsed = _parse_json_content(content)
-    except (json.JSONDecodeError, ValueError) as exc:
-        print(f"strict JSON smoke failed: {exc}", file=sys.stderr)
-        print(content[:1000], file=sys.stderr)
-        return 3
+        results = [
+            _run_one_image(
+                client,
+                model=args.model,
+                image=image,
+                max_tokens=args.max_tokens,
+                expect_vehicle_visible=True if args.expect_vehicle_visible else None,
+                expect_damage_visible=True if args.expect_damage_visible else None,
+                require_reasons=args.require_reasons,
+                min_anomaly_score=args.min_anomaly_score,
+            )
+            for image in args.images
+        ]
 
-    errors = _expectation_errors(
-        parsed,
-        expect_vehicle_visible=True if args.expect_vehicle_visible else None,
-        expect_damage_visible=True if args.expect_damage_visible else None,
-        require_reasons=args.require_reasons,
-        min_anomaly_score=args.min_anomaly_score,
-    )
-    if errors:
-        print(f"strict JSON content smoke failed: {'; '.join(errors)}", file=sys.stderr)
-        print(json.dumps(parsed, indent=2, sort_keys=True), file=sys.stderr)
-        return 4
-
+    passed = sum(1 for result in results if result["ok"])
+    failed = len(results) - passed
     result = {
         "model": args.model,
-        "latency_ms": round(latency_ms, 2),
-        "finish_reason": choice.get("finish_reason"),
         "max_tokens": args.max_tokens,
-        "usage": body.get("usage") or {},
-        "parsed": parsed,
+        "images": len(results),
+        "passed": passed,
+        "failed": failed,
+        "results": results,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
+    if not failed:
+        return 0
+    if any(item.get("error_type") != "expectation_error" for item in results if not item["ok"]):
+        return 3
+    return 4
 
 
 if __name__ == "__main__":
