@@ -14,6 +14,7 @@ from ..adapters import (
     GenerationParams,
     GenerationTimeoutError,
     InferenceAdapter,
+    UpstreamGenerationError,
 )
 from ..response_normalize import (
     StreamDelta,
@@ -481,6 +482,8 @@ def _raise_generation_http_error(exc: Exception) -> None:
         raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
     if isinstance(exc, GenerationTimeoutError):
         raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
+    if isinstance(exc, UpstreamGenerationError):
+        raise HTTPException(status_code=502, detail=exc.error_detail()) from exc
     raise exc
 
 
@@ -910,23 +913,23 @@ async def _stream_response(
                                 yield chunk
                             return
                     finish_reason = "error"
+                    if isinstance(exc, UpstreamGenerationError):
+                        error_detail = exc.error_detail()
+                    else:
+                        error_detail = {
+                            "message": str(exc),
+                            "type": "backend_error",
+                            "code": "backend_error",
+                        }
                     s.bind(
                         **{
-                            "error.type": exc.__class__.__name__,
+                            "error.type": error_detail["type"],
                             "gen_ai.response.finish_reason": "error",
                         }
                     )
                     yield {
                         "event": "error",
-                        "data": json.dumps(
-                            {
-                                "error": {
-                                    "message": str(exc),
-                                    "type": "backend_error",
-                                    "code": "backend_error",
-                                }
-                            }
-                        ),
+                        "data": json.dumps({"error": error_detail}),
                     }
                     return
                 finally:

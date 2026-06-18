@@ -79,13 +79,30 @@ class OpenRouterRegistry:
         self._enforce_policy(index, entry, parameter_count_b)
 
         params = {
+            "provider": "openrouter",
             "model_id": model_id,
             "parameter_count_b": parameter_count_b,
             "open_weight": True,
             "open_source": bool(entry.get("open_source", True)),
             "proprietary": False,
             "request_key_source": "openrouter-api-key",
+            "supports_json_mode": bool(entry.get("supports_json_mode", True)),
         }
+        for field in (
+            "family",
+            "profile",
+            "modality",
+            "context_length",
+            "max_image_size",
+            "max_image_side_px",
+            "max_image_pixels",
+            "hugging_face_id",
+            "openrouter_name",
+            "commercial_use",
+            "benchmark_only",
+        ):
+            if field in entry:
+                params[field] = entry[field]
 
         return ModelDescriptor(
             name=name,

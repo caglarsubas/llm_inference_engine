@@ -921,6 +921,16 @@ on 2026-06-17. It includes large Llama, Qwen, Nemotron, Nous/Hermes, Mixtral,
 and selected Llama-finetune lanes. Copy only the entries you want to expose
 into the ignored runtime `.openrouter_models.json`.
 
+Bootstrap the ignored live manifest from the curated catalog:
+
+```bash
+make openrouter-models-init
+```
+
+Then delete any entries that should not be exposed in this deployment. The live
+path is controlled by `OPENROUTER_MODELS_FILE` and defaults to
+`.openrouter_models.json`; the example catalog is never loaded automatically.
+
 Single-entry shape:
 
 ```json
@@ -945,7 +955,8 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 Clients then send `model: "llama-3.1-70b-instruct:openrouter"`. The engine
 adds `Authorization: Bearer $OPENROUTER_API_KEY` upstream, probes
-OpenRouter's `/v1/models` before listing the model under `/v1/models.data`,
+OpenRouter's `/v1/models` before listing the model under `/v1/models` or
+`/v1/models.data`,
 and stamps every inference span/response with:
 
 | value | meaning |
@@ -966,6 +977,39 @@ By default, the retry target is the same exposed model name with the
 errors stay client-visible 400s and do not fallback. Streaming requests only
 fallback before the first assistant chunk is emitted, so clients never receive
 a response stitched across providers.
+
+`GET /v1/models.data` is the machine-readable model catalog for benchmark
+harnesses and internal UIs. It uses the same probe-aware live surface as
+`/v1/models`, then adds provider details that clients need before sending image
+or strict JSON workloads:
+
+```json
+{
+  "object": "model_catalog",
+  "data": [
+    {
+      "id": "qwen3-vl-235b-a22b-instruct:openrouter",
+      "provider": "openrouter",
+      "backend": "openrouter",
+      "upstream_model_id": "qwen/qwen3-vl-235b-a22b-instruct",
+      "modality": "text+image->text",
+      "supports_images": true,
+      "context_length": 262144,
+      "max_image_side_px": null,
+      "supports_json_mode": true,
+      "request_key_source": "openrouter-api-key"
+    }
+  ],
+  "unavailable": []
+}
+```
+
+`max_image_size`, `max_image_side_px`, and `max_image_pixels` are `null` when
+the manifest or provider does not publish a stable limit; clients should keep
+their own preprocessing cap, such as the FraudGuard 512px smoke setting, in
+that case. OpenRouter routes are provider-backed external inference. Treat
+them as benchmark-only until the deployment owner has approved the selected
+model/provider for production and commercial use.
 
 ### Dynamic batching (embeddings)
 

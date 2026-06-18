@@ -58,6 +58,13 @@ def _descriptor(
             "open_source": True,
             "proprietary": False,
             "request_key_source": "openrouter-api-key",
+            "provider": "openrouter",
+            "modality": "text+image->text",
+            "context_length": 131072,
+            "max_image_side_px": 1024,
+            "supports_json_mode": True,
+            "family": "Llama",
+            "profile": "vision",
         },
         endpoint=endpoint,
     )
@@ -241,6 +248,11 @@ class _FakeOpenRouterProbe:
         )
 
 
+class _FakePassingOpenRouterProbe:
+    def probe(self, descriptor: ModelDescriptor) -> OpenRouterProbeResult:  # noqa: ARG002
+        return OpenRouterProbeResult(loadable=True)
+
+
 @pytest.mark.asyncio
 async def test_models_api_keeps_unusable_openrouter_out_of_data(
     monkeypatch: pytest.MonkeyPatch,
@@ -255,3 +267,28 @@ async def test_models_api_keeps_unusable_openrouter_out_of_data(
     assert result.unavailable[0].id == "llama-3.1-70b-instruct:openrouter"
     assert result.unavailable[0].reason == "openrouter_api_key_missing"
     assert result.unavailable[0].backend == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_models_data_returns_openrouter_catalog_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([_Source(_descriptor())]))
+    monkeypatch.setattr(models_api, "get_openrouter_probe", lambda: _FakePassingOpenRouterProbe())
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.object == "model_catalog"
+    assert result.unavailable == []
+    assert len(result.data) == 1
+    entry = result.data[0]
+    assert entry.id == "llama-3.1-70b-instruct:openrouter"
+    assert entry.provider == "openrouter"
+    assert entry.backend == "openrouter"
+    assert entry.upstream_model_id == "meta-llama/llama-3.1-70b-instruct"
+    assert entry.modality == "text+image->text"
+    assert entry.supports_images is True
+    assert entry.context_length == 131072
+    assert entry.max_image_side_px == 1024
+    assert entry.supports_json_mode is True
+    assert entry.request_key_source == "openrouter-api-key"

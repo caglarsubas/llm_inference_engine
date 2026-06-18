@@ -25,6 +25,7 @@ from ..adapters import (
     GenerationParams,
     GenerationTimeoutError,
     InferenceAdapter,
+    UpstreamGenerationError,
 )
 from ..auth import Identity, require_identity
 from ..manager import ModelNotFoundError
@@ -159,6 +160,8 @@ def _raise_generation_http_error(exc: Exception) -> None:
         raise HTTPException(status_code=400, detail=exc.error_detail()) from exc
     if isinstance(exc, GenerationTimeoutError):
         raise HTTPException(status_code=504, detail=exc.error_detail()) from exc
+    if isinstance(exc, UpstreamGenerationError):
+        raise HTTPException(status_code=502, detail=exc.error_detail()) from exc
     raise exc
 
 

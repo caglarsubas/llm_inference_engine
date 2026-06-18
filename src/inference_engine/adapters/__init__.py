@@ -6,6 +6,7 @@ from .base import (
     GenerationTimeoutError,
     InferenceAdapter,
     StreamChunk,
+    UpstreamGenerationError,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "GenerationTimeoutError",
     "InferenceAdapter",
     "StreamChunk",
+    "UpstreamGenerationError",
 ]

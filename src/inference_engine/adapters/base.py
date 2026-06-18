@@ -174,6 +174,53 @@ class GenerationTimeoutError(Exception):
         return detail
 
 
+class UpstreamGenerationError(Exception):
+    """An HTTP-backed generation upstream failed before producing a response.
+
+    Adapters raise this for upstream 4xx/5xx responses and network failures so
+    API routes can return bounded, typed 502 payloads instead of opaque 500s.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        error_type: str = "upstream_error",
+        upstream_status_code: int | None = None,
+        backend: str = "",
+        model: str = "",
+        detail: str = "",
+    ) -> None:
+        self.error_type = error_type
+        self.upstream_status_code = upstream_status_code
+        self.backend = backend
+        self.model = model
+        self.detail = detail
+        if not message:
+            if upstream_status_code is not None:
+                message = f"Upstream generation request returned HTTP {upstream_status_code}."
+            else:
+                message = "Upstream generation request failed."
+        super().__init__(message)
+
+    def error_detail(self) -> dict:
+        detail: dict = {
+            "message": str(self),
+            "type": self.error_type,
+            "code": self.error_type,
+            "param": "messages",
+        }
+        if self.upstream_status_code is not None:
+            detail["upstream_status_code"] = self.upstream_status_code
+        if self.backend:
+            detail["backend"] = self.backend
+        if self.model:
+            detail["model"] = self.model
+        if self.detail:
+            detail["detail"] = self.detail
+        return detail
+
+
 class InferenceAdapter(ABC):
     """Abstract base for all inference backends."""
 
