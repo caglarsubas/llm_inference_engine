@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init smoke vlm-smoke download-mlx-model otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -19,6 +19,12 @@ sync:
 MODEL ?= mlx-community/Llama-3.2-1B-Instruct-4bit
 download-mlx-model:
 	uv run python scripts/download_mlx_model.py $(MODEL)
+
+VLM_MODEL ?=
+VLM_MAX_WORKERS ?= 4
+VLM_HF_TRANSFER ?= 0
+download-vlm-models:
+	$(if $(filter 1 true yes,$(VLM_HF_TRANSFER)),HF_HUB_ENABLE_HF_TRANSFER=1 uv run --with hf-transfer,uv run) python scripts/download_vlm_models.py --max-workers $(VLM_MAX_WORKERS) --quiet $(if $(filter 1 true yes,$(CORE_ONLY)),--core-only,) $(if $(VLM_MODEL),--repo $(VLM_MODEL),)
 
 run:
 	uv run uvicorn inference_engine.main:app --host 127.0.0.1 --port 8080
