@@ -401,10 +401,11 @@ All knobs live in `.env` (see `.env.example`):
 | `OLLAMA_MODELS_DIR`      | `/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models`                  | Root with `manifests/` and `blobs/`                      |
 | `MLX_MODELS_DIR`         | `~/.cache/inference_engine/mlx`                                                          | Where `download_mlx_model.py` snapshots HF repos         |
 | `VLLM_MODELS_FILE`       | `.vllm_models.json`                                                                      | Config file for OpenAI-compatible vLLM/DMR upstreams     |
+| `VLLM_DEMANDED_MODELS_FILE` | `.vllm_models.demanded.example.json`                                                  | Catalog-only vLLM demand manifest reported as `unavailable` until configured |
 | `OPENROUTER_MODELS_FILE` | `.openrouter_models.json`                                                               | Config file for large open-weight OpenRouter models      |
 | `OPENROUTER_API_KEY`     | `""`                                                                                    | OpenRouter bearer token; keep only in ignored runtime env |
 | `OPENROUTER_ENDPOINT`    | `https://openrouter.ai/api`                                                             | OpenRouter OpenAI-compatible base before `/v1`           |
-| `OPENROUTER_MIN_PARAMETER_COUNT_B` | `50`                                                                           | OpenRouter gate: configured model must be strictly larger |
+| `OPENROUTER_MIN_PARAMETER_COUNT_B` | `50`                                                                           | OpenRouter gate: configured model must be larger unless it is an image-capable `benchmark_only` candidate |
 | `OPENROUTER_FALLBACK_ENABLED` | `true`                                                                             | Retry eligible local generation failures on OpenRouter   |
 | `OPENROUTER_FALLBACK_MODEL` | `""`                                                                                  | Explicit fallback model; empty derives `<name>:openrouter` |
 | `OPENROUTER_FALLBACK_BACKENDS` | `llama_cpp,ollama_http,vllm`                                                     | Local backend names eligible for OpenRouter fallback     |
@@ -909,17 +910,21 @@ Clients then send `model: "llama-3.2-1b-instruct:vllm"` or `"llama-3.2-3b-instru
 ### OpenRouter gate for large open-weight models
 
 OpenRouter is a second OpenAI-compatible HTTP lane for cases where the demanded
-model is larger than the local lane should carry. It is deliberately
-config-driven and policy-gated: a `.openrouter_models.json` entry is accepted
-only when `parameter_count_b` is strictly greater than
-`OPENROUTER_MIN_PARAMETER_COUNT_B` (default `50`), `open_weight=true`, and
-`proprietary=false`. If `open_source` is present it cannot be `false`.
+model is larger than the local lane should carry, or where a smaller
+image-capable model is intentionally exposed as a benchmark-only candidate. It
+is deliberately config-driven and policy-gated: a `.openrouter_models.json`
+entry is accepted only when `parameter_count_b` is strictly greater than
+`OPENROUTER_MIN_PARAMETER_COUNT_B` (default `50`) unless the entry sets
+`benchmark_only=true` and `modality` includes `image`. All OpenRouter entries
+must still set `open_weight=true` and `proprietary=false`; if `open_source` is
+present it cannot be `false`.
 
 The committed `.openrouter_models.example.json` is a curated operator catalog
-of current OpenRouter ids verified against `https://openrouter.ai/api/v1/models`
-on 2026-06-17. It includes large Llama, Qwen, Nemotron, Nous/Hermes, Mixtral,
-and selected Llama-finetune lanes. Copy only the entries you want to expose
-into the ignored runtime `.openrouter_models.json`.
+of current OpenRouter ids verified against `https://openrouter.ai/api/v1/models`.
+It includes large Llama, Qwen, Nemotron, Nous/Hermes, Mixtral, selected
+Llama-finetune lanes, and smaller FraudGuard VLM candidates that remain
+`benchmark_only` until a repeated strict image+JSON smoke passes. Copy only the
+entries you want to expose into the ignored runtime `.openrouter_models.json`.
 
 Bootstrap the ignored live manifest from the curated catalog:
 

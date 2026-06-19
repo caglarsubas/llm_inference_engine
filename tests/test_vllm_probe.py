@@ -7,6 +7,7 @@ import pytest
 
 from inference_engine.api import models as models_api
 from inference_engine.registry import CompositeRegistry, ModelDescriptor, VLLMProbeResult
+from inference_engine.registry.vllm import VLLMRegistry
 from inference_engine.registry.vllm_probe import VLLMUpstreamProbe
 
 
@@ -14,7 +15,11 @@ def _descriptor(
     *,
     endpoint: str = "http://vllm:8000",
     model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
+    params: dict | None = None,
 ) -> ModelDescriptor:
+    descriptor_params = {"model_id": model_id}
+    if params:
+        descriptor_params.update(params)
     return ModelDescriptor(
         name="qwen3-vl-8b-instruct",
         tag="vllm",
@@ -22,7 +27,7 @@ def _descriptor(
         registry="local",
         model_path=Path(f"vllm://{endpoint}/{model_id}"),
         format="vllm",
-        params={"model_id": model_id},
+        params=descriptor_params,
         endpoint=endpoint,
     )
 
@@ -106,6 +111,11 @@ class _FakeProbe:
         )
 
 
+class _FakePassingProbe:
+    def probe(self, descriptor: ModelDescriptor) -> VLLMProbeResult:  # noqa: ARG002
+        return VLLMProbeResult(loadable=True)
+
+
 @pytest.mark.asyncio
 async def test_models_api_keeps_unreachable_vllm_out_of_data(monkeypatch: pytest.MonkeyPatch) -> None:
     descriptor = _descriptor()
@@ -119,3 +129,88 @@ async def test_models_api_keeps_unreachable_vllm_out_of_data(monkeypatch: pytest
     assert result.unavailable[0].id == "qwen3-vl-8b-instruct:vllm"
     assert result.unavailable[0].reason == "upstream_unreachable"
     assert result.unavailable[0].backend == "vllm"
+
+
+@pytest.mark.asyncio
+async def test_models_data_returns_vllm_vlm_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    descriptor = _descriptor(
+        params={
+            "family": "Qwen3-VL",
+            "profile": "vision",
+            "modality": "text+image->text",
+            "context_length": 256000,
+            "supports_json_mode": True,
+            "supports_strict_image_json": False,
+            "strict_image_json_status": "pending_smoke",
+            "strict_image_json_checked_at": "2026-06-19",
+            "strict_image_json_detail": "not yet smoke validated",
+            "commercial_use": "Apache-2.0",
+            "benchmark_only": True,
+            "parameter_count_b": 8,
+            "open_weight": True,
+            "proprietary": False,
+        }
+    )
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([_Source(descriptor)]))
+    monkeypatch.setattr(models_api, "get_vllm_probe", lambda: _FakePassingProbe())
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.unavailable == []
+    assert len(result.data) == 1
+    entry = result.data[0]
+    assert entry.id == "qwen3-vl-8b-instruct:vllm"
+    assert entry.provider == "vllm"
+    assert entry.backend == "vllm"
+    assert entry.upstream_model_id == "Qwen/Qwen3-VL-8B-Instruct"
+    assert entry.modality == "text+image->text"
+    assert entry.supports_images is True
+    assert entry.context_length == 256000
+    assert entry.supports_json_mode is True
+    assert entry.supports_strict_image_json is False
+    assert entry.strict_image_json_status == "pending_smoke"
+    assert entry.strict_image_json_checked_at == "2026-06-19"
+    assert entry.strict_image_json_detail == "not yet smoke validated"
+    assert entry.commercial_use == "Apache-2.0"
+    assert entry.benchmark_only is True
+    assert entry.parameter_count_b == 8
+    assert entry.open_weight is True
+    assert entry.proprietary is False
+
+
+@pytest.mark.asyncio
+async def test_models_data_reports_demanded_vllm_candidates_as_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = tmp_path / "vllm.json"
+    demanded = tmp_path / "demanded.json"
+    demanded.write_text(
+        """
+        [
+          {
+            "name": "qwen2.5-vl-32b-instruct",
+            "endpoint": "http://vllm-qwen2-5-vl-32b:8000",
+            "model_id": "Qwen/Qwen2.5-VL-32B-Instruct",
+            "modality": "text+image->text",
+            "supports_json_mode": true,
+            "supports_strict_image_json": false,
+            "strict_image_json_status": "pending_smoke"
+          }
+        ]
+        """,
+        encoding="utf-8",
+    )
+    registry = VLLMRegistry(live, demanded_config_path=demanded)
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([registry]))
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.data == []
+    assert len(result.unavailable) == 1
+    unavailable = result.unavailable[0]
+    assert unavailable.id == "qwen2.5-vl-32b-instruct:vllm"
+    assert unavailable.reason == "demanded_not_configured"
+    assert unavailable.backend == "vllm"
+    assert unavailable.format == "vllm"
+    assert "Qwen/Qwen2.5-VL-32B-Instruct" in unavailable.detail

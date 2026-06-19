@@ -63,6 +63,7 @@ vLLM/SGLang/NIM-compatible server must advertise from its own `/v1/models`.
 |---|---|---|
 | P0 | `qwen3-vl-8b-instruct:vllm` | `Qwen/Qwen3-VL-8B-Instruct` |
 | P0 | `qwen3-vl-32b-instruct:vllm` | `Qwen/Qwen3-VL-32B-Instruct` |
+| P0 | `qwen2.5-vl-32b-instruct:vllm` | `Qwen/Qwen2.5-VL-32B-Instruct` |
 | P0 | `qwen3-vl-30b-a3b-instruct:vllm` | `Qwen/Qwen3-VL-30B-A3B-Instruct` |
 | P0 | `qwen3-vl-235b-a22b-instruct:vllm` | `Qwen/Qwen3-VL-235B-A22B-Instruct` |
 | P0 | `glm-4.6v-flash:vllm` | `zai-org/GLM-4.6V-Flash` |
@@ -72,18 +73,25 @@ vLLM/SGLang/NIM-compatible server must advertise from its own `/v1/models`.
 | P0 | `minicpm-v-4.5:vllm` | `openbmb/MiniCPM-V-4_5` |
 | P0 | `minicpm-v-4.6:vllm` | `openbmb/MiniCPM-V-4.6` |
 | P0 | `internvl3.5-8b:vllm` | `OpenGVLab/InternVL3_5-8B` |
+| P0 | `internvl3.5-14b:vllm` | `OpenGVLab/InternVL3_5-14B` |
 | P0 | `internvl3.5-20b-a4b-preview:vllm` | `OpenGVLab/InternVL3_5-20B-A4B-Preview` |
 | P0 | `internvl3.5-241b-a28b:vllm` | `OpenGVLab/InternVL3_5-241B-A28B` |
 | P1 | `llama-4-scout-17b-16e-instruct:vllm` | `meta-llama/Llama-4-Scout-17B-16E-Instruct` |
 | P1 | `llama-4-maverick-17b-128e-instruct:vllm` | `meta-llama/Llama-4-Maverick-17B-128E-Instruct` |
+| P1 | `kimi-vl-a3b-thinking:vllm` | `moonshotai/Kimi-VL-A3B-Thinking` |
 | P1 | `kimi-vl-a3b-instruct:vllm` | `moonshotai/Kimi-VL-A3B-Instruct` |
 | P1 | `kimi-k2.5:vllm` | `moonshotai/Kimi-K2.5` |
 | P2 | `deepseek-vl2-tiny:vllm` | `deepseek-ai/deepseek-vl2-tiny` |
 | P2 | `deepseek-vl2-small:vllm` | `deepseek-ai/deepseek-vl2-small` |
 | P2 | `deepseek-vl2:vllm` | `deepseek-ai/deepseek-vl2` |
+| P2 | `ovis2.5-9b:vllm` | `AIDC-AI/Ovis2.5-9B` |
+| P2 | `molmo-7b-d:vllm` | `allenai/Molmo-7B-D-0924` |
 | P2 | `molmo2-4b:vllm` | `allenai/Molmo2-4B` |
 | P2 | `molmo2-8b:vllm` | `allenai/Molmo2-8B` |
 | P2 | `molmo2-o-7b:vllm` | `allenai/Molmo2-O-7B` |
+| P2 | `fakeshield-22b:vllm` | `zhipeixu/fakeshield-v1-22b` |
+| P2 | `sida-7b:vllm` | `saberzl/SIDA-7B` |
+| P2 | `sida-13b:vllm` | `saberzl/SIDA-13B` |
 | P2 | `aya-vision-8b:vllm` | `CohereLabs/aya-vision-8b` |
 | P2 | `aya-vision-32b:vllm` | `CohereLabs/aya-vision-32b` |
 
@@ -114,18 +122,21 @@ For Docker Model Runner upstreams, use the Docker-advertised model id in
 `qwen3-vl-8b-instruct:vllm`. The engine's `name`/`tag` stay stable for
 clients, while `model_id` must match the upstream exactly.
 
-## OpenRouter Large-Model Catalog
+## OpenRouter VLM Catalog
 
 The OpenRouter lane covers demanded models above the local/vLLM operating
-budget when they are open-weight, non-proprietary, and larger than 50B
-parameters. The committed `.openrouter_models.example.json` is the current
-copy-ready catalog; it was checked against OpenRouter's live `/api/v1/models`
-surface on 2026-06-17 and includes 22 large candidates.
+budget and smaller image-capable models when they are explicitly marked
+`benchmark_only`. All entries must remain open-weight and non-proprietary. The
+committed `.openrouter_models.example.json` is the current copy-ready catalog;
+it should be checked against OpenRouter's live `/api/v1/models` surface before
+promotion into an ignored runtime `.openrouter_models.json`.
 
 Key image-capable OpenRouter entries for this vehicle-photo workflow:
 
 | Engine model id | OpenRouter model id | Modality | Strict image+JSON status |
 |---|---|---|---|
+| `qwen3-vl-8b-instruct:openrouter` | `qwen/qwen3-vl-8b-instruct` | `text+image->text` | Pending smoke: issue #40 catalog exposure only; skip pilots until repeated final-content JSON parse coverage reaches >=95%. |
+| `qwen3-vl-32b-instruct:openrouter` | `qwen/qwen3-vl-32b-instruct` | `text+image->text` | Pending smoke: issue #40 catalog exposure only; skip pilots until repeated final-content JSON parse coverage reaches >=95%. |
 | `qwen3-vl-235b-a22b-instruct:openrouter` | `qwen/qwen3-vl-235b-a22b-instruct` | `text+image->text` | Unstable: issue #38 12-row smoke parsed 2/12 with repeated OpenRouter HTTP errors; a later six-image engine smoke passed only with a warm probe cache. |
 | `qwen3-vl-235b-a22b-thinking:openrouter` | `qwen/qwen3-vl-235b-a22b-thinking` | `text+image->text` | Failed: six-image engine smoke had 0/6 final-content JSON; five rows placed JSON in `reasoning_content`, and one row timed out at 90s. |
 | `qwen3.5-122b-a10b:openrouter` | `qwen/qwen3.5-122b-a10b` | `text+image+video->text` | Unvalidated; require a passing strict smoke before pilots. |
@@ -148,6 +159,14 @@ fallback models plus any operator-configured vLLM upstreams. The following
 priority families are intentionally **not** exposed in `/v1/models.data` until
 an operator installs weights, starts a serving backend, and the upstream probe
 passes:
+
+Issue #40's next FraudGuard shortlist is present in
+`.vllm_models.demanded.example.json` with `supports_strict_image_json=false`
+and `strict_image_json_status=pending_smoke`. Copying those entries into the
+live `.vllm_models.json` makes them appear in `/v1/models.data` as `data` only
+after their upstream `/v1/models` advertises the exact `model_id`; otherwise
+the engine keeps them out of `data` and reports the typed probe failure under
+`unavailable`.
 
 | Family | Current status | Reason |
 |---|---|---|

@@ -33,6 +33,9 @@ from inference_engine.schemas import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 # ---------------------------------------------------------------------------
 # Registry — config parsing
 # ---------------------------------------------------------------------------
@@ -88,6 +91,109 @@ def test_registry_parses_chat_template_kwargs(tmp_path: Path) -> None:
 
     assert desc.qualified_name == "minicpm-v-4.5-gguf-q4-k-m:dmr"
     assert desc.params["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_registry_parses_vlm_benchmark_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "vllm.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "glm-4.1v-9b-thinking",
+                    "endpoint": "http://vllm-glm-4-1v-9b-thinking:8000",
+                    "model_id": "zai-org/GLM-4.1V-9B-Thinking",
+                    "family": "GLM-V",
+                    "profile": "vision-reasoning",
+                    "parameter_count_b": 9,
+                    "open_weight": True,
+                    "proprietary": False,
+                    "commercial_use": "MIT; verify provider terms before production use",
+                    "modality": "text+image->text",
+                    "supports_json_mode": True,
+                    "supports_strict_image_json": False,
+                    "strict_image_json_status": "pending_smoke",
+                    "strict_image_json_checked_at": "2026-06-19",
+                    "strict_image_json_detail": "not yet smoke validated",
+                    "benchmark_only": True,
+                }
+            ]
+        )
+    )
+
+    desc = VLLMRegistry(path).list_models()[0]
+
+    assert desc.qualified_name == "glm-4.1v-9b-thinking:vllm"
+    assert desc.params["provider"] == "vllm"
+    assert desc.params["modality"] == "text+image->text"
+    assert desc.params["supports_json_mode"] is True
+    assert desc.params["supports_strict_image_json"] is False
+    assert desc.params["strict_image_json_status"] == "pending_smoke"
+    assert desc.params["strict_image_json_checked_at"] == "2026-06-19"
+    assert desc.params["strict_image_json_detail"] == "not yet smoke validated"
+    assert desc.params["commercial_use"] == "MIT; verify provider terms before production use"
+    assert desc.params["benchmark_only"] is True
+    assert desc.params["parameter_count_b"] == 9
+    assert desc.params["open_weight"] is True
+    assert desc.params["proprietary"] is False
+
+
+def test_demanded_vlm_manifest_covers_fraudguard_issue_40_candidates() -> None:
+    descs = VLLMRegistry(ROOT / ".vllm_models.demanded.example.json").list_models()
+    by_id = {d.qualified_name: d for d in descs}
+    requested = {
+        "qwen3-vl-8b-instruct:vllm": "Qwen/Qwen3-VL-8B-Instruct",
+        "qwen2.5-vl-32b-instruct:vllm": "Qwen/Qwen2.5-VL-32B-Instruct",
+        "internvl3.5-8b:vllm": "OpenGVLab/InternVL3_5-8B",
+        "internvl3.5-14b:vllm": "OpenGVLab/InternVL3_5-14B",
+        "glm-4.1v-9b-thinking:vllm": "zai-org/GLM-4.1V-9B-Thinking",
+        "kimi-vl-a3b-thinking:vllm": "moonshotai/Kimi-VL-A3B-Thinking",
+        "ovis2.5-9b:vllm": "AIDC-AI/Ovis2.5-9B",
+        "molmo-7b-d:vllm": "allenai/Molmo-7B-D-0924",
+        "fakeshield-22b:vllm": "zhipeixu/fakeshield-v1-22b",
+        "sida-7b:vllm": "saberzl/SIDA-7B",
+        "sida-13b:vllm": "saberzl/SIDA-13B",
+    }
+
+    assert requested.keys() <= by_id.keys()
+    for engine_id, upstream_id in requested.items():
+        desc = by_id[engine_id]
+        assert desc.params["model_id"] == upstream_id
+        assert "image" in desc.params["modality"]
+        assert desc.params["supports_json_mode"] is True
+        assert desc.params["supports_strict_image_json"] is False
+        assert desc.params["strict_image_json_status"] == "pending_smoke"
+        assert desc.params["strict_image_json_checked_at"] == "2026-06-19"
+        assert desc.params["commercial_use"]
+
+
+def test_registry_reports_demanded_models_missing_from_live_config(tmp_path: Path) -> None:
+    live = tmp_path / "vllm.json"
+    live.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "qwen3-vl-8b-instruct",
+                    "endpoint": "http://vllm-qwen3-vl-8b:8000",
+                    "model_id": "Qwen/Qwen3-VL-8B-Instruct",
+                }
+            ]
+        )
+    )
+
+    skipped = VLLMRegistry(
+        live,
+        demanded_config_path=ROOT / ".vllm_models.demanded.example.json",
+    ).list_skipped()
+    skipped_by_id = {skip.qualified_name: skip for skip in skipped}
+
+    assert "qwen3-vl-8b-instruct:vllm" not in skipped_by_id
+    assert "qwen2.5-vl-32b-instruct:vllm" in skipped_by_id
+    assert skipped_by_id["qwen2.5-vl-32b-instruct:vllm"].reason == (
+        "demanded_not_configured"
+    )
+    assert "Qwen/Qwen2.5-VL-32B-Instruct" in skipped_by_id[
+        "qwen2.5-vl-32b-instruct:vllm"
+    ].detail
 
 
 def test_registry_rejects_bad_chat_template_kwargs(tmp_path: Path) -> None:

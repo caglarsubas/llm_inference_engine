@@ -60,7 +60,10 @@ class AppState:
         log = get_logger("startup.appstate")
         ollama = OllamaRegistry(settings.ollama_models_dir)
         mlx = MLXRegistry(settings.mlx_models_dir)
-        vllm = VLLMRegistry(settings.vllm_models_file)
+        vllm = VLLMRegistry(
+            settings.vllm_models_file,
+            demanded_config_path=settings.vllm_demanded_models_file,
+        )
         openrouter = OpenRouterRegistry(
             settings.openrouter_models_file,
             default_endpoint=settings.openrouter_endpoint,

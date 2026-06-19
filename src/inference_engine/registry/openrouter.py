@@ -1,10 +1,11 @@
 """Config-driven OpenRouter registry.
 
-OpenRouter is deliberately opt-in: operators list only the large open-weight
-models they want this engine to expose. The registry enforces the policy gate
-from the config metadata before a descriptor can reach the manager:
+OpenRouter is deliberately opt-in: operators list only the open-weight models
+they want this engine to expose. The registry enforces the policy gate from the
+config metadata before a descriptor can reach the manager:
 
-* parameter count must be strictly greater than the configured minimum
+* parameter count must be strictly greater than the configured minimum, unless
+  this is an image-capable benchmark-only candidate
 * ``open_weight`` must be true
 * ``proprietary`` must be explicitly false
 * ``open_source`` may be omitted, but if present it cannot be false
@@ -135,10 +136,14 @@ class OpenRouterRegistry:
             ) from exc
 
     def _enforce_policy(self, index: int, entry: dict, parameter_count_b: float) -> None:
-        if parameter_count_b <= self.min_parameter_count_b:
+        if (
+            parameter_count_b <= self.min_parameter_count_b
+            and not self._allows_below_min_benchmark_vlm(entry)
+        ):
             raise ValueError(
                 f"OpenRouter entry {index} parameter_count_b must be > "
-                f"{self.min_parameter_count_b:g}"
+                f"{self.min_parameter_count_b:g} unless benchmark_only=true for "
+                "an image-capable candidate"
             )
         if entry.get("open_weight") is not True:
             raise ValueError(f"OpenRouter entry {index} must set open_weight=true")
@@ -146,6 +151,11 @@ class OpenRouterRegistry:
             raise ValueError(f"OpenRouter entry {index} must not set open_source=false")
         if entry.get("proprietary") is not False:
             raise ValueError(f"OpenRouter entry {index} must set proprietary=false")
+
+    @staticmethod
+    def _allows_below_min_benchmark_vlm(entry: dict) -> bool:
+        modality = str(entry.get("modality", "")).lower()
+        return entry.get("benchmark_only") is True and "image" in modality
 
 
 __all__ = ["OpenRouterRegistry"]

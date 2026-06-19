@@ -23,6 +23,15 @@ class Settings(BaseSettings):
             ".vllm_models.example.json."
         ),
     )
+    vllm_demanded_models_file: Path = Field(
+        default=Path(".vllm_models.demanded.example.json"),
+        description=(
+            "Catalog-only vLLM demand manifest. Entries not present in "
+            "VLLM_MODELS_FILE are reported under /v1/models*.unavailable as "
+            "demanded_not_configured so benchmark clients can distinguish "
+            "operator backlog from unknown ids."
+        ),
+    )
     openrouter_models_file: Path = Field(
         default=Path(".openrouter_models.json"),
         description=(
