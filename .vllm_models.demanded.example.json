@@ -5,7 +5,19 @@
     "endpoint": "http://vllm-qwen3-vl-8b:8000",
     "model_id": "Qwen/Qwen3-VL-8B-Instruct",
     "family": "Qwen3-VL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "parameter_count_b": 8,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "context_length": 256000,
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 FraudGuard candidate. Expose for operator readiness only; do not benchmark until repeated 512px vehicle-image strict JSON smoke reaches >=95% final-content parse coverage."
   },
   {
     "name": "qwen3-vl-32b-instruct",
@@ -13,7 +25,38 @@
     "endpoint": "http://vllm-qwen3-vl-32b:8000",
     "model_id": "Qwen/Qwen3-VL-32B-Instruct",
     "family": "Qwen3-VL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "parameter_count_b": 32,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "context_length": 262144,
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "OpenRouter lists this route, but FraudGuard issue #40 still requires repeated engine-side strict image+JSON smoke before pilots."
+  },
+  {
+    "name": "qwen2.5-vl-32b-instruct",
+    "tag": "vllm",
+    "endpoint": "http://vllm-qwen2-5-vl-32b:8000",
+    "model_id": "Qwen/Qwen2.5-VL-32B-Instruct",
+    "family": "Qwen2.5-VL",
+    "profile": "vision",
+    "priority": "P0",
+    "parameter_count_b": 32,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 FraudGuard candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
   },
   {
     "name": "qwen3-vl-30b-a3b-instruct",
@@ -21,7 +64,10 @@
     "endpoint": "http://vllm-qwen3-vl-30b-a3b:8000",
     "model_id": "Qwen/Qwen3-VL-30B-A3B-Instruct",
     "family": "Qwen3-VL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "qwen3-vl-235b-a22b-instruct",
@@ -29,7 +75,10 @@
     "endpoint": "http://vllm-qwen3-vl-235b-a22b:8000",
     "model_id": "Qwen/Qwen3-VL-235B-A22B-Instruct",
     "family": "Qwen3-VL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "glm-4.6v-flash",
@@ -37,7 +86,10 @@
     "endpoint": "http://vllm-glm-4-6v-flash:8000",
     "model_id": "zai-org/GLM-4.6V-Flash",
     "family": "GLM-V",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "glm-4.6v",
@@ -45,7 +97,10 @@
     "endpoint": "http://vllm-glm-4-6v:8000",
     "model_id": "zai-org/GLM-4.6V",
     "family": "GLM-V",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image+video->text",
+    "supports_json_mode": true
   },
   {
     "name": "glm-4.5v",
@@ -53,7 +108,10 @@
     "endpoint": "http://vllm-glm-4-5v:8000",
     "model_id": "zai-org/GLM-4.5V",
     "family": "GLM-V",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "glm-4.1v-9b-thinking",
@@ -61,7 +119,18 @@
     "endpoint": "http://vllm-glm-4-1v-9b-thinking:8000",
     "model_id": "zai-org/GLM-4.1V-9B-Thinking",
     "family": "GLM-V",
-    "priority": "P0"
+    "profile": "vision-reasoning",
+    "priority": "P0",
+    "parameter_count_b": 9,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "MIT; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 FraudGuard candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
   },
   {
     "name": "minicpm-v-4.5",
@@ -69,7 +138,10 @@
     "endpoint": "http://vllm-minicpm-v-4-5:8000",
     "model_id": "openbmb/MiniCPM-V-4_5",
     "family": "MiniCPM-V",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "minicpm-v-4.6",
@@ -77,7 +149,10 @@
     "endpoint": "http://vllm-minicpm-v-4-6:8000",
     "model_id": "openbmb/MiniCPM-V-4.6",
     "family": "MiniCPM-V",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "internvl3.5-8b",
@@ -85,7 +160,37 @@
     "endpoint": "http://vllm-internvl3-5-8b:8000",
     "model_id": "OpenGVLab/InternVL3_5-8B",
     "family": "InternVL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "parameter_count_b": 8,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 requested OpenGVLab/InternVL3.5-8B; public Hugging Face repo is OpenGVLab/InternVL3_5-8B. Configure only after upstream lists this exact model_id."
+  },
+  {
+    "name": "internvl3.5-14b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-internvl3-5-14b:8000",
+    "model_id": "OpenGVLab/InternVL3_5-14B",
+    "family": "InternVL",
+    "profile": "vision",
+    "priority": "P0",
+    "parameter_count_b": 14,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 requested OpenGVLab/InternVL3.5-14B; public Hugging Face repo is OpenGVLab/InternVL3_5-14B. Configure only after upstream lists this exact model_id."
   },
   {
     "name": "internvl3.5-20b-a4b-preview",
@@ -93,7 +198,10 @@
     "endpoint": "http://vllm-internvl3-5-20b-a4b:8000",
     "model_id": "OpenGVLab/InternVL3_5-20B-A4B-Preview",
     "family": "InternVL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "internvl3.5-241b-a28b",
@@ -101,7 +209,10 @@
     "endpoint": "http://vllm-internvl3-5-241b-a28b:8000",
     "model_id": "OpenGVLab/InternVL3_5-241B-A28B",
     "family": "InternVL",
-    "priority": "P0"
+    "profile": "vision",
+    "priority": "P0",
+    "modality": "text+image->text",
+    "supports_json_mode": true
   },
   {
     "name": "llama-4-scout-17b-16e-instruct",
@@ -118,6 +229,25 @@
     "model_id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
     "family": "Llama 4",
     "priority": "P1"
+  },
+  {
+    "name": "kimi-vl-a3b-thinking",
+    "tag": "vllm",
+    "endpoint": "http://vllm-kimi-vl-a3b-thinking:8000",
+    "model_id": "moonshotai/Kimi-VL-A3B-Thinking",
+    "family": "Kimi multimodal",
+    "profile": "vision-reasoning",
+    "priority": "P1",
+    "parameter_count_b": 3,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "MIT; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 FraudGuard candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
   },
   {
     "name": "kimi-vl-a3b-instruct",
@@ -160,6 +290,44 @@
     "priority": "P2"
   },
   {
+    "name": "ovis2.5-9b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-ovis2-5-9b:8000",
+    "model_id": "AIDC-AI/Ovis2.5-9B",
+    "family": "Ovis",
+    "profile": "vision",
+    "priority": "P2",
+    "parameter_count_b": 9,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 FraudGuard candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
+  },
+  {
+    "name": "molmo-7b-d",
+    "tag": "vllm",
+    "endpoint": "http://vllm-molmo-7b-d:8000",
+    "model_id": "allenai/Molmo-7B-D-0924",
+    "family": "Molmo",
+    "profile": "vision",
+    "priority": "P2",
+    "parameter_count_b": 7,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 FraudGuard candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
+  },
+  {
     "name": "molmo2-4b",
     "tag": "vllm",
     "endpoint": "http://vllm-molmo2-4b:8000",
@@ -182,6 +350,63 @@
     "model_id": "allenai/Molmo2-O-7B",
     "family": "Molmo 2",
     "priority": "P2"
+  },
+  {
+    "name": "fakeshield-22b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-fakeshield-22b:8000",
+    "model_id": "zhipeixu/fakeshield-v1-22b",
+    "family": "FakeShield",
+    "profile": "forensics",
+    "priority": "P2",
+    "parameter_count_b": 22,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 specialized forensic candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
+  },
+  {
+    "name": "sida-7b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-sida-7b:8000",
+    "model_id": "saberzl/SIDA-7B",
+    "family": "SIDA",
+    "profile": "forensics",
+    "priority": "P2",
+    "parameter_count_b": 7,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Llama 2 license; legal review required before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 specialized forensic candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
+  },
+  {
+    "name": "sida-13b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-sida-13b:8000",
+    "model_id": "saberzl/SIDA-13B",
+    "family": "SIDA",
+    "profile": "forensics",
+    "priority": "P2",
+    "parameter_count_b": 13,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Llama 2 license; legal review required before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-19",
+    "strict_image_json_detail": "Issue #40 specialized forensic candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
   },
   {
     "name": "aya-vision-8b",

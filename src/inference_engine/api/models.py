@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import require_identity
-from ..registry import OllamaRegistry, get_openrouter_probe, get_probe, get_vllm_probe
+from ..registry import (
+    VLLMRegistry,
+    get_openrouter_probe,
+    get_probe,
+    get_vllm_probe,
+)
 from ..response_normalize import infer_model_capabilities
 from ..schemas import ModelCatalog, ModelCatalogEntry, ModelInfo, ModelList, UnavailableModel
 from .state import app_state
@@ -113,9 +118,11 @@ def _append_registry_skips(
     # which never reach the probe stage — but skip any id that another
     # source (e.g. ollama_http) successfully covered, so a cloud manifest
     # served by Ollama doesn't appear in both ``data`` and ``unavailable``.
+    unavailable_ids = {m.id for m in unavailable}
     for skip in _collect_registry_skips():
-        if skip.id not in available_ids:
+        if skip.id not in available_ids and skip.id not in unavailable_ids:
             unavailable.append(skip)
+            unavailable_ids.add(skip.id)
     unavailable.sort(key=lambda m: m.id)
 
 
@@ -206,16 +213,18 @@ def _catalog_entry(desc) -> ModelCatalogEntry:
 def _collect_registry_skips() -> list[UnavailableModel]:
     """Walk every composite source and harvest ``list_skipped()`` outputs.
 
-    Only ``OllamaRegistry`` exposes that today; the helper is forward-looking
-    (MLX/vLLM registries can grow the same method later without changing the
-    API layer).
+    Ollama uses this for manifests that cannot become descriptors; vLLM uses it
+    for catalog-only demanded models that are not configured as live upstreams.
     """
     out: list[UnavailableModel] = []
     seen: set[str] = set()
     for source in getattr(app_state.registry, "_sources", ()):
-        if not isinstance(source, OllamaRegistry):
+        list_skipped = getattr(source, "list_skipped", None)
+        if not callable(list_skipped):
             continue
-        for skip in source.list_skipped():
+        backend = "vllm" if isinstance(source, VLLMRegistry) else "none"
+        fmt = "vllm" if isinstance(source, VLLMRegistry) else "gguf"
+        for skip in list_skipped():
             if skip.qualified_name in seen:
                 continue
             seen.add(skip.qualified_name)
@@ -224,6 +233,8 @@ def _collect_registry_skips() -> list[UnavailableModel]:
                     id=skip.qualified_name,
                     reason=skip.reason,
                     detail=skip.detail,
+                    backend=backend,
+                    format=fmt,
                 )
             )
     return out

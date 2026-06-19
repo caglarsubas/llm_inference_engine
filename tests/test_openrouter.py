@@ -103,10 +103,38 @@ def test_example_catalog_is_policy_compliant() -> None:
     assert len({d.qualified_name for d in descs}) == len(descs)
     assert all(d.format == "openrouter" for d in descs)
     assert all(d.params["request_key_source"] == "openrouter-api-key" for d in descs)
-    assert all(float(d.params["parameter_count_b"]) > 50 for d in descs)
-    assert {"qwen3-vl-235b-a22b-instruct:openrouter", "hermes-4-405b:openrouter"} <= {
+    assert all(
+        float(d.params["parameter_count_b"]) > 50
+        or (
+            d.params.get("benchmark_only") is True
+            and "image" in str(d.params.get("modality", "")).lower()
+        )
+        for d in descs
+    )
+    assert {
+        "qwen3-vl-8b-instruct:openrouter",
+        "qwen3-vl-32b-instruct:openrouter",
+        "qwen3-vl-235b-a22b-instruct:openrouter",
+        "hermes-4-405b:openrouter",
+    } <= {
         d.qualified_name for d in descs
     }
+    issue_40_candidates = {
+        d.qualified_name: d
+        for d in descs
+        if d.qualified_name
+        in {"qwen3-vl-8b-instruct:openrouter", "qwen3-vl-32b-instruct:openrouter"}
+    }
+    assert issue_40_candidates
+    assert all(d.params["benchmark_only"] is True for d in issue_40_candidates.values())
+    assert all(
+        d.params["strict_image_json_status"] == "pending_smoke"
+        for d in issue_40_candidates.values()
+    )
+    assert all(
+        d.params["supports_strict_image_json"] is False
+        for d in issue_40_candidates.values()
+    )
     qwen3_vl = {
         d.qualified_name: d
         for d in descs
@@ -126,6 +154,38 @@ def test_example_catalog_is_policy_compliant() -> None:
         ]
         == "failed"
     )
+
+
+def test_registry_allows_benchmark_only_image_candidates_under_size_gate(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "openrouter.json"
+    _write_models(
+        path,
+        [
+            _entry(
+                name="qwen3-vl-8b-instruct",
+                model_id="qwen/qwen3-vl-8b-instruct",
+                parameter_count_b=8,
+                family="Qwen3-VL",
+                modality="text+image->text",
+                benchmark_only=True,
+                supports_strict_image_json=False,
+                strict_image_json_status="pending_smoke",
+            )
+        ],
+    )
+
+    desc = OpenRouterRegistry(
+        path,
+        default_endpoint="https://openrouter.ai/api",
+        min_parameter_count_b=50,
+    ).list_models()[0]
+
+    assert desc.qualified_name == "qwen3-vl-8b-instruct:openrouter"
+    assert desc.params["benchmark_only"] is True
+    assert desc.params["supports_strict_image_json"] is False
+    assert desc.params["strict_image_json_status"] == "pending_smoke"
 
 
 @pytest.mark.parametrize(
