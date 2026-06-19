@@ -142,7 +142,7 @@ def test_demanded_vlm_manifest_covers_fraudguard_issue_40_candidates() -> None:
     by_id = {d.qualified_name: d for d in descs}
     requested = {
         "qwen3-vl-8b-instruct:vllm": "Qwen/Qwen3-VL-8B-Instruct",
-        "qwen2.5-vl-32b-instruct:vllm": "Qwen/Qwen2.5-VL-32B-Instruct",
+        "qwen3-vl-32b-instruct:vllm": "Qwen/Qwen3-VL-32B-Instruct",
         "internvl3.5-8b:vllm": "OpenGVLab/InternVL3_5-8B",
         "internvl3.5-14b:vllm": "OpenGVLab/InternVL3_5-14B",
         "glm-4.1v-9b-thinking:vllm": "zai-org/GLM-4.1V-9B-Thinking",
@@ -187,12 +187,12 @@ def test_registry_reports_demanded_models_missing_from_live_config(tmp_path: Pat
     skipped_by_id = {skip.qualified_name: skip for skip in skipped}
 
     assert "qwen3-vl-8b-instruct:vllm" not in skipped_by_id
-    assert "qwen2.5-vl-32b-instruct:vllm" in skipped_by_id
-    assert skipped_by_id["qwen2.5-vl-32b-instruct:vllm"].reason == (
+    assert "qwen3-vl-32b-instruct:vllm" in skipped_by_id
+    assert skipped_by_id["qwen3-vl-32b-instruct:vllm"].reason == (
         "demanded_not_configured"
     )
-    assert "Qwen/Qwen2.5-VL-32B-Instruct" in skipped_by_id[
-        "qwen2.5-vl-32b-instruct:vllm"
+    assert "Qwen/Qwen3-VL-32B-Instruct" in skipped_by_id[
+        "qwen3-vl-32b-instruct:vllm"
     ].detail
 
 

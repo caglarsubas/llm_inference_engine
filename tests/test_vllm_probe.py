@@ -189,9 +189,9 @@ async def test_models_data_reports_demanded_vllm_candidates_as_unavailable(
         """
         [
           {
-            "name": "qwen2.5-vl-32b-instruct",
-            "endpoint": "http://vllm-qwen2-5-vl-32b:8000",
-            "model_id": "Qwen/Qwen2.5-VL-32B-Instruct",
+            "name": "qwen3-vl-32b-instruct",
+            "endpoint": "http://vllm-qwen3-vl-32b:8000",
+            "model_id": "Qwen/Qwen3-VL-32B-Instruct",
             "modality": "text+image->text",
             "supports_json_mode": true,
             "supports_strict_image_json": false,
@@ -209,8 +209,8 @@ async def test_models_data_reports_demanded_vllm_candidates_as_unavailable(
     assert result.data == []
     assert len(result.unavailable) == 1
     unavailable = result.unavailable[0]
-    assert unavailable.id == "qwen2.5-vl-32b-instruct:vllm"
+    assert unavailable.id == "qwen3-vl-32b-instruct:vllm"
     assert unavailable.reason == "demanded_not_configured"
     assert unavailable.backend == "vllm"
     assert unavailable.format == "vllm"
-    assert "Qwen/Qwen2.5-VL-32B-Instruct" in unavailable.detail
+    assert "Qwen/Qwen3-VL-32B-Instruct" in unavailable.detail

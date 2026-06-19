@@ -194,6 +194,9 @@ make install-mlx       # mlx-lm + mlx-metal
 # (optional) grab a small MLX model for the demo
 make download-mlx-model    # default: mlx-community/Llama-3.2-1B-Instruct-4bit (~700 MB)
 
+# (optional) materialize local FraudGuard VLM snapshots before serving/probing
+make download-vlm-models CORE_ONLY=1   # writes to ~/.cache/inference_engine/hf-vlm
+
 # enumerate the unified model registry (Ollama GGUF + MLX, no server needed)
 make list-models
 

@@ -63,7 +63,6 @@ vLLM/SGLang/NIM-compatible server must advertise from its own `/v1/models`.
 |---|---|---|
 | P0 | `qwen3-vl-8b-instruct:vllm` | `Qwen/Qwen3-VL-8B-Instruct` |
 | P0 | `qwen3-vl-32b-instruct:vllm` | `Qwen/Qwen3-VL-32B-Instruct` |
-| P0 | `qwen2.5-vl-32b-instruct:vllm` | `Qwen/Qwen2.5-VL-32B-Instruct` |
 | P0 | `qwen3-vl-30b-a3b-instruct:vllm` | `Qwen/Qwen3-VL-30B-A3B-Instruct` |
 | P0 | `qwen3-vl-235b-a22b-instruct:vllm` | `Qwen/Qwen3-VL-235B-A22B-Instruct` |
 | P0 | `glm-4.6v-flash:vllm` | `zai-org/GLM-4.6V-Flash` |
@@ -94,6 +93,28 @@ vLLM/SGLang/NIM-compatible server must advertise from its own `/v1/models`.
 | P2 | `sida-13b:vllm` | `saberzl/SIDA-13B` |
 | P2 | `aya-vision-8b:vllm` | `CohereLabs/aya-vision-8b` |
 | P2 | `aya-vision-32b:vllm` | `CohereLabs/aya-vision-32b` |
+
+For the local FraudGuard shortlist, prefer the Qwen3-VL family over the older
+Qwen2.5-VL 32B candidate. The active local 32B target is
+`qwen3-vl-32b-instruct:vllm` backed by `Qwen/Qwen3-VL-32B-Instruct`.
+
+Download local snapshots before wiring serving backends:
+
+```bash
+make download-vlm-models CORE_ONLY=1
+```
+
+This materializes the practical ungated sub-50B local shortlist under
+`~/.cache/inference_engine/hf-vlm` and writes `local_vlm_manifest.json` there:
+Qwen3-VL 8B/32B/30B-A3B, GLM-4.6V-Flash, GLM-4.1V-9B, MiniCPM-V 4.5/4.6,
+InternVL3.5 8B/14B/20B-A4B, Kimi-VL A3B, Ovis2.5-9B, DeepSeek-VL2 Tiny/Small,
+and Molmo 7B/2-4B/2-8B/2-O-7B. Run without `CORE_ONLY=1` to include the
+specialized FakeShield/SIDA follow-ups, or use
+`VLM_MODEL=Qwen/Qwen3-VL-32B-Instruct` to refresh one repository. Add
+`VLM_HF_TRANSFER=1` only when the accelerated Hugging Face transfer path is
+stable in the current shell. A downloaded snapshot is not a serving guarantee:
+copy an entry into `.vllm_models.json` only after a local OpenAI-compatible
+upstream is running and advertises the exact `model_id`.
 
 ## Honest Rollout Gates
 
