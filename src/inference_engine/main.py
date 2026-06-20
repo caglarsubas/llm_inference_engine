@@ -1,6 +1,9 @@
-from contextlib import asynccontextmanager
+import asyncio
+import time
+from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from . import __version__
 from .api import admin, chat, completions, embeddings, evals, health, metrics, models, rerank
@@ -17,18 +20,17 @@ from .registry import get_openrouter_probe, get_probe, get_vllm_probe
 # is idempotent and a no-op when OTEL_ENABLED=false.
 configure_tracing()
 
+_READINESS_EXEMPT_PATHS = {"/v1/health", "/v1/ready", "/v1/metrics"}
+_STARTING_RETRY_AFTER_SECONDS = 5
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    configure_logging(settings.log_level)
-    n_keys = load_keys()
-    app_state.policy_registry = load_policy(settings.auto_eval_policies_file)
-    log = get_logger("startup")
+
+def _collect_startup_model_summary(n_keys: int) -> dict:
+    t0 = time.perf_counter()
 
     # Walk the composite registry once with probe-aware partitioning so the
     # startup log honestly reflects the reachable surface — not just what's
-    # on disk.  GGUFs that llama-cpp-python can't load fall through to the
-    # ollama_http source automatically and land in ``available``.  Anything
+    # on disk. GGUFs that llama-cpp-python can't load fall through to the
+    # ollama_http source automatically and land in ``available``. Anything
     # every source rejects (or that registry parsing skipped) lands in
     # ``unavailable`` / ``skipped`` with structured reasons.
     probe = get_probe()
@@ -86,29 +88,93 @@ async def lifespan(app: FastAPI):
         for s in (getattr(source, "list_skipped", lambda: [])() or [])
     ]
 
-    log.info(
-        "engine_ready",
-        version=__version__,
-        backend=app_state.backend_name,
-        ollama_models_dir=str(settings.ollama_models_dir),
-        mlx_models_dir=str(settings.mlx_models_dir),
-        ollama_http_endpoint=settings.ollama_http_endpoint or "<disabled>",
-        openrouter_models_file=str(settings.openrouter_models_file),
-        n_available=len(loadable),
-        n_unavailable=len(unavailable),
-        n_skipped=len(skipped),
-        available=available_summary,
-        unavailable=unavailable,
-        skipped=skipped,
-        memory_budget_gb=settings.memory_budget_gb,
-        otel_enabled=is_enabled(),
-        auth_enabled=settings.auth_enabled,
-        n_keys=n_keys,
-        n_policies=len(app_state.policy_registry),
+    return {
+        "version": __version__,
+        "backend": app_state.backend_name,
+        "ollama_models_dir": str(settings.ollama_models_dir),
+        "mlx_models_dir": str(settings.mlx_models_dir),
+        "ollama_http_endpoint": settings.ollama_http_endpoint or "<disabled>",
+        "openrouter_models_file": str(settings.openrouter_models_file),
+        "n_available": len(loadable),
+        "n_unavailable": len(unavailable),
+        "n_skipped": len(skipped),
+        "available": available_summary,
+        "unavailable": unavailable,
+        "skipped": skipped,
+        "memory_budget_gb": settings.memory_budget_gb,
+        "otel_enabled": is_enabled(),
+        "auth_enabled": settings.auth_enabled,
+        "n_keys": n_keys,
+        "n_policies": len(app_state.policy_registry),
+        "startup_probe_duration_ms": round((time.perf_counter() - t0) * 1000, 2),
+    }
+
+
+async def _finish_startup(log, n_keys: int) -> None:
+    try:
+        summary = await asyncio.to_thread(_collect_startup_model_summary, n_keys)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - startup should fail typed
+        app_state.mark_startup_failed(exc)
+        log.error(
+            "engine_startup_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return
+
+    app_state.mark_ready()
+    log.info("engine_ready", **summary)
+
+
+def _readiness_error_response() -> JSONResponse:
+    readiness = app_state.readiness()
+    error_type = "engine_starting"
+    message = "Inference engine is starting; startup model probes are still running."
+    if readiness["status"] == "error":
+        error_type = "engine_startup_failed"
+        message = "Inference engine startup failed; check engine logs."
+
+    detail = {
+        "message": message,
+        "type": error_type,
+        "code": error_type,
+        "param": None,
+        "status": readiness["status"],
+        "ready": False,
+        "retry_after_seconds": _STARTING_RETRY_AFTER_SECONDS,
+    }
+    if readiness.get("error"):
+        detail["startup_error"] = readiness["error"]
+
+    return JSONResponse(
+        status_code=503,
+        content={"detail": detail},
+        headers={"Retry-After": str(_STARTING_RETRY_AFTER_SECONDS)},
     )
-    yield
-    await app_state.manager.shutdown()
-    shutdown_tracing()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_logging(settings.log_level)
+    n_keys = load_keys()
+    app_state.policy_registry = load_policy(settings.auto_eval_policies_file)
+    log = get_logger("startup")
+    app_state.mark_starting()
+    startup_task = asyncio.create_task(
+        _finish_startup(log, n_keys),
+        name="inference-engine-startup-probes",
+    )
+    try:
+        yield
+    finally:
+        if not startup_task.done():
+            startup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await startup_task
+        await app_state.manager.shutdown()
+        shutdown_tracing()
 
 
 app = FastAPI(
@@ -122,6 +188,18 @@ app = FastAPI(
 # below. Must run before the first request — module-level call is fine because
 # Uvicorn imports this module before binding the socket.
 instrument_fastapi(app)
+
+
+@app.middleware("http")
+async def startup_readiness_gate(request: Request, call_next):
+    if (
+        request.url.path.startswith("/v1/")
+        and request.url.path not in _READINESS_EXEMPT_PATHS
+        and not app_state.is_ready
+    ):
+        return _readiness_error_response()
+    return await call_next(request)
+
 
 app.include_router(health.router, tags=["health"])
 app.include_router(metrics.router, tags=["metrics"])

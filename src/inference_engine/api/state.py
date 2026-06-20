@@ -7,6 +7,9 @@ loaded model uses the runtime that matches its on-disk format.
 
 from __future__ import annotations
 
+import time
+from threading import RLock
+
 from ..adapters import InferenceAdapter
 from ..adapters.llama_cpp import LlamaCppAdapter
 from ..config import settings
@@ -134,6 +137,62 @@ class AppState:
 
         from ..scheduler import TenantScheduler  # noqa: PLC0415 — avoid eager settings cycles
         self.scheduler = TenantScheduler()
+
+        # TestClient route tests often bypass ASGI lifespan, so the default
+        # state is ready. The real lifespan flips this to "starting" before
+        # yielding and then marks it ready after the background probe pass.
+        self._readiness_lock = RLock()
+        self._readiness: dict = {
+            "ready": True,
+            "status": "ready",
+            "message": "engine is ready",
+            "started_at": None,
+            "ready_at": time.time(),
+            "error": None,
+        }
+
+    def mark_starting(self, message: str = "startup model probes are running") -> None:
+        with self._readiness_lock:
+            self._readiness = {
+                "ready": False,
+                "status": "starting",
+                "message": message,
+                "started_at": time.time(),
+                "ready_at": None,
+                "error": None,
+            }
+
+    def mark_ready(self, message: str = "engine is ready") -> None:
+        with self._readiness_lock:
+            started_at = self._readiness.get("started_at")
+            self._readiness = {
+                "ready": True,
+                "status": "ready",
+                "message": message,
+                "started_at": started_at,
+                "ready_at": time.time(),
+                "error": None,
+            }
+
+    def mark_startup_failed(self, error: BaseException) -> None:
+        with self._readiness_lock:
+            started_at = self._readiness.get("started_at")
+            self._readiness = {
+                "ready": False,
+                "status": "error",
+                "message": "engine startup failed",
+                "started_at": started_at,
+                "ready_at": None,
+                "error": f"{type(error).__name__}: {error}",
+            }
+
+    def readiness(self) -> dict:
+        with self._readiness_lock:
+            return dict(self._readiness)
+
+    @property
+    def is_ready(self) -> bool:
+        return bool(self.readiness()["ready"])
 
 
 app_state = AppState()

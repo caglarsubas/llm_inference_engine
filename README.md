@@ -216,6 +216,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | Method | Path                          | Notes                                                                      |
 |--------|-------------------------------|----------------------------------------------------------------------------|
 | GET    | `/v1/health`                  | Liveness + every currently-loaded model + budget usage                     |
+| GET    | `/v1/ready`                   | Readiness probe; returns 503 + `Retry-After` while startup probes run      |
 | GET    | `/v1/metrics`                 | Prometheus-format scrape: loaded count, loaded bytes, budget, total models |
 | GET    | `/v1/models`                  | All models discoverable in the unified registry                            |
 | GET    | `/v1/models/{model:tag}`      | Single model details (size, blob path, backend)                            |
@@ -228,6 +229,12 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
 | POST   | `/v1/evals/run`               | LLM-as-a-Judge: candidate + rubric → structured verdict                    |
 | POST   | `/v1/chat/completions`        | (extension) `auto_eval: {rubrics, mode}` runs evals inline or in background |
+
+During native startup, the HTTP listener binds before heavyweight model probes
+finish. `/v1/health` stays open and reports `status: "starting"`;
+`/v1/ready` returns HTTP 503 with `Retry-After`; normal `/v1/*` model,
+inference, eval, and admin routes return a typed 503 detail with
+`type: "engine_starting"` until the probe pass completes.
 
 ### Multi-model, multi-backend hot-keep
 
@@ -1449,7 +1456,7 @@ Behaviour:
 
 - `Authorization: Bearer <key>` → resolves to `Identity(tenant, key_id)` and caches on `request.state`.
 - Missing or unknown key → `401 {"detail": "missing bearer token"}` / `401 {"detail": "invalid api key"}`.
-- `/v1/health` is left open so liveness probes work without keys.
+- `/v1/health` and `/v1/ready` are left open so liveness/readiness probes work without keys.
 - `/v1/models` and `/v1/chat/completions` require a valid key when auth is on.
 - Every span (model.acquire, chat.generate, chat.stream) carries `prometa.tenant=<name>` and `prometa.key_id=<redacted>` — Prometa can route signals per tenant out of the box.
 
