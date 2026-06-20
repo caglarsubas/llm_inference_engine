@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init sida13b-openai-upstream smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -243,12 +243,30 @@ vllm-fakeshield-init:
 	  --strict-image-json-detail "Issue #43 live descriptor template. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
 	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
 
-SIDA13B_ENDPOINT ?= http://vllm-sida-13b:8000
+SIDA13B_ENDPOINT ?= http://127.0.0.1:8000
 vllm-sida13b-init:
 	uv run python scripts/promote_vllm_model.py sida-13b:vllm \
 	  --endpoint "$(SIDA13B_ENDPOINT)" \
-	  --strict-image-json-detail "Issue #46 live descriptor template. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
+	  --strict-image-json-detail "Issue #46 SIDA OpenAI-compatible worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
 	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
+
+SIDA_PYTHON ?= python
+SIDA_SRC_DIR ?=
+SIDA_MODEL_DIR ?= $(HOME)/.cache/inference_engine/hf-vlm/saberzl--SIDA-13B
+SIDA_UPSTREAM_HOST ?= 127.0.0.1
+SIDA_UPSTREAM_PORT ?= 8000
+SIDA_PRECISION ?= bf16
+sida13b-openai-upstream:
+	@if [ -z "$(SIDA_SRC_DIR)" ]; then \
+	  echo "set SIDA_SRC_DIR=/path/to/hzlsaber/SIDA checkout"; \
+	  exit 2; \
+	fi
+	$(SIDA_PYTHON) scripts/serve_sida_openai.py \
+	  --sida-src-dir "$(SIDA_SRC_DIR)" \
+	  --model-dir "$(SIDA_MODEL_DIR)" \
+	  --host "$(SIDA_UPSTREAM_HOST)" \
+	  --port "$(SIDA_UPSTREAM_PORT)" \
+	  --precision "$(SIDA_PRECISION)"
 
 smoke:
 	uv run python scripts/smoke_test.py

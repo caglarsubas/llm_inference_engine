@@ -234,10 +234,10 @@ async def test_models_data_returns_sida13b_issue_46_metadata(
     assert len(result.data) == 1
     entry = result.data[0]
     assert entry.id == "sida-13b:vllm"
-    assert entry.provider == "vllm"
+    assert entry.provider == "sida"
     assert entry.backend == "vllm"
     assert entry.upstream_model_id == "saberzl/SIDA-13B"
-    assert entry.endpoint == "http://vllm-sida-13b:8000"
+    assert entry.endpoint == "http://127.0.0.1:8000"
     assert entry.modality == "text+image->text"
     assert entry.supports_images is True
     assert entry.supports_json_mode is True
@@ -367,8 +367,9 @@ async def test_models_data_reports_downloaded_but_not_served_vllm_candidate(
         [
           {
             "name": "sida-13b",
-            "endpoint": "http://vllm-sida-13b:8000",
+            "endpoint": "http://127.0.0.1:8000",
             "model_id": "saberzl/SIDA-13B",
+            "provider": "sida",
             "family": "SIDA",
             "profile": "forensics",
             "modality": "text+image->text",
@@ -397,10 +398,10 @@ async def test_models_data_reports_downloaded_but_not_served_vllm_candidate(
     assert unavailable.available is False
     assert unavailable.upstream_reachable is False
     assert unavailable.availability_status == "downloaded_but_not_served"
-    assert unavailable.provider == "vllm"
+    assert unavailable.provider == "sida"
     assert unavailable.backend == "vllm"
     assert unavailable.upstream_model_id == "saberzl/SIDA-13B"
-    assert unavailable.endpoint == "http://vllm-sida-13b:8000"
+    assert unavailable.endpoint == "http://127.0.0.1:8000"
     assert unavailable.supports_images is True
     assert unavailable.supports_json_mode is True
     assert unavailable.supports_strict_image_json is False

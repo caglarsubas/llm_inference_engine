@@ -134,14 +134,16 @@ verified before writing `.vllm_models.json`. The committed
 `.vllm_models.fakeshield.example.json` is the single-entry fixture for operators
 who need to inspect or template the exact fields.
 
-For the SIDA-13B follow-up tracked in issue #46, use the same two-step pattern:
+For the SIDA-13B follow-up tracked in issue #46, download the snapshot first,
+then run the upstream SIDA reference implementation behind the optional
+OpenAI-compatible worker:
 
 ```bash
 make download-vlm-models VLM_MODEL=saberzl/SIDA-13B VLM_MAX_WORKERS=1
-VLLM_MODEL=/models/hf-vlm/saberzl--SIDA-13B \
-VLLM_EXTRA_ARGS="--served-model-name saberzl/SIDA-13B --trust-remote-code" \
-make compose-vllm-up
-make vllm-sida13b-init SIDA13B_ENDPOINT=http://vllm:8000 \
+SIDA_SRC_DIR=/path/to/SIDA \
+SIDA_PYTHON=/path/to/sida-env/bin/python \
+make sida13b-openai-upstream
+make vllm-sida13b-init SIDA13B_ENDPOINT=http://127.0.0.1:8000 \
   VLLM_REQUIRE_UPSTREAM=1
 ```
 
@@ -150,7 +152,10 @@ If the `saberzl/SIDA-13B` snapshot is present under `HF_VLM_MODELS_DIR` but the
 live endpoint is not configured yet, `/v1/models.data` reports
 `availability_status="downloaded_but_not_served"` and preserves the SIDA
 benchmark metadata in `unavailable[]`. That state means acquisition is done, not
-that `/v1/chat/completions` can serve the model.
+that `/v1/chat/completions` can serve the model. The generic vLLM compose
+sidecar is not the SIDA serving path; the promotion helper should only write the
+live descriptor after the CUDA worker returns `saberzl/SIDA-13B` from
+`GET /v1/models`.
 
 ## Honest Rollout Gates
 
