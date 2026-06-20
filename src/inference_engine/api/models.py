@@ -23,6 +23,18 @@ _BACKEND_FOR_FORMAT = {
 }
 
 
+_UPSTREAM_UNREACHABLE_REASONS = {
+    "demanded_not_configured",
+    "upstream_timeout",
+    "upstream_unreachable",
+}
+_UPSTREAM_REACHABLE_BUT_UNAVAILABLE_REASONS = {
+    "upstream_bad_models_response",
+    "upstream_http_error",
+    "upstream_model_missing",
+}
+
+
 def _request_key_source_for_format(fmt: str) -> str:
     if fmt == "openrouter":
         return "openrouter-api-key"
@@ -57,6 +69,108 @@ def _partition_models():
     return app_state.registry.list_loadable(_accept_descriptor)
 
 
+def _upstream_reachable_for_reason(reason: str) -> bool | None:
+    if reason in _UPSTREAM_UNREACHABLE_REASONS:
+        return False
+    if reason in _UPSTREAM_REACHABLE_BUT_UNAVAILABLE_REASONS:
+        return True
+    return None
+
+
+def _catalog_fields(desc) -> dict:
+    backend = _BACKEND_FOR_FORMAT.get(desc.format, "unknown")
+    params = desc.params or {}
+    modality = params.get("modality")
+    supports_json_mode = params.get("supports_json_mode")
+    if supports_json_mode is None and desc.format in {"openrouter", "vllm"}:
+        supports_json_mode = True
+    provider = params.get("provider") or (
+        "openrouter" if desc.format == "openrouter" else backend
+    )
+    return {
+        "id": desc.qualified_name,
+        "provider": str(provider),
+        "backend": backend,
+        "format": desc.format,
+        "registry": desc.registry,
+        "namespace": desc.namespace,
+        "endpoint": desc.endpoint,
+        "model_path": str(desc.model_path) if desc.model_path else None,
+        "upstream_model_id": (
+            str(params["model_id"]) if params.get("model_id") is not None else None
+        ),
+        "request_key_source": _request_key_source_for_format(desc.format),
+        "size_bytes": desc.size_bytes,
+        "modality": str(modality) if modality is not None else None,
+        "supports_images": _supports_images(str(modality)) if modality is not None else None,
+        "context_length": (
+            int(params["context_length"]) if params.get("context_length") is not None else None
+        ),
+        "max_image_size": (
+            str(params["max_image_size"]) if params.get("max_image_size") is not None else None
+        ),
+        "max_image_side_px": (
+            int(params["max_image_side_px"])
+            if params.get("max_image_side_px") is not None
+            else None
+        ),
+        "max_image_pixels": (
+            int(params["max_image_pixels"]) if params.get("max_image_pixels") is not None else None
+        ),
+        "supports_json_mode": (
+            bool(supports_json_mode) if supports_json_mode is not None else None
+        ),
+        "supports_strict_image_json": (
+            bool(params["supports_strict_image_json"])
+            if params.get("supports_strict_image_json") is not None
+            else None
+        ),
+        "strict_image_json_status": (
+            str(params["strict_image_json_status"])
+            if params.get("strict_image_json_status") is not None
+            else None
+        ),
+        "strict_image_json_checked_at": (
+            str(params["strict_image_json_checked_at"])
+            if params.get("strict_image_json_checked_at") is not None
+            else None
+        ),
+        "strict_image_json_detail": (
+            str(params["strict_image_json_detail"])
+            if params.get("strict_image_json_detail") is not None
+            else None
+        ),
+        "family": str(params["family"]) if params.get("family") is not None else None,
+        "profile": str(params["profile"]) if params.get("profile") is not None else None,
+        "parameter_count_b": (
+            float(params["parameter_count_b"])
+            if params.get("parameter_count_b") is not None
+            else None
+        ),
+        "open_weight": (
+            bool(params["open_weight"]) if params.get("open_weight") is not None else None
+        ),
+        "proprietary": (
+            bool(params["proprietary"]) if params.get("proprietary") is not None else None
+        ),
+        "commercial_use": params.get("commercial_use"),
+        "benchmark_only": (
+            bool(params["benchmark_only"]) if params.get("benchmark_only") is not None else None
+        ),
+    }
+
+
+def _unavailable_entry(desc, *, reason: str, detail: str) -> UnavailableModel:
+    return UnavailableModel(
+        **_catalog_fields(desc),
+        reason=reason,
+        detail=detail,
+        availability_status=reason,
+        availability_detail=detail,
+        upstream_reachable=_upstream_reachable_for_reason(reason),
+    )
+
+
 def _unavailable_from_rejected(rejected) -> list[UnavailableModel]:
     unavailable: list[UnavailableModel] = []
     for desc in rejected:
@@ -66,44 +180,36 @@ def _unavailable_from_rejected(rejected) -> list[UnavailableModel]:
         if desc.format == "gguf":
             result = get_probe().probe(desc)
             unavailable.append(
-                UnavailableModel(
-                    id=desc.qualified_name,
+                _unavailable_entry(
+                    desc,
                     reason=result.reason or "load_failed",
                     detail=result.detail,
-                    backend=_BACKEND_FOR_FORMAT.get(desc.format, "unknown"),
-                    format=desc.format,
                 )
             )
         elif desc.format == "vllm":
             result = get_vllm_probe().probe(desc)
             unavailable.append(
-                UnavailableModel(
-                    id=desc.qualified_name,
+                _unavailable_entry(
+                    desc,
                     reason=result.reason or "vllm_unavailable",
                     detail=result.detail,
-                    backend=_BACKEND_FOR_FORMAT.get(desc.format, "unknown"),
-                    format=desc.format,
                 )
             )
         elif desc.format == "openrouter":
             result = get_openrouter_probe().probe(desc)
             unavailable.append(
-                UnavailableModel(
-                    id=desc.qualified_name,
+                _unavailable_entry(
+                    desc,
                     reason=result.reason or "openrouter_unavailable",
                     detail=result.detail,
-                    backend=_BACKEND_FOR_FORMAT.get(desc.format, "unknown"),
-                    format=desc.format,
                 )
             )
         else:
             unavailable.append(
-                UnavailableModel(
-                    id=desc.qualified_name,
+                _unavailable_entry(
+                    desc,
                     reason="rejected_by_accept",
                     detail="",
-                    backend=_BACKEND_FOR_FORMAT.get(desc.format, "unknown"),
-                    format=desc.format,
                 )
             )
     return unavailable
@@ -133,80 +239,11 @@ def _supports_images(modality: str | None) -> bool | None:
 
 
 def _catalog_entry(desc) -> ModelCatalogEntry:
-    backend = _BACKEND_FOR_FORMAT.get(desc.format, "unknown")
-    params = desc.params or {}
-    modality = params.get("modality")
-    supports_json_mode = params.get("supports_json_mode")
-    if supports_json_mode is None and desc.format in {"openrouter", "vllm"}:
-        supports_json_mode = True
-    provider = params.get("provider") or (
-        "openrouter" if desc.format == "openrouter" else backend
-    )
     return ModelCatalogEntry(
-        id=desc.qualified_name,
-        provider=str(provider),
-        backend=backend,
-        format=desc.format,
-        registry=desc.registry,
-        namespace=desc.namespace,
-        model_path=str(desc.model_path) if desc.model_path else None,
-        upstream_model_id=(
-            str(params["model_id"]) if params.get("model_id") is not None else None
-        ),
-        request_key_source=_request_key_source_for_format(desc.format),
-        size_bytes=desc.size_bytes,
-        modality=str(modality) if modality is not None else None,
-        supports_images=_supports_images(str(modality)) if modality is not None else None,
-        context_length=(
-            int(params["context_length"]) if params.get("context_length") is not None else None
-        ),
-        max_image_size=(
-            str(params["max_image_size"]) if params.get("max_image_size") is not None else None
-        ),
-        max_image_side_px=(
-            int(params["max_image_side_px"])
-            if params.get("max_image_side_px") is not None
-            else None
-        ),
-        max_image_pixels=(
-            int(params["max_image_pixels"]) if params.get("max_image_pixels") is not None else None
-        ),
-        supports_json_mode=(
-            bool(supports_json_mode) if supports_json_mode is not None else None
-        ),
-        supports_strict_image_json=(
-            bool(params["supports_strict_image_json"])
-            if params.get("supports_strict_image_json") is not None
-            else None
-        ),
-        strict_image_json_status=(
-            str(params["strict_image_json_status"])
-            if params.get("strict_image_json_status") is not None
-            else None
-        ),
-        strict_image_json_checked_at=(
-            str(params["strict_image_json_checked_at"])
-            if params.get("strict_image_json_checked_at") is not None
-            else None
-        ),
-        strict_image_json_detail=(
-            str(params["strict_image_json_detail"])
-            if params.get("strict_image_json_detail") is not None
-            else None
-        ),
-        family=str(params["family"]) if params.get("family") is not None else None,
-        profile=str(params["profile"]) if params.get("profile") is not None else None,
-        parameter_count_b=(
-            float(params["parameter_count_b"])
-            if params.get("parameter_count_b") is not None
-            else None
-        ),
-        open_weight=bool(params["open_weight"]) if params.get("open_weight") is not None else None,
-        proprietary=bool(params["proprietary"]) if params.get("proprietary") is not None else None,
-        commercial_use=params.get("commercial_use"),
-        benchmark_only=(
-            bool(params["benchmark_only"]) if params.get("benchmark_only") is not None else None
-        ),
+        **_catalog_fields(desc),
+        available=True,
+        upstream_reachable=True,
+        availability_status="available",
     )
 
 
@@ -235,6 +272,9 @@ def _collect_registry_skips() -> list[UnavailableModel]:
                     detail=skip.detail,
                     backend=backend,
                     format=fmt,
+                    availability_status=skip.reason,
+                    availability_detail=skip.detail,
+                    upstream_reachable=_upstream_reachable_for_reason(skip.reason),
                 )
             )
     return out

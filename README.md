@@ -809,10 +809,12 @@ Drop a `.vllm_models.json` (config path overridable via `VLLM_MODELS_FILE`) list
 
 Clients then send `model: "llama-3.2-1b-instruct:vllm"` and the engine routes through `VLLMAdapter` to the upstream. Mixing local and remote: a single engine instance can serve `llama3.2:1b` (Ollama GGUF, llama.cpp), `Llama-3.2-1B-Instruct-4bit:mlx` (MLX), and `llama-3.2-1b-instruct:vllm` (vLLM remote) at the same time — different `model` ids in the same registry, different adapters under the hood, identical observability surface.
 
-The engine only lists a configured vLLM entry in `/v1/models.data` after the
-upstream's own `/v1/models` response contains the exact `model_id`. If the
-endpoint is down or serving a different model, the id is reported under
-`/v1/models.unavailable` with an upstream reason until the next probe succeeds.
+The engine only lists a configured vLLM entry in `/v1/models.data` `data[]`
+after the upstream's own `/v1/models` response contains the exact `model_id`.
+If the endpoint is down or serving a different model, the id is reported under
+`/v1/models.data` `unavailable[]` with `available=false`, an
+`upstream_reachable` state, the upstream reason, and the same benchmark metadata
+until the next probe succeeds.
 
 On macOS with Docker Model Runner, use the host-side OpenAI base before `/v1`
 as the endpoint and the exact Docker-advertised id as `model_id`:
@@ -853,9 +855,11 @@ make vllm-fakeshield-init FAKESHIELD_ENDPOINT=http://vllm-fakeshield-22b:8000 \
 
 This writes `fakeshield-22b:vllm` to `.vllm_models.json` with
 `supports_strict_image_json=false` and `strict_image_json_status=pending_smoke`.
-After the upstream is running, restart the engine, verify the id is in
-`/v1/models.data`, then run repeated vehicle-image JSON smoke before promoting
-the descriptor to benchmark-safe.
+After the upstream is running, restart the engine, verify the id has
+`available=true` under `/v1/models.data` `data[]`, then run repeated vehicle-image
+JSON smoke before promoting the descriptor to benchmark-safe. If the upstream is
+offline, the id stays visible under `/v1/models.data` `unavailable[]` with typed
+reachability fields instead of disappearing from the catalog.
 
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
@@ -1015,6 +1019,9 @@ or strict JSON workloads:
   "data": [
     {
       "id": "qwen3-vl-235b-a22b-instruct:openrouter",
+      "available": true,
+      "upstream_reachable": true,
+      "availability_status": "available",
       "provider": "openrouter",
       "backend": "openrouter",
       "upstream_model_id": "qwen/qwen3-vl-235b-a22b-instruct",
@@ -1030,7 +1037,21 @@ or strict JSON workloads:
       "request_key_source": "openrouter-api-key"
     }
   ],
-  "unavailable": []
+  "unavailable": [
+    {
+      "id": "fakeshield-22b:vllm",
+      "available": false,
+      "upstream_reachable": false,
+      "availability_status": "upstream_unreachable",
+      "reason": "upstream_unreachable",
+      "backend": "vllm",
+      "endpoint": "http://vllm-fakeshield-22b:8000",
+      "upstream_model_id": "zhipeixu/fakeshield-v1-22b",
+      "modality": "text+image->text",
+      "supports_strict_image_json": false,
+      "strict_image_json_status": "pending_smoke"
+    }
+  ]
 }
 ```
 
