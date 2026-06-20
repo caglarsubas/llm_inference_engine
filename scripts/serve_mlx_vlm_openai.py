@@ -1,10 +1,9 @@
-"""Serve Molmo-7B-D through a minimal OpenAI-compatible HTTP surface.
+"""Serve an MLX-VLM model through a minimal OpenAI-compatible HTTP surface.
 
-This is an optional Apple Silicon worker for the MLX-converted Molmo build.
-Run it natively with the ``mlx`` extra installed, then point this engine's
-``molmo-7b-d:vllm`` descriptor at it. The engine still treats the worker as an
-OpenAI-compatible upstream, so regular `/v1/models` probing and catalog honesty
-continue to apply.
+This is an optional Apple Silicon worker for local VLMs supported by
+``mlx-vlm``. Point a vLLM/OpenAI-compatible descriptor at this worker; the
+main engine still probes `/v1/models` and routes through the existing HTTP
+adapter, so catalog honesty and strict-smoke gates stay in one place.
 """
 
 from __future__ import annotations
@@ -24,10 +23,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-DEFAULT_MODEL_REPO = "mlx-community/Molmo-7B-D-0924-4bit"
-DEFAULT_MODEL_DIR = (
-    Path.home() / ".cache" / "inference_engine" / "mlx" / "Molmo-7B-D-0924-4bit"
-)
+DEFAULT_MODEL_PATH = "mlx-community/Molmo-7B-D-0924-4bit"
 DEFAULT_SERVED_MODEL_NAME = "allenai/Molmo-7B-D-0924"
 
 
@@ -40,7 +36,7 @@ class ChatCompletionRequest(BaseModel):
 
 
 @dataclass(frozen=True)
-class MolmoInput:
+class VLMInput:
     prompt: str
     image_url: str
 
@@ -51,7 +47,7 @@ class ImageResource:
     remove_after_use: bool = False
 
 
-def _extract_molmo_input(messages: list[dict[str, Any]]) -> MolmoInput:
+def extract_vlm_input(messages: list[dict[str, Any]], *, worker_label: str = "MLX-VLM") -> VLMInput:
     prompt_parts: list[str] = []
     image_url: str | None = None
     for message in messages:
@@ -76,12 +72,15 @@ def _extract_molmo_input(messages: list[dict[str, Any]]) -> MolmoInput:
                     image_url = str(value)
 
     if image_url is None or not image_url:
-        raise HTTPException(status_code=400, detail="Molmo requires one image_url content part")
+        raise HTTPException(
+            status_code=400,
+            detail=f"{worker_label} requires one image_url content part",
+        )
     prompt = "\n".join(p for p in prompt_parts if p).strip() or "Describe this image."
-    return MolmoInput(prompt=prompt, image_url=image_url)
+    return VLMInput(prompt=prompt, image_url=image_url)
 
 
-def _materialize_image(image_url: str) -> ImageResource:
+def materialize_image(image_url: str, *, worker_label: str = "MLX-VLM") -> ImageResource:
     if image_url.startswith("data:"):
         header, _, encoded = image_url.partition(",")
         if not encoded or ";base64" not in header:
@@ -97,7 +96,7 @@ def _materialize_image(image_url: str) -> ImageResource:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid base64 image_url") from exc
         handle = tempfile.NamedTemporaryFile(
-            prefix="molmo-mlx-openai-",
+            prefix="mlx-vlm-openai-",
             suffix=suffix,
             delete=False,
         )
@@ -114,21 +113,26 @@ def _materialize_image(image_url: str) -> ImageResource:
         return ImageResource(locator=str(path))
     raise HTTPException(
         status_code=400,
-        detail="Molmo worker supports data: image URLs, HTTP(S) image URLs, or local file paths",
+        detail=(
+            f"{worker_label} supports data: image URLs, HTTP(S) image URLs, "
+            "or local file paths"
+        ),
     )
 
 
-class MolmoRuntime:
+class MLXVLMRuntime:
     def __init__(
         self,
         *,
         model_path: str | Path,
         served_model_name: str = DEFAULT_SERVED_MODEL_NAME,
         max_kv_size: int | None = None,
+        worker_label: str = "MLX-VLM worker",
     ) -> None:
         self.model_path = str(model_path)
         self.served_model_name = served_model_name
         self.max_kv_size = max_kv_size
+        self.worker_label = worker_label
         self._loaded = False
         self._model: Any = None
         self._processor: Any = None
@@ -155,7 +159,7 @@ class MolmoRuntime:
         temperature: float | None,
     ) -> Any:
         if not self._loaded:
-            raise RuntimeError("Molmo runtime is not loaded")
+            raise RuntimeError(f"{self.worker_label} runtime is not loaded")
         from mlx_vlm.generate import generate as mlx_vlm_generate  # noqa: PLC0415
 
         kwargs: dict[str, Any] = {
@@ -177,13 +181,13 @@ class MolmoRuntime:
             )
 
 
-def create_app(runtime: MolmoRuntime) -> FastAPI:
+def create_app(runtime: MLXVLMRuntime) -> FastAPI:
     @contextlib.asynccontextmanager
     async def _lifespan(_app: FastAPI) -> Any:
         runtime.load()
         yield
 
-    app = FastAPI(title="Molmo MLX OpenAI-compatible worker", lifespan=_lifespan)
+    app = FastAPI(title=runtime.worker_label, lifespan=_lifespan)
 
     @app.get("/v1/models")
     def _models() -> dict[str, Any]:
@@ -194,7 +198,7 @@ def create_app(runtime: MolmoRuntime) -> FastAPI:
                     "id": runtime.served_model_name,
                     "object": "model",
                     "created": 0,
-                    "owned_by": "mlx-community",
+                    "owned_by": "mlx-vlm",
                 }
             ],
         }
@@ -210,14 +214,17 @@ def create_app(runtime: MolmoRuntime) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def _chat(req: ChatCompletionRequest) -> dict[str, Any]:
         if req.stream:
-            raise HTTPException(status_code=400, detail="Molmo worker does not support stream=true")
+            raise HTTPException(
+                status_code=400,
+                detail=f"{runtime.worker_label} does not support stream=true",
+            )
         if req.model != runtime.served_model_name:
             raise HTTPException(status_code=404, detail=f"model not found: {req.model!r}")
-        molmo_input = _extract_molmo_input(req.messages)
-        image = _materialize_image(molmo_input.image_url)
+        vlm_input = extract_vlm_input(req.messages, worker_label=runtime.worker_label)
+        image = materialize_image(vlm_input.image_url, worker_label=runtime.worker_label)
         try:
             result = runtime.generate(
-                molmo_input.prompt,
+                vlm_input.prompt,
                 image.locator,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
@@ -233,11 +240,11 @@ def create_app(runtime: MolmoRuntime) -> FastAPI:
         prompt_tokens = int(getattr(result, "prompt_tokens", 0) or 0)
         completion_tokens = int(getattr(result, "generation_tokens", 0) or 0)
         if prompt_tokens <= 0:
-            prompt_tokens = max(1, len(molmo_input.prompt.split()))
+            prompt_tokens = max(1, len(vlm_input.prompt.split()))
         if completion_tokens <= 0:
             completion_tokens = max(1, len(content.split()))
         return {
-            "id": f"chatcmpl-molmo-mlx-{uuid.uuid4().hex[:16]}",
+            "id": f"chatcmpl-mlx-vlm-{uuid.uuid4().hex[:16]}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": runtime.served_model_name,
@@ -262,13 +269,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model-path",
-        default=str(DEFAULT_MODEL_DIR if DEFAULT_MODEL_DIR.exists() else DEFAULT_MODEL_REPO),
-        help=(
-            "Local MLX model directory or Hugging Face repo id. Defaults to the local "
-            "download path when present, otherwise mlx-community/Molmo-7B-D-0924-4bit."
-        ),
+        default=DEFAULT_MODEL_PATH,
+        help="Local MLX/HF model directory or Hugging Face repo id.",
     )
     parser.add_argument("--served-model-name", default=DEFAULT_SERVED_MODEL_NAME)
+    parser.add_argument("--worker-label", default="MLX-VLM OpenAI-compatible worker")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--max-kv-size", type=int)
@@ -277,10 +282,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    runtime = MolmoRuntime(
+    runtime = MLXVLMRuntime(
         model_path=args.model_path,
         served_model_name=args.served_model_name,
         max_kv_size=args.max_kv_size,
+        worker_label=args.worker_label,
     )
     app = create_app(runtime)
     import uvicorn  # noqa: PLC0415

@@ -173,6 +173,21 @@ This path advertises the original upstream id `allenai/Molmo-7B-D-0924` from
 locally. Keep `supports_strict_image_json=false` until repeated FraudGuard
 vehicle-image JSON smokes pass through the engine.
 
+For `internvl3.5-8b:vllm` on Apple Silicon, use the generic `mlx-vlm`
+OpenAI-compatible worker against the local Hugging Face snapshot:
+
+```bash
+make internvl35-8b-download VLM_MAX_WORKERS=4
+make internvl35-8b-openai-upstream
+make vllm-internvl35-8b-init VLLM_REQUIRE_UPSTREAM=1
+```
+
+This path advertises the original upstream id `OpenGVLab/InternVL3_5-8B` from
+`GET /v1/models`, then routes engine calls through `internvl3.5-8b:vllm`.
+Keep `supports_strict_image_json=false` until repeated FraudGuard vehicle-image
+JSON smokes pass. The public Hugging Face repo uses an underscore in
+`InternVL3_5-8B`; dot-form issue text is not the loadable repo id.
+
 ## Honest Rollout Gates
 
 1. Start one upstream model server on suitable hardware.
