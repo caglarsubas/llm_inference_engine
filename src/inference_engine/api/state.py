@@ -63,6 +63,7 @@ class AppState:
         vllm = VLLMRegistry(
             settings.vllm_models_file,
             demanded_config_path=settings.vllm_demanded_models_file,
+            local_snapshot_root=settings.hf_vlm_models_dir,
         )
         openrouter = OpenRouterRegistry(
             settings.openrouter_models_file,

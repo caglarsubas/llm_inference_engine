@@ -403,8 +403,12 @@ All knobs live in `.env` (see `.env.example`):
 |--------------------------|------------------------------------------------------------------------------------------|----------------------------------------------------------|
 | `OLLAMA_MODELS_DIR`      | `/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models`                  | Root with `manifests/` and `blobs/`                      |
 | `MLX_MODELS_DIR`         | `~/.cache/inference_engine/mlx`                                                          | Where `download_mlx_model.py` snapshots HF repos         |
+| `MLX_MODELS_HOST_DIR`    | `~/.cache/inference_engine/mlx`                                                          | Host MLX cache mounted into Docker compose               |
 | `VLLM_MODELS_FILE`       | `.vllm_models.json`                                                                      | Config file for OpenAI-compatible vLLM/DMR upstreams     |
 | `VLLM_DEMANDED_MODELS_FILE` | `.vllm_models.demanded.example.json`                                                  | Catalog-only vLLM demand manifest reported as `unavailable` until configured |
+| `HF_VLM_MODELS_DIR`      | `~/.cache/inference_engine/hf-vlm`                                                       | Local Hugging Face VLM snapshot cache used to report `downloaded_but_not_served` |
+| `HF_VLM_MODELS_HOST_DIR` | `~/.cache/inference_engine/hf-vlm`                                                       | Host VLM snapshot cache mounted into Docker compose      |
+| `VLLM_EXTRA_ARGS`        | `""`                                                                                     | Extra args for the vLLM sidecar, such as `--served-model-name` or `--trust-remote-code` |
 | `OPENROUTER_MODELS_FILE` | `.openrouter_models.json`                                                               | Config file for large open-weight OpenRouter models      |
 | `OPENROUTER_API_KEY`     | `""`                                                                                    | OpenRouter bearer token; keep only in ignored runtime env |
 | `OPENROUTER_ENDPOINT`    | `https://openrouter.ai/api`                                                             | OpenRouter OpenAI-compatible base before `/v1`           |
@@ -853,13 +857,33 @@ make vllm-fakeshield-init FAKESHIELD_ENDPOINT=http://vllm-fakeshield-22b:8000 \
   VLLM_REQUIRE_UPSTREAM=1
 ```
 
-This writes `fakeshield-22b:vllm` to `.vllm_models.json` with
+For the SIDA-13B FraudGuard follow-up:
+
+```bash
+make download-vlm-models VLM_MODEL=saberzl/SIDA-13B VLM_MAX_WORKERS=1
+
+# CUDA host example: serve the downloaded local snapshot while advertising
+# the upstream id the engine expects from /v1/models.
+VLLM_MODEL=/models/hf-vlm/saberzl--SIDA-13B \
+VLLM_EXTRA_ARGS="--served-model-name saberzl/SIDA-13B --trust-remote-code" \
+make compose-vllm-up
+
+# The generic compose sidecar is reachable as http://vllm:8000 from the engine.
+make vllm-sida13b-init SIDA13B_ENDPOINT=http://vllm:8000 \
+  VLLM_REQUIRE_UPSTREAM=1
+```
+
+These targets write `fakeshield-22b:vllm` or `sida-13b:vllm` to `.vllm_models.json` with
 `supports_strict_image_json=false` and `strict_image_json_status=pending_smoke`.
 After the upstream is running, restart the engine, verify the id has
 `available=true` under `/v1/models.data` `data[]`, then run repeated vehicle-image
 JSON smoke before promoting the descriptor to benchmark-safe. If the upstream is
 offline, the id stays visible under `/v1/models.data` `unavailable[]` with typed
-reachability fields instead of disappearing from the catalog.
+reachability fields instead of disappearing from the catalog. If a Hugging Face
+snapshot has been downloaded under `HF_VLM_MODELS_DIR` (default
+`~/.cache/inference_engine/hf-vlm`) but no live upstream is configured yet,
+`/v1/models.data` reports `availability_status="downloaded_but_not_served"` so
+benchmark clients can distinguish acquisition progress from serving readiness.
 
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
@@ -1048,6 +1072,20 @@ or strict JSON workloads:
       "endpoint": "http://vllm-fakeshield-22b:8000",
       "upstream_model_id": "zhipeixu/fakeshield-v1-22b",
       "modality": "text+image->text",
+      "supports_strict_image_json": false,
+      "strict_image_json_status": "pending_smoke"
+    },
+    {
+      "id": "sida-13b:vllm",
+      "available": false,
+      "upstream_reachable": false,
+      "availability_status": "downloaded_but_not_served",
+      "reason": "downloaded_but_not_served",
+      "backend": "vllm",
+      "endpoint": "http://vllm-sida-13b:8000",
+      "upstream_model_id": "saberzl/SIDA-13B",
+      "download_status": "downloaded",
+      "local_snapshot_path": "/Users/example/.cache/inference_engine/hf-vlm/saberzl--SIDA-13B",
       "supports_strict_image_json": false,
       "strict_image_json_status": "pending_smoke"
     }

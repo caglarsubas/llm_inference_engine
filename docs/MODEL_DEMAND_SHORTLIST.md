@@ -134,6 +134,24 @@ verified before writing `.vllm_models.json`. The committed
 `.vllm_models.fakeshield.example.json` is the single-entry fixture for operators
 who need to inspect or template the exact fields.
 
+For the SIDA-13B follow-up tracked in issue #46, use the same two-step pattern:
+
+```bash
+make download-vlm-models VLM_MODEL=saberzl/SIDA-13B VLM_MAX_WORKERS=1
+VLLM_MODEL=/models/hf-vlm/saberzl--SIDA-13B \
+VLLM_EXTRA_ARGS="--served-model-name saberzl/SIDA-13B --trust-remote-code" \
+make compose-vllm-up
+make vllm-sida13b-init SIDA13B_ENDPOINT=http://vllm:8000 \
+  VLLM_REQUIRE_UPSTREAM=1
+```
+
+The committed `.vllm_models.sida13b.example.json` mirrors the live descriptor.
+If the `saberzl/SIDA-13B` snapshot is present under `HF_VLM_MODELS_DIR` but the
+live endpoint is not configured yet, `/v1/models.data` reports
+`availability_status="downloaded_but_not_served"` and preserves the SIDA
+benchmark metadata in `unavailable[]`. That state means acquisition is done, not
+that `/v1/chat/completions` can serve the model.
+
 ## Honest Rollout Gates
 
 1. Start one upstream model server on suitable hardware.

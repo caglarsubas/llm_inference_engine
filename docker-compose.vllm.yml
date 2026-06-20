@@ -45,12 +45,18 @@ services:
       # HuggingFace model cache. Persists across restarts so vLLM doesn't
       # re-download multi-GB weights every boot.
       - "${HF_CACHE_HOST_DIR:-./.cache/huggingface}:/root/.cache/huggingface"
+      # Repo-native VLM snapshot cache created by scripts/download_vlm_models.py.
+      # Set VLLM_MODEL=/models/hf-vlm/<repo-with-slashes-as-double-dashes> and
+      # VLLM_EXTRA_ARGS="--served-model-name <repo/id>" to serve a local snapshot
+      # while still advertising the upstream model id expected by the engine.
+      - "${HF_VLM_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/hf-vlm}:/models/hf-vlm:ro"
     command: >
       --model ${VLLM_MODEL:-meta-llama/Llama-3.2-1B-Instruct}
       --host 0.0.0.0
       --port 8000
       --gpu-memory-utilization ${VLLM_GPU_UTIL:-0.85}
       --max-model-len ${VLLM_MAX_MODEL_LEN:-4096}
+      ${VLLM_EXTRA_ARGS:-}
     deploy:
       resources:
         reservations:

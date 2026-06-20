@@ -107,6 +107,7 @@ services:
       # Configurable by the operator via .env (compose reads it automatically).
       OLLAMA_MODELS_DIR: /models/ollama
       MLX_MODELS_DIR: /models/mlx
+      HF_VLM_MODELS_DIR: /models/hf-vlm
       AUTH_KEYS_FILE: /config/auth_keys.json
       AUTO_EVAL_POLICIES_FILE: /config/auto_eval_policies.json
       MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-60.0}
@@ -138,6 +139,7 @@ services:
       # via OLLAMA_MODELS_HOST_DIR / MLX_MODELS_HOST_DIR in your .env.
       - "${OLLAMA_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/ollama}:/models/ollama:ro"
       - "${MLX_MODELS_HOST_DIR:-./.cache/mlx}:/models/mlx:ro"
+      - "${HF_VLM_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/hf-vlm}:/models/hf-vlm:ro"
       # Config (auth keys + auto-eval policy) — operator-provided. Empty by
       # default; if you set AUTH_ENABLED=true you must mount a real keys file.
       - "${CONFIG_HOST_DIR:-./docker/config}:/config:ro"

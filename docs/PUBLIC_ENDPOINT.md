@@ -205,6 +205,21 @@ curl -s "$BASE/models" | jq '.data[].id'
       "upstream_model_id": "zhipeixu/fakeshield-v1-22b",
       "supports_strict_image_json": false,
       "strict_image_json_status": "pending_smoke"
+    },
+    {
+      "id": "sida-13b:vllm",
+      "available": false,
+      "upstream_reachable": false,
+      "availability_status": "downloaded_but_not_served",
+      "reason": "downloaded_but_not_served",
+      "backend": "vllm",
+      "format": "vllm",
+      "endpoint": "http://vllm-sida-13b:8000",
+      "upstream_model_id": "saberzl/SIDA-13B",
+      "download_status": "downloaded",
+      "local_snapshot_path": "/Users/example/.cache/inference_engine/hf-vlm/saberzl--SIDA-13B",
+      "supports_strict_image_json": false,
+      "strict_image_json_status": "pending_smoke"
     }
   ]
 }
@@ -227,8 +242,11 @@ What the fields tell you:
   reason and availability state. vLLM/OpenRouter entries can also include the
   same benchmark metadata as `data[]`, so clients can distinguish a declared
   but offline endpoint (`available=false`, `upstream_reachable=false`) from a
-  reachable endpoint that still needs strict JSON validation. If a model you
-  expect is here, it won't work yet — pick one from `data`.
+  reachable endpoint that still needs strict JSON validation. A vLLM candidate
+  with `availability_status="downloaded_but_not_served"` has local checkpoint
+  files under `local_snapshot_path`, but no configured upstream has proved it
+  is callable yet. If a model you expect is here, it won't work yet — pick one
+  from `data`.
 
 The set of models is whatever the operator has installed (Ollama GGUFs, MLX
 dirs, vLLM endpoints). To add models, the operator drops them in the model

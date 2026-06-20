@@ -221,6 +221,40 @@ async def test_models_data_returns_fakeshield_issue_43_metadata(
 
 
 @pytest.mark.asyncio
+async def test_models_data_returns_sida13b_issue_46_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = VLLMRegistry(Path(__file__).resolve().parents[1] / ".vllm_models.sida13b.example.json")
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([registry]))
+    monkeypatch.setattr(models_api, "get_vllm_probe", lambda: _FakePassingProbe())
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.unavailable == []
+    assert len(result.data) == 1
+    entry = result.data[0]
+    assert entry.id == "sida-13b:vllm"
+    assert entry.provider == "vllm"
+    assert entry.backend == "vllm"
+    assert entry.upstream_model_id == "saberzl/SIDA-13B"
+    assert entry.endpoint == "http://vllm-sida-13b:8000"
+    assert entry.modality == "text+image->text"
+    assert entry.supports_images is True
+    assert entry.supports_json_mode is True
+    assert entry.supports_strict_image_json is False
+    assert entry.strict_image_json_status == "pending_smoke"
+    assert entry.strict_image_json_checked_at == "2026-06-20"
+    assert "Issue #46" in entry.strict_image_json_detail
+    assert entry.family == "SIDA"
+    assert entry.profile == "forensics"
+    assert entry.parameter_count_b == 13
+    assert entry.open_weight is True
+    assert entry.proprietary is False
+    assert entry.commercial_use == "Llama 2 license; legal review required before production use"
+    assert entry.benchmark_only is True
+
+
+@pytest.mark.asyncio
 async def test_models_data_keeps_unreachable_fakeshield_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -300,3 +334,78 @@ async def test_models_data_reports_demanded_vllm_candidates_as_unavailable(
     assert unavailable.upstream_reachable is False
     assert unavailable.availability_status == "demanded_not_configured"
     assert "Qwen/Qwen3-VL-32B-Instruct" in unavailable.detail
+    assert unavailable.upstream_model_id == "Qwen/Qwen3-VL-32B-Instruct"
+    assert unavailable.endpoint == "http://vllm-qwen3-vl-32b:8000"
+    assert unavailable.modality == "text+image->text"
+
+
+@pytest.mark.asyncio
+async def test_models_data_reports_downloaded_but_not_served_vllm_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = tmp_path / "vllm.json"
+    demanded = tmp_path / "demanded.json"
+    snapshot_root = tmp_path / "hf-vlm"
+    snapshot = snapshot_root / "saberzl--SIDA-13B"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "pytorch_model-00001-of-00001.bin").write_bytes(b"weights")
+    (snapshot / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"layer": "pytorch_model-00001-of-00001.bin"}}',
+        encoding="utf-8",
+    )
+    (snapshot_root / "download_status.jsonl").write_text(
+        (
+            '{"engine_id": "sida-13b:vllm", "repo_id": "saberzl/SIDA-13B", '
+            f'"status": "downloaded", "local_dir": "{snapshot}"}}\n'
+        ),
+        encoding="utf-8",
+    )
+    demanded.write_text(
+        """
+        [
+          {
+            "name": "sida-13b",
+            "endpoint": "http://vllm-sida-13b:8000",
+            "model_id": "saberzl/SIDA-13B",
+            "family": "SIDA",
+            "profile": "forensics",
+            "modality": "text+image->text",
+            "supports_json_mode": true,
+            "supports_strict_image_json": false,
+            "strict_image_json_status": "pending_smoke"
+          }
+        ]
+        """,
+        encoding="utf-8",
+    )
+    registry = VLLMRegistry(
+        live,
+        demanded_config_path=demanded,
+        local_snapshot_root=snapshot_root,
+    )
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([registry]))
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.data == []
+    assert len(result.unavailable) == 1
+    unavailable = result.unavailable[0]
+    assert unavailable.id == "sida-13b:vllm"
+    assert unavailable.reason == "downloaded_but_not_served"
+    assert unavailable.available is False
+    assert unavailable.upstream_reachable is False
+    assert unavailable.availability_status == "downloaded_but_not_served"
+    assert unavailable.provider == "vllm"
+    assert unavailable.backend == "vllm"
+    assert unavailable.upstream_model_id == "saberzl/SIDA-13B"
+    assert unavailable.endpoint == "http://vllm-sida-13b:8000"
+    assert unavailable.supports_images is True
+    assert unavailable.supports_json_mode is True
+    assert unavailable.supports_strict_image_json is False
+    assert unavailable.strict_image_json_status == "pending_smoke"
+    assert unavailable.family == "SIDA"
+    assert unavailable.profile == "forensics"
+    assert unavailable.download_status == "downloaded"
+    assert unavailable.local_snapshot_path == str(snapshot)

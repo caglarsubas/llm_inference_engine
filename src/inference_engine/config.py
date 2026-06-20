@@ -32,6 +32,15 @@ class Settings(BaseSettings):
             "operator backlog from unknown ids."
         ),
     )
+    hf_vlm_models_dir: Path = Field(
+        default=Path.home() / ".cache" / "inference_engine" / "hf-vlm",
+        description=(
+            "Directory holding Hugging Face VLM snapshots materialized by "
+            "scripts/download_vlm_models.py. Demand-only vLLM catalog entries "
+            "use this to distinguish downloaded_but_not_served from missing "
+            "acquisition work."
+        ),
+    )
     openrouter_models_file: Path = Field(
         default=Path(".openrouter_models.json"),
         description=(

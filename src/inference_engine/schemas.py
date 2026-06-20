@@ -527,6 +527,8 @@ class UnavailableModel(BaseModel):
     proprietary: bool | None = None
     commercial_use: str | bool | None = None
     benchmark_only: bool | None = None
+    download_status: str | None = None
+    local_snapshot_path: str | None = None
 
 
 class ModelList(BaseModel):
@@ -574,6 +576,8 @@ class ModelCatalogEntry(BaseModel):
     proprietary: bool | None = None
     commercial_use: str | bool | None = None
     benchmark_only: bool | None = None
+    download_status: str | None = None
+    local_snapshot_path: str | None = None
 
 
 class ModelCatalog(BaseModel):

@@ -84,6 +84,7 @@ class SkippedManifest:
     manifest_path: str
     reason: str
     detail: str = ""
+    descriptor: ModelDescriptor | None = None
 
 
 class OllamaRegistry:

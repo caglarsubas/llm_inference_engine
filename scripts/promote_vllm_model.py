@@ -120,8 +120,8 @@ def main() -> int:
     parser.add_argument(
         "--strict-image-json-detail",
         default=(
-            "Promoted for issue #43. Keep supports_strict_image_json=false until repeated "
-            "FraudGuard vehicle-image JSON smoke passes."
+            "Promoted from demanded vLLM catalog. Keep supports_strict_image_json=false "
+            "until repeated FraudGuard vehicle-image JSON smoke passes."
         ),
     )
     parser.add_argument(

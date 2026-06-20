@@ -25,6 +25,7 @@ _BACKEND_FOR_FORMAT = {
 
 _UPSTREAM_UNREACHABLE_REASONS = {
     "demanded_not_configured",
+    "downloaded_but_not_served",
     "upstream_timeout",
     "upstream_unreachable",
 }
@@ -157,6 +158,14 @@ def _catalog_fields(desc) -> dict:
         "benchmark_only": (
             bool(params["benchmark_only"]) if params.get("benchmark_only") is not None else None
         ),
+        "download_status": (
+            str(params["download_status"]) if params.get("download_status") is not None else None
+        ),
+        "local_snapshot_path": (
+            str(params["local_snapshot_path"])
+            if params.get("local_snapshot_path") is not None
+            else None
+        ),
     }
 
 
@@ -265,6 +274,15 @@ def _collect_registry_skips() -> list[UnavailableModel]:
             if skip.qualified_name in seen:
                 continue
             seen.add(skip.qualified_name)
+            if skip.descriptor is not None:
+                out.append(
+                    _unavailable_entry(
+                        skip.descriptor,
+                        reason=skip.reason,
+                        detail=skip.detail,
+                    )
+                )
+                continue
             out.append(
                 UnavailableModel(
                     id=skip.qualified_name,
