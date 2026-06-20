@@ -486,7 +486,10 @@ class UnavailableModel(BaseModel):
 
     Surfaced in ``ModelList.unavailable`` so clients (and operators
     eyeballing ``/v1/models``) can see *why* a model is missing instead
-    of getting a 500 on first chat call.
+    of getting a 500 on first chat call. ``/v1/models.data`` also uses
+    this shape for declared-but-offline catalog entries, preserving their
+    benchmark metadata so harnesses can distinguish endpoint availability
+    from strict image/JSON readiness.
     """
 
     id: str
@@ -494,6 +497,36 @@ class UnavailableModel(BaseModel):
     detail: str = ""
     backend: str = "none"
     format: str = "gguf"
+    available: Literal[False] = False
+    upstream_reachable: bool | None = None
+    availability_status: str | None = None
+    availability_detail: str | None = None
+    provider: str | None = None
+    registry: str | None = None
+    namespace: str | None = None
+    endpoint: str | None = None
+    model_path: str | None = None
+    upstream_model_id: str | None = None
+    request_key_source: str | None = None
+    size_bytes: int | None = None
+    modality: str | None = None
+    supports_images: bool | None = None
+    context_length: int | None = None
+    max_image_size: str | None = None
+    max_image_side_px: int | None = None
+    max_image_pixels: int | None = None
+    supports_json_mode: bool | None = None
+    supports_strict_image_json: bool | None = None
+    strict_image_json_status: str | None = None
+    strict_image_json_checked_at: str | None = None
+    strict_image_json_detail: str | None = None
+    family: str | None = None
+    profile: str | None = None
+    parameter_count_b: float | None = None
+    open_weight: bool | None = None
+    proprietary: bool | None = None
+    commercial_use: str | bool | None = None
+    benchmark_only: bool | None = None
 
 
 class ModelList(BaseModel):
@@ -509,11 +542,16 @@ class ModelCatalogEntry(BaseModel):
 
     id: str
     object: Literal["model"] = "model"
+    available: Literal[True] = True
+    upstream_reachable: bool | None = True
+    availability_status: str = "available"
+    availability_detail: str | None = None
     provider: str = "local"
     backend: str = "llama_cpp"
     format: str = "gguf"
     registry: str = ""
     namespace: str = ""
+    endpoint: str | None = None
     model_path: str | None = None
     upstream_model_id: str | None = None
     request_key_source: str = "local-inference"

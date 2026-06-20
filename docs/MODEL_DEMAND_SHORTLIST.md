@@ -140,8 +140,11 @@ who need to inspect or template the exact fields.
 2. Confirm that upstream returns the exact `model_id` from `GET /v1/models`.
 3. Copy only that entry into the live `.vllm_models.json`.
 4. Restart or reload this engine.
-5. Confirm this engine lists the model under `GET /v1/models.data`, not
-   `unavailable`.
+5. Confirm this engine lists the model under `GET /v1/models.data`. While the
+   upstream is offline or serving a different id, it should appear in
+   `unavailable[]` with `available=false`, an `upstream_reachable` state, and
+   the same catalog metadata. Continue only once it moves to `data[]` with
+   `available=true`.
 6. Run the strict vehicle-image smoke:
 
 ```bash

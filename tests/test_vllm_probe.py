@@ -129,6 +129,9 @@ async def test_models_api_keeps_unreachable_vllm_out_of_data(monkeypatch: pytest
     assert result.unavailable[0].id == "qwen3-vl-8b-instruct:vllm"
     assert result.unavailable[0].reason == "upstream_unreachable"
     assert result.unavailable[0].backend == "vllm"
+    assert result.unavailable[0].available is False
+    assert result.unavailable[0].upstream_reachable is False
+    assert result.unavailable[0].availability_status == "upstream_unreachable"
 
 
 @pytest.mark.asyncio
@@ -160,6 +163,9 @@ async def test_models_data_returns_vllm_vlm_metadata(monkeypatch: pytest.MonkeyP
     assert len(result.data) == 1
     entry = result.data[0]
     assert entry.id == "qwen3-vl-8b-instruct:vllm"
+    assert entry.available is True
+    assert entry.upstream_reachable is True
+    assert entry.availability_status == "available"
     assert entry.provider == "vllm"
     assert entry.backend == "vllm"
     assert entry.upstream_model_id == "Qwen/Qwen3-VL-8B-Instruct"
@@ -195,6 +201,7 @@ async def test_models_data_returns_fakeshield_issue_43_metadata(
     assert entry.provider == "vllm"
     assert entry.backend == "vllm"
     assert entry.upstream_model_id == "zhipeixu/fakeshield-v1-22b"
+    assert entry.endpoint == "http://vllm-fakeshield-22b:8000"
     assert entry.model_path is not None
     assert "vllm-fakeshield-22b:8000" in entry.model_path
     assert entry.modality == "text+image->text"
@@ -211,6 +218,47 @@ async def test_models_data_returns_fakeshield_issue_43_metadata(
     assert entry.proprietary is False
     assert entry.commercial_use == "Apache-2.0; verify provider terms before production use"
     assert entry.benchmark_only is True
+
+
+@pytest.mark.asyncio
+async def test_models_data_keeps_unreachable_fakeshield_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = VLLMRegistry(Path(__file__).resolve().parents[1] / ".vllm_models.fakeshield.example.json")
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([registry]))
+    monkeypatch.setattr(models_api, "get_vllm_probe", lambda: _FakeProbe())
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.data == []
+    assert len(result.unavailable) == 1
+    unavailable = result.unavailable[0]
+    assert unavailable.id == "fakeshield-22b:vllm"
+    assert unavailable.reason == "upstream_unreachable"
+    assert unavailable.available is False
+    assert unavailable.upstream_reachable is False
+    assert unavailable.availability_status == "upstream_unreachable"
+    assert unavailable.availability_detail == "connection refused"
+    assert unavailable.provider == "vllm"
+    assert unavailable.backend == "vllm"
+    assert unavailable.upstream_model_id == "zhipeixu/fakeshield-v1-22b"
+    assert unavailable.endpoint == "http://vllm-fakeshield-22b:8000"
+    assert unavailable.model_path is not None
+    assert "vllm-fakeshield-22b:8000" in unavailable.model_path
+    assert unavailable.modality == "text+image->text"
+    assert unavailable.supports_images is True
+    assert unavailable.supports_json_mode is True
+    assert unavailable.supports_strict_image_json is False
+    assert unavailable.strict_image_json_status == "pending_smoke"
+    assert unavailable.strict_image_json_checked_at == "2026-06-20"
+    assert "Issue #43" in unavailable.strict_image_json_detail
+    assert unavailable.family == "FakeShield"
+    assert unavailable.profile == "forensics"
+    assert unavailable.parameter_count_b == 22
+    assert unavailable.open_weight is True
+    assert unavailable.proprietary is False
+    assert unavailable.commercial_use == "Apache-2.0; verify provider terms before production use"
+    assert unavailable.benchmark_only is True
 
 
 @pytest.mark.asyncio
@@ -248,4 +296,7 @@ async def test_models_data_reports_demanded_vllm_candidates_as_unavailable(
     assert unavailable.reason == "demanded_not_configured"
     assert unavailable.backend == "vllm"
     assert unavailable.format == "vllm"
+    assert unavailable.available is False
+    assert unavailable.upstream_reachable is False
+    assert unavailable.availability_status == "demanded_not_configured"
     assert "Qwen/Qwen3-VL-32B-Instruct" in unavailable.detail

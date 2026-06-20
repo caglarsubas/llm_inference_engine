@@ -192,8 +192,20 @@ curl -s "$BASE/models" | jq '.data[].id'
     }
   ],
   "unavailable": [
-    {"id": "gemma4:27b", "reason": "unsupported_arch",
-     "detail": "llama.cpp can't open this GGUF", "backend": "llama_cpp"}
+    {
+      "id": "fakeshield-22b:vllm",
+      "available": false,
+      "upstream_reachable": false,
+      "availability_status": "upstream_unreachable",
+      "reason": "upstream_unreachable",
+      "detail": "connection refused",
+      "backend": "vllm",
+      "format": "vllm",
+      "endpoint": "http://vllm-fakeshield-22b:8000",
+      "upstream_model_id": "zhipeixu/fakeshield-v1-22b",
+      "supports_strict_image_json": false,
+      "strict_image_json_status": "pending_smoke"
+    }
   ]
 }
 ```
@@ -212,7 +224,11 @@ What the fields tell you:
 - **`tool_calling_mode`** — `native` means you can pass `tools`; `unsupported`
   means the model has no tool plumbing.
 - **`unavailable[]`** — models the engine knows about but can't serve, with the
-  reason. If a model you expect is here, it won't work — pick one from `data`.
+  reason and availability state. vLLM/OpenRouter entries can also include the
+  same benchmark metadata as `data[]`, so clients can distinguish a declared
+  but offline endpoint (`available=false`, `upstream_reachable=false`) from a
+  reachable endpoint that still needs strict JSON validation. If a model you
+  expect is here, it won't work yet — pick one from `data`.
 
 The set of models is whatever the operator has installed (Ollama GGUFs, MLX
 dirs, vLLM endpoints). To add models, the operator drops them in the model
