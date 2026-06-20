@@ -186,6 +186,26 @@ def test_fakeshield_issue_43_live_fixture_has_required_metadata() -> None:
     assert desc.params["benchmark_only"] is True
 
 
+def test_sida13b_issue_46_live_fixture_has_required_metadata() -> None:
+    descs = VLLMRegistry(ROOT / ".vllm_models.sida13b.example.json").list_models()
+    assert len(descs) == 1
+    desc = descs[0]
+
+    assert desc.qualified_name == "sida-13b:vllm"
+    assert desc.endpoint == "http://vllm-sida-13b:8000"
+    assert desc.params["model_id"] == "saberzl/SIDA-13B"
+    assert desc.params["family"] == "SIDA"
+    assert desc.params["profile"] == "forensics"
+    assert desc.params["modality"] == "text+image->text"
+    assert desc.params["supports_json_mode"] is True
+    assert desc.params["supports_strict_image_json"] is False
+    assert desc.params["strict_image_json_status"] == "pending_smoke"
+    assert desc.params["strict_image_json_checked_at"] == "2026-06-20"
+    assert "Issue #46" in desc.params["strict_image_json_detail"]
+    assert desc.params["commercial_use"].startswith("Llama 2")
+    assert desc.params["benchmark_only"] is True
+
+
 def test_registry_reports_demanded_models_missing_from_live_config(tmp_path: Path) -> None:
     live = tmp_path / "vllm.json"
     live.write_text(
@@ -214,6 +234,66 @@ def test_registry_reports_demanded_models_missing_from_live_config(tmp_path: Pat
     assert "Qwen/Qwen3-VL-32B-Instruct" in skipped_by_id[
         "qwen3-vl-32b-instruct:vllm"
     ].detail
+
+
+def test_registry_reports_downloaded_snapshot_that_is_not_served(tmp_path: Path) -> None:
+    live = tmp_path / "vllm.json"
+    demanded = tmp_path / "demanded.json"
+    snapshot_root = tmp_path / "hf-vlm"
+    snapshot = snapshot_root / "saberzl--SIDA-13B"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "pytorch_model-00001-of-00001.bin").write_bytes(b"weights")
+    (snapshot / "pytorch_model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"layer": "pytorch_model-00001-of-00001.bin"}}),
+        encoding="utf-8",
+    )
+    (snapshot_root / "download_status.jsonl").write_text(
+        json.dumps(
+            {
+                "engine_id": "sida-13b:vllm",
+                "repo_id": "saberzl/SIDA-13B",
+                "status": "downloaded",
+                "local_dir": str(snapshot),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    demanded.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "sida-13b",
+                    "endpoint": "http://vllm-sida-13b:8000",
+                    "model_id": "saberzl/SIDA-13B",
+                    "family": "SIDA",
+                    "profile": "forensics",
+                    "modality": "text+image->text",
+                    "supports_json_mode": True,
+                    "supports_strict_image_json": False,
+                    "strict_image_json_status": "pending_smoke",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    skipped = VLLMRegistry(
+        live,
+        demanded_config_path=demanded,
+        local_snapshot_root=snapshot_root,
+    ).list_skipped()
+
+    assert len(skipped) == 1
+    skip = skipped[0]
+    assert skip.qualified_name == "sida-13b:vllm"
+    assert skip.reason == "downloaded_but_not_served"
+    assert "local snapshot downloaded" in skip.detail
+    assert "saberzl/SIDA-13B" in skip.detail
+    assert skip.descriptor is not None
+    assert skip.descriptor.params["download_status"] == "downloaded"
+    assert skip.descriptor.params["local_snapshot_path"] == str(snapshot)
 
 
 def test_registry_rejects_bad_chat_template_kwargs(tmp_path: Path) -> None:

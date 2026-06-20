@@ -48,7 +48,9 @@ this exact ``model_id`` before the descriptor is treated as loadable.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from .ollama import ModelDescriptor, SkippedManifest
 
@@ -59,10 +61,16 @@ class VLLMRegistry:
         config_path: Path | str,
         *,
         demanded_config_path: Path | str | None = None,
+        local_snapshot_root: Path | str | None = None,
     ) -> None:
         self.config_path = Path(config_path)
         self.demanded_config_path = (
             Path(demanded_config_path) if demanded_config_path is not None else None
+        )
+        self.local_snapshot_root = (
+            Path(local_snapshot_root).expanduser()
+            if local_snapshot_root is not None
+            else None
         )
         self._cache: dict[str, ModelDescriptor] = {}
 
@@ -131,6 +139,8 @@ class VLLMRegistry:
             "parameter_count_b",
             "open_weight",
             "proprietary",
+            "download_status",
+            "local_snapshot_path",
         ):
             if field in entry:
                 params[field] = entry[field]
@@ -155,6 +165,7 @@ class VLLMRegistry:
 
         live_ids = {desc.qualified_name for desc in self.list_models()}
         raw = self._read_entries(self.demanded_config_path, "vLLM demanded")
+        download_records = self._latest_download_records()
         skipped: list[SkippedManifest] = []
         for i, entry in enumerate(raw):
             desc = self._parse_entry(i, entry)
@@ -163,21 +174,124 @@ class VLLMRegistry:
             model_id = str(desc.params.get("model_id") or "")
             status = str(desc.params.get("strict_image_json_status") or "pending_config")
             strict_safe = desc.params.get("supports_strict_image_json")
-            detail = (
-                f"catalog candidate from {self.demanded_config_path}; copy into "
-                f"{self.config_path} with a reachable endpoint before serving; "
-                f"upstream_model_id={model_id}; strict_image_json_status={status}; "
-                f"supports_strict_image_json={strict_safe}"
-            )
+            reason = "demanded_not_configured"
+            snapshot_path = self._downloaded_snapshot_path(desc, download_records)
+            if snapshot_path is not None:
+                reason = "downloaded_but_not_served"
+                desc = replace(
+                    desc,
+                    params={
+                        **desc.params,
+                        "download_status": "downloaded",
+                        "local_snapshot_path": str(snapshot_path),
+                    },
+                )
+                detail = (
+                    f"local snapshot downloaded at {snapshot_path}; start an "
+                    f"OpenAI-compatible upstream that advertises {model_id} from "
+                    f"/v1/models, then copy or promote the entry into {self.config_path}; "
+                    f"strict_image_json_status={status}; supports_strict_image_json={strict_safe}"
+                )
+            else:
+                detail = (
+                    f"catalog candidate from {self.demanded_config_path}; copy into "
+                    f"{self.config_path} with a reachable endpoint before serving; "
+                    f"upstream_model_id={model_id}; strict_image_json_status={status}; "
+                    f"supports_strict_image_json={strict_safe}"
+                )
             skipped.append(
                 SkippedManifest(
                     qualified_name=desc.qualified_name,
                     manifest_path=str(self.demanded_config_path),
-                    reason="demanded_not_configured",
+                    reason=reason,
                     detail=detail,
+                    descriptor=desc,
                 )
             )
         return sorted(skipped, key=lambda s: s.qualified_name)
+
+    def _latest_download_records(self) -> dict[str, dict[str, Any]]:
+        if self.local_snapshot_root is None:
+            return {}
+        status_path = self.local_snapshot_root / "download_status.jsonl"
+        if not status_path.is_file():
+            return {}
+
+        records: dict[str, dict[str, Any]] = {}
+        for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            for key in (record.get("engine_id"), record.get("repo_id")):
+                if key:
+                    records[str(key)] = record
+        return records
+
+    def _downloaded_snapshot_path(
+        self,
+        desc: ModelDescriptor,
+        download_records: dict[str, dict[str, Any]],
+    ) -> Path | None:
+        if self.local_snapshot_root is None:
+            return None
+
+        repo_id = str(desc.params.get("model_id") or "")
+        if not repo_id:
+            return None
+        engine_id = desc.qualified_name
+        record = download_records.get(engine_id) or download_records.get(repo_id)
+        candidate = self._snapshot_path_from_record(record, repo_id)
+        if record is not None and record.get("status") == "downloaded":
+            return candidate if candidate.is_dir() else None
+        if self._looks_like_complete_snapshot(candidate):
+            return candidate
+        return None
+
+    def _snapshot_path_from_record(
+        self,
+        record: dict[str, Any] | None,
+        repo_id: str,
+    ) -> Path:
+        if record is not None:
+            for key in ("resolved_dir", "local_dir"):
+                value = record.get(key)
+                if value:
+                    return Path(str(value)).expanduser()
+        assert self.local_snapshot_root is not None
+        return self.local_snapshot_root / repo_id.replace("/", "--")
+
+    @staticmethod
+    def _looks_like_complete_snapshot(path: Path) -> bool:
+        if not path.is_dir() or not (path / "config.json").is_file():
+            return False
+        if any(path.glob("*.incomplete")) or any(path.glob("*.lock")):
+            return False
+
+        for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+            index_path = path / index_name
+            if not index_path.is_file():
+                continue
+            try:
+                payload = json.loads(index_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return False
+            weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+            if not isinstance(weight_map, dict) or not weight_map:
+                return False
+            required = {str(filename) for filename in weight_map.values()}
+            return all((path / filename).is_file() and (path / filename).stat().st_size > 0 for filename in required)
+
+        weight_globs = ("*.safetensors", "pytorch_model*.bin", "*.gguf")
+        return any(
+            candidate.is_file() and candidate.stat().st_size > 0
+            for pattern in weight_globs
+            for candidate in path.glob(pattern)
+        )
 
     def get(self, name_with_tag: str) -> ModelDescriptor | None:
         if not self._cache:

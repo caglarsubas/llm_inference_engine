@@ -102,6 +102,40 @@ def test_promote_vllm_model_replaces_existing_entry(tmp_path: Path) -> None:
     assert entries[0]["family"] == "FakeShield"
 
 
+def test_promote_vllm_model_appends_sida13b_from_demanded_manifest(tmp_path: Path) -> None:
+    live = tmp_path / ".vllm_models.json"
+    demanded = ROOT / ".vllm_models.demanded.example.json"
+
+    result = _run(
+        "sida-13b:vllm",
+        "--live-file",
+        str(live),
+        "--demanded-file",
+        str(demanded),
+        "--endpoint",
+        "http://sida.example:8000",
+        "--strict-image-json-detail",
+        "Issue #46 live descriptor template",
+        "--strict-image-json-checked-at",
+        "2026-06-20",
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    entries = json.loads(live.read_text(encoding="utf-8"))
+    assert len(entries) == 1
+    sida = entries[0]
+    assert sida["name"] == "sida-13b"
+    assert sida["endpoint"] == "http://sida.example:8000"
+    assert sida["model_id"] == "saberzl/SIDA-13B"
+    assert sida["family"] == "SIDA"
+    assert sida["supports_strict_image_json"] is False
+    assert sida["strict_image_json_status"] == "pending_smoke"
+    assert sida["strict_image_json_checked_at"] == "2026-06-20"
+    assert "Issue #46" in sida["strict_image_json_detail"]
+    assert sida["benchmark_only"] is True
+
+
 def test_promote_vllm_model_can_require_upstream_probe(tmp_path: Path) -> None:
     live = tmp_path / ".vllm_models.json"
     demanded = ROOT / ".vllm_models.demanded.example.json"
