@@ -166,6 +166,26 @@ def test_demanded_vlm_manifest_covers_fraudguard_issue_40_candidates() -> None:
         assert desc.params["commercial_use"]
 
 
+def test_fakeshield_issue_43_live_fixture_has_required_metadata() -> None:
+    descs = VLLMRegistry(ROOT / ".vllm_models.fakeshield.example.json").list_models()
+    assert len(descs) == 1
+    desc = descs[0]
+
+    assert desc.qualified_name == "fakeshield-22b:vllm"
+    assert desc.endpoint == "http://vllm-fakeshield-22b:8000"
+    assert desc.params["model_id"] == "zhipeixu/fakeshield-v1-22b"
+    assert desc.params["family"] == "FakeShield"
+    assert desc.params["profile"] == "forensics"
+    assert desc.params["modality"] == "text+image->text"
+    assert desc.params["supports_json_mode"] is True
+    assert desc.params["supports_strict_image_json"] is False
+    assert desc.params["strict_image_json_status"] == "pending_smoke"
+    assert desc.params["strict_image_json_checked_at"] == "2026-06-20"
+    assert "Issue #43" in desc.params["strict_image_json_detail"]
+    assert desc.params["commercial_use"].startswith("Apache-2.0")
+    assert desc.params["benchmark_only"] is True
+
+
 def test_registry_reports_demanded_models_missing_from_live_config(tmp_path: Path) -> None:
     live = tmp_path / "vllm.json"
     live.write_text(

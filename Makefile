@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -221,6 +221,26 @@ openrouter-models-init:
 	  cp .openrouter_models.example.json .openrouter_models.json; \
 	  echo "created ignored runtime manifest .openrouter_models.json from example catalog"; \
 	fi
+
+VLLM_PROMOTE_MODEL ?=
+VLLM_ENDPOINT ?=
+VLLM_UPSTREAM_MODEL_ID ?=
+VLLM_REQUIRE_UPSTREAM ?= 0
+vllm-model-promote:
+	@if [ -z "$(VLLM_PROMOTE_MODEL)" ]; then \
+	  echo "set VLLM_PROMOTE_MODEL=<engine-id>, e.g. fakeshield-22b:vllm"; \
+	  exit 2; \
+	fi
+	uv run python scripts/promote_vllm_model.py "$(VLLM_PROMOTE_MODEL)" \
+	  $(if $(VLLM_ENDPOINT),--endpoint "$(VLLM_ENDPOINT)",) \
+	  $(if $(VLLM_UPSTREAM_MODEL_ID),--model-id "$(VLLM_UPSTREAM_MODEL_ID)",) \
+	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
+
+FAKESHIELD_ENDPOINT ?= http://vllm-fakeshield-22b:8000
+vllm-fakeshield-init:
+	uv run python scripts/promote_vllm_model.py fakeshield-22b:vllm \
+	  --endpoint "$(FAKESHIELD_ENDPOINT)" \
+	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
 
 smoke:
 	uv run python scripts/smoke_test.py

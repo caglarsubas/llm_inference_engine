@@ -179,6 +179,41 @@ async def test_models_data_returns_vllm_vlm_metadata(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_models_data_returns_fakeshield_issue_43_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = VLLMRegistry(Path(__file__).resolve().parents[1] / ".vllm_models.fakeshield.example.json")
+    monkeypatch.setattr(models_api.app_state, "registry", CompositeRegistry([registry]))
+    monkeypatch.setattr(models_api, "get_vllm_probe", lambda: _FakePassingProbe())
+
+    result = await models_api.list_model_catalog(_=object())
+
+    assert result.unavailable == []
+    assert len(result.data) == 1
+    entry = result.data[0]
+    assert entry.id == "fakeshield-22b:vllm"
+    assert entry.provider == "vllm"
+    assert entry.backend == "vllm"
+    assert entry.upstream_model_id == "zhipeixu/fakeshield-v1-22b"
+    assert entry.model_path is not None
+    assert "vllm-fakeshield-22b:8000" in entry.model_path
+    assert entry.modality == "text+image->text"
+    assert entry.supports_images is True
+    assert entry.supports_json_mode is True
+    assert entry.supports_strict_image_json is False
+    assert entry.strict_image_json_status == "pending_smoke"
+    assert entry.strict_image_json_checked_at == "2026-06-20"
+    assert "Issue #43" in entry.strict_image_json_detail
+    assert entry.family == "FakeShield"
+    assert entry.profile == "forensics"
+    assert entry.parameter_count_b == 22
+    assert entry.open_weight is True
+    assert entry.proprietary is False
+    assert entry.commercial_use == "Apache-2.0; verify provider terms before production use"
+    assert entry.benchmark_only is True
+
+
+@pytest.mark.asyncio
 async def test_models_data_reports_demanded_vllm_candidates_as_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

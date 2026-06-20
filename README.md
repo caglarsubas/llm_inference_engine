@@ -839,6 +839,24 @@ curl http://127.0.0.1:12434/engines/v1/models
 make vlm-smoke MODEL=qwen3-vl-8b-instruct:vllm IMAGE=/path/to/vehicle.jpg
 ```
 
+To promote a single demanded VLM into the ignored live manifest without copying
+JSON by hand, use the promotion helper. For the FakeShield-22B FraudGuard pilot:
+
+```bash
+make vllm-fakeshield-init FAKESHIELD_ENDPOINT=http://vllm-fakeshield-22b:8000
+
+# Stronger gate: only write the live manifest if the upstream already advertises
+# zhipeixu/fakeshield-v1-22b from GET /v1/models.
+make vllm-fakeshield-init FAKESHIELD_ENDPOINT=http://vllm-fakeshield-22b:8000 \
+  VLLM_REQUIRE_UPSTREAM=1
+```
+
+This writes `fakeshield-22b:vllm` to `.vllm_models.json` with
+`supports_strict_image_json=false` and `strict_image_json_status=pending_smoke`.
+After the upstream is running, restart the engine, verify the id is in
+`/v1/models.data`, then run repeated vehicle-image JSON smoke before promoting
+the descriptor to benchmark-safe.
+
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
 [`docs/MODEL_DEMAND_SHORTLIST.md`](docs/MODEL_DEMAND_SHORTLIST.md).

@@ -116,6 +116,24 @@ stable in the current shell. A downloaded snapshot is not a serving guarantee:
 copy an entry into `.vllm_models.json` only after a local OpenAI-compatible
 upstream is running and advertises the exact `model_id`.
 
+For the FakeShield-22B follow-up tracked in issue #43, the local snapshot can be
+downloaded with:
+
+```bash
+make download-vlm-models VLM_MODEL=zhipeixu/fakeshield-v1-22b VLM_MAX_WORKERS=1
+```
+
+Then promote only the live serving descriptor into the ignored runtime manifest:
+
+```bash
+make vllm-fakeshield-init FAKESHIELD_ENDPOINT=http://vllm-fakeshield-22b:8000
+```
+
+Use `VLLM_REQUIRE_UPSTREAM=1` when the upstream is already running and should be
+verified before writing `.vllm_models.json`. The committed
+`.vllm_models.fakeshield.example.json` is the single-entry fixture for operators
+who need to inspect or template the exact fields.
+
 ## Honest Rollout Gates
 
 1. Start one upstream model server on suitable hardware.
@@ -198,6 +216,7 @@ the engine keeps them out of `data` and reports the typed probe failure under
 | Llama 4 VLMs | Not exposed | No Llama 4 Scout/Maverick upstream is configured and probe-ready; license and hardware fit still need review. |
 | Kimi multimodal | Not exposed | No Kimi-VL/Kimi-K2.5 upstream is configured and probe-ready. |
 | DeepSeek-VL2 | Not exposed | No DeepSeek-VL2 upstream is configured and probe-ready. |
+| FakeShield | Descriptor template ready | `zhipeixu/fakeshield-v1-22b` has a dedicated live-config fixture and `make vllm-fakeshield-init` promotion path for issue #43. Keep `supports_strict_image_json=false` until an OpenAI-compatible upstream advertises the model and repeated FraudGuard vehicle-image JSON smoke passes. |
 | Molmo 2 | Not exposed | `Molmo2-4B` can be pulled and listed by Docker Model Runner, but local vLLM-Metal load failed because the runner would need `trust_remote_code=True`; do not expose until actual inference smoke passes. |
 | Aya Vision | Not exposed | No Aya Vision upstream is configured and probe-ready; license requires production review. |
 
