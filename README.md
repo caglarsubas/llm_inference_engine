@@ -938,6 +938,25 @@ passes. The model id requested in issue text is sometimes written with a dot
 (`OpenGVLab/InternVL3.5-8B`), but the public Hugging Face repo and engine
 descriptor use `OpenGVLab/InternVL3_5-8B`.
 
+For Ovis2.5-9B on Apple Silicon, use Docker Model Runner's host-side
+OpenAI-compatible API. The demanded descriptor remains `ovis2.5-9b:vllm`, while
+the upstream model id should match the exact id returned by
+`GET http://127.0.0.1:12434/engines/v1/models`:
+
+```bash
+make ovis25-9b-dmr-pull
+curl http://127.0.0.1:12434/engines/v1/models
+make vllm-ovis25-9b-init VLLM_REQUIRE_UPSTREAM=1
+./scripts/native-service.sh restart
+make vlm-smoke MODEL=ovis2.5-9b:vllm IMAGE=/path/to/vehicle.jpg
+```
+
+The default promotion target assumes Docker Model Runner advertises
+`huggingface.co/aidc-ai/ovis2.5-9b:latest`. Override
+`OVIS25_9B_UPSTREAM_MODEL_ID` if the local runner reports a different id.
+Keep `supports_strict_image_json=false` until repeated vehicle-image JSON smoke
+passes.
+
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
 [`docs/MODEL_DEMAND_SHORTLIST.md`](docs/MODEL_DEMAND_SHORTLIST.md).

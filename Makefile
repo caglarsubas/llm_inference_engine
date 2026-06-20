@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init vllm-molmo7b-init vllm-internvl35-8b-init sida13b-openai-upstream molmo7b-mlx-download molmo7b-openai-upstream internvl35-8b-download internvl35-8b-openai-upstream smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init vllm-molmo7b-init vllm-internvl35-8b-init vllm-ovis25-9b-init sida13b-openai-upstream molmo7b-mlx-download molmo7b-openai-upstream internvl35-8b-download internvl35-8b-openai-upstream ovis25-9b-dmr-pull smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -266,6 +266,19 @@ vllm-internvl35-8b-init:
 	  --endpoint "$(INTERNVL35_8B_ENDPOINT)" \
 	  --model-id "$(INTERNVL35_8B_UPSTREAM_MODEL_ID)" \
 	  --strict-image-json-detail "InternVL3.5-8B Apple Silicon MLX-VLM worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
+	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
+
+OVIS25_9B_DMR_MODEL ?= hf.co/AIDC-AI/Ovis2.5-9B
+OVIS25_9B_ENDPOINT ?= http://127.0.0.1:12434/engines
+OVIS25_9B_UPSTREAM_MODEL_ID ?= huggingface.co/aidc-ai/ovis2.5-9b:latest
+ovis25-9b-dmr-pull:
+	docker model pull "$(OVIS25_9B_DMR_MODEL)"
+
+vllm-ovis25-9b-init:
+	uv run python scripts/promote_vllm_model.py ovis2.5-9b:vllm \
+	  --endpoint "$(OVIS25_9B_ENDPOINT)" \
+	  --model-id "$(OVIS25_9B_UPSTREAM_MODEL_ID)" \
+	  --strict-image-json-detail "Ovis2.5-9B Docker Model Runner descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
 	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
 
 SIDA_PYTHON ?= python
