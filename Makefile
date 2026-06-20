@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init vllm-molmo7b-init sida13b-openai-upstream molmo7b-mlx-download molmo7b-openai-upstream smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init vllm-molmo7b-init vllm-internvl35-8b-init sida13b-openai-upstream molmo7b-mlx-download molmo7b-openai-upstream internvl35-8b-download internvl35-8b-openai-upstream smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -259,6 +259,15 @@ vllm-molmo7b-init:
 	  --strict-image-json-detail "Molmo-7B-D Apple Silicon MLX worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
 	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
 
+INTERNVL35_8B_ENDPOINT ?= http://127.0.0.1:8002
+INTERNVL35_8B_UPSTREAM_MODEL_ID ?= OpenGVLab/InternVL3_5-8B
+vllm-internvl35-8b-init:
+	uv run python scripts/promote_vllm_model.py internvl3.5-8b:vllm \
+	  --endpoint "$(INTERNVL35_8B_ENDPOINT)" \
+	  --model-id "$(INTERNVL35_8B_UPSTREAM_MODEL_ID)" \
+	  --strict-image-json-detail "InternVL3.5-8B Apple Silicon MLX-VLM worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
+	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
+
 SIDA_PYTHON ?= python
 SIDA_SRC_DIR ?=
 SIDA_MODEL_DIR ?= $(HOME)/.cache/inference_engine/hf-vlm/saberzl--SIDA-13B
@@ -292,6 +301,22 @@ molmo7b-openai-upstream:
 	  --host "$(MOLMO7B_UPSTREAM_HOST)" \
 	  --port "$(MOLMO7B_UPSTREAM_PORT)" \
 	  $(if $(MOLMO7B_MAX_KV_SIZE),--max-kv-size "$(MOLMO7B_MAX_KV_SIZE)",)
+
+INTERNVL35_8B_MODEL_PATH ?= $(HOME)/.cache/inference_engine/hf-vlm/OpenGVLab--InternVL3_5-8B
+INTERNVL35_8B_UPSTREAM_HOST ?= 127.0.0.1
+INTERNVL35_8B_UPSTREAM_PORT ?= 8002
+INTERNVL35_8B_MAX_KV_SIZE ?=
+internvl35-8b-download:
+	$(MAKE) download-vlm-models VLM_MODEL=OpenGVLab/InternVL3_5-8B VLM_MAX_WORKERS=$(VLM_MAX_WORKERS)
+
+internvl35-8b-openai-upstream:
+	uv run --extra mlx python scripts/serve_mlx_vlm_openai.py \
+	  --model-path "$(INTERNVL35_8B_MODEL_PATH)" \
+	  --served-model-name "$(INTERNVL35_8B_UPSTREAM_MODEL_ID)" \
+	  --worker-label "InternVL3.5-8B MLX-VLM OpenAI-compatible worker" \
+	  --host "$(INTERNVL35_8B_UPSTREAM_HOST)" \
+	  --port "$(INTERNVL35_8B_UPSTREAM_PORT)" \
+	  $(if $(INTERNVL35_8B_MAX_KV_SIZE),--max-kv-size "$(INTERNVL35_8B_MAX_KV_SIZE)",)
 
 smoke:
 	uv run python scripts/smoke_test.py

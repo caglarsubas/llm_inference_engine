@@ -918,6 +918,26 @@ SIDA-13B is not expected to load in the generic vLLM compose sidecar; keep it in
 Molmo-7B-D is similarly not a generic `mlx-lm` registry entry in this engine:
 use the dedicated `mlx-vlm` worker above so image content parts reach the model.
 
+For InternVL3.5-8B on Apple Silicon, use the generic `mlx-vlm`
+OpenAI-compatible worker against the local Hugging Face snapshot. The worker
+advertises the original upstream id, while clients call the engine id
+`internvl3.5-8b:vllm` after promotion:
+
+```bash
+make internvl35-8b-download VLM_MAX_WORKERS=4
+make internvl35-8b-openai-upstream
+
+# In another shell, once GET /v1/models lists OpenGVLab/InternVL3_5-8B:
+make vllm-internvl35-8b-init VLLM_REQUIRE_UPSTREAM=1
+./scripts/native-service.sh restart
+make vlm-smoke MODEL=internvl3.5-8b:vllm IMAGE=/path/to/vehicle.jpg
+```
+
+Keep `supports_strict_image_json=false` until repeated vehicle-image JSON smoke
+passes. The model id requested in issue text is sometimes written with a dot
+(`OpenGVLab/InternVL3.5-8B`), but the public Hugging Face repo and engine
+descriptor use `OpenGVLab/InternVL3_5-8B`.
+
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
 [`docs/MODEL_DEMAND_SHORTLIST.md`](docs/MODEL_DEMAND_SHORTLIST.md).
