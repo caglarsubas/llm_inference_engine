@@ -2,8 +2,9 @@
   {
     "name": "sida-13b",
     "tag": "vllm",
-    "endpoint": "http://vllm-sida-13b:8000",
+    "endpoint": "http://127.0.0.1:8000",
     "model_id": "saberzl/SIDA-13B",
+    "provider": "sida",
     "family": "SIDA",
     "profile": "forensics",
     "priority": "P2",
@@ -16,7 +17,7 @@
     "supports_strict_image_json": false,
     "strict_image_json_status": "pending_smoke",
     "strict_image_json_checked_at": "2026-06-20",
-    "strict_image_json_detail": "Issue #46 live descriptor template. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes.",
+    "strict_image_json_detail": "Issue #46 SIDA OpenAI-compatible worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes.",
     "benchmark_only": true
   }
 ]

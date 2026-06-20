@@ -162,7 +162,12 @@ def test_demanded_vlm_manifest_covers_fraudguard_issue_40_candidates() -> None:
         assert desc.params["supports_json_mode"] is True
         assert desc.params["supports_strict_image_json"] is False
         assert desc.params["strict_image_json_status"] == "pending_smoke"
-        assert desc.params["strict_image_json_checked_at"] == "2026-06-19"
+        if engine_id == "sida-13b:vllm":
+            assert desc.params["provider"] == "sida"
+            assert desc.params["strict_image_json_checked_at"] == "2026-06-20"
+            assert "Issue #46" in desc.params["strict_image_json_detail"]
+        else:
+            assert desc.params["strict_image_json_checked_at"] == "2026-06-19"
         assert desc.params["commercial_use"]
 
 
@@ -192,8 +197,9 @@ def test_sida13b_issue_46_live_fixture_has_required_metadata() -> None:
     desc = descs[0]
 
     assert desc.qualified_name == "sida-13b:vllm"
-    assert desc.endpoint == "http://vllm-sida-13b:8000"
+    assert desc.endpoint == "http://127.0.0.1:8000"
     assert desc.params["model_id"] == "saberzl/SIDA-13B"
+    assert desc.params["provider"] == "sida"
     assert desc.params["family"] == "SIDA"
     assert desc.params["profile"] == "forensics"
     assert desc.params["modality"] == "text+image->text"
@@ -265,8 +271,9 @@ def test_registry_reports_downloaded_snapshot_that_is_not_served(tmp_path: Path)
             [
                 {
                     "name": "sida-13b",
-                    "endpoint": "http://vllm-sida-13b:8000",
+                    "endpoint": "http://127.0.0.1:8000",
                     "model_id": "saberzl/SIDA-13B",
+                    "provider": "sida",
                     "family": "SIDA",
                     "profile": "forensics",
                     "modality": "text+image->text",

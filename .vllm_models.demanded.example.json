@@ -381,8 +381,9 @@
   {
     "name": "sida-13b",
     "tag": "vllm",
-    "endpoint": "http://vllm-sida-13b:8000",
+    "endpoint": "http://127.0.0.1:8000",
     "model_id": "saberzl/SIDA-13B",
+    "provider": "sida",
     "family": "SIDA",
     "profile": "forensics",
     "priority": "P2",
@@ -394,8 +395,8 @@
     "supports_json_mode": true,
     "supports_strict_image_json": false,
     "strict_image_json_status": "pending_smoke",
-    "strict_image_json_checked_at": "2026-06-19",
-    "strict_image_json_detail": "Issue #40 specialized forensic candidate. Configure only after a provider or local OpenAI-compatible upstream lists the exact model_id."
+    "strict_image_json_checked_at": "2026-06-20",
+    "strict_image_json_detail": "Issue #46 SIDA OpenAI-compatible worker candidate. Configure only after a CUDA SIDA worker lists the exact model_id."
   },
   {
     "name": "aya-vision-8b",

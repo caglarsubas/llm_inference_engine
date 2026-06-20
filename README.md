@@ -862,14 +862,16 @@ For the SIDA-13B FraudGuard follow-up:
 ```bash
 make download-vlm-models VLM_MODEL=saberzl/SIDA-13B VLM_MAX_WORKERS=1
 
-# CUDA host example: serve the downloaded local snapshot while advertising
-# the upstream id the engine expects from /v1/models.
-VLLM_MODEL=/models/hf-vlm/saberzl--SIDA-13B \
-VLLM_EXTRA_ARGS="--served-model-name saberzl/SIDA-13B --trust-remote-code" \
-make compose-vllm-up
+# CUDA host example: run the SIDA reference implementation behind the
+# OpenAI-compatible worker. SIDA_SRC_DIR must point to a checkout of
+# https://github.com/hzlsaber/SIDA in a Python/CUDA environment with the SIDA
+# requirements plus fastapi and uvicorn installed.
+SIDA_SRC_DIR=/path/to/SIDA \
+SIDA_PYTHON=/path/to/sida-env/bin/python \
+make sida13b-openai-upstream
 
-# The generic compose sidecar is reachable as http://vllm:8000 from the engine.
-make vllm-sida13b-init SIDA13B_ENDPOINT=http://vllm:8000 \
+# The native engine default expects the worker at http://127.0.0.1:8000.
+make vllm-sida13b-init SIDA13B_ENDPOINT=http://127.0.0.1:8000 \
   VLLM_REQUIRE_UPSTREAM=1
 ```
 
@@ -884,6 +886,9 @@ snapshot has been downloaded under `HF_VLM_MODELS_DIR` (default
 `~/.cache/inference_engine/hf-vlm`) but no live upstream is configured yet,
 `/v1/models.data` reports `availability_status="downloaded_but_not_served"` so
 benchmark clients can distinguish acquisition progress from serving readiness.
+SIDA-13B is not expected to load in the generic vLLM compose sidecar; keep it in
+`unavailable[]` until the dedicated worker lists `saberzl/SIDA-13B` from
+`GET /v1/models`.
 
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see
@@ -1081,8 +1086,9 @@ or strict JSON workloads:
       "upstream_reachable": false,
       "availability_status": "downloaded_but_not_served",
       "reason": "downloaded_but_not_served",
+      "provider": "sida",
       "backend": "vllm",
-      "endpoint": "http://vllm-sida-13b:8000",
+      "endpoint": "http://127.0.0.1:8000",
       "upstream_model_id": "saberzl/SIDA-13B",
       "download_status": "downloaded",
       "local_snapshot_path": "/Users/example/.cache/inference_engine/hf-vlm/saberzl--SIDA-13B",
