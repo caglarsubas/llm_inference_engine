@@ -25,6 +25,7 @@ dev = [
 ]
 mlx = [
     "mlx-lm>=0.19",
+    "mlx-vlm>=0.6.3",
 ]
 otel = [
     "opentelemetry-api>=1.27",
