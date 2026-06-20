@@ -1,0 +1,22 @@
+[
+  {
+    "name": "fakeshield-22b",
+    "tag": "vllm",
+    "endpoint": "http://vllm-fakeshield-22b:8000",
+    "model_id": "zhipeixu/fakeshield-v1-22b",
+    "family": "FakeShield",
+    "profile": "forensics",
+    "priority": "P2",
+    "parameter_count_b": 22,
+    "open_weight": true,
+    "proprietary": false,
+    "commercial_use": "Apache-2.0; verify provider terms before production use",
+    "modality": "text+image->text",
+    "supports_json_mode": true,
+    "supports_strict_image_json": false,
+    "strict_image_json_status": "pending_smoke",
+    "strict_image_json_checked_at": "2026-06-20",
+    "strict_image_json_detail": "Issue #43 live descriptor template. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes.",
+    "benchmark_only": true
+  }
+]
