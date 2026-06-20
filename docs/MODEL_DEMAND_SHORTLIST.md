@@ -157,6 +157,22 @@ sidecar is not the SIDA serving path; the promotion helper should only write the
 live descriptor after the CUDA worker returns `saberzl/SIDA-13B` from
 `GET /v1/models`.
 
+For `molmo-7b-d:vllm` on Apple Silicon, use the MLX-converted 4-bit checkpoint
+and the dedicated `mlx-vlm` OpenAI-compatible worker:
+
+```bash
+make install-mlx
+make molmo7b-mlx-download
+make molmo7b-openai-upstream
+make vllm-molmo7b-init MOLMO7B_ENDPOINT=http://127.0.0.1:8001 \
+  VLLM_REQUIRE_UPSTREAM=1
+```
+
+This path advertises the original upstream id `allenai/Molmo-7B-D-0924` from
+`GET /v1/models`, but serves it from `mlx-community/Molmo-7B-D-0924-4bit`
+locally. Keep `supports_strict_image_json=false` until repeated FraudGuard
+vehicle-image JSON smokes pass through the engine.
+
 ## Honest Rollout Gates
 
 1. Start one upstream model server on suitable hardware.

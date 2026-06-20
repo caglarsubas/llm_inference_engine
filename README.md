@@ -882,7 +882,26 @@ make vllm-sida13b-init SIDA13B_ENDPOINT=http://127.0.0.1:8000 \
   VLLM_REQUIRE_UPSTREAM=1
 ```
 
-These targets write `fakeshield-22b:vllm` or `sida-13b:vllm` to `.vllm_models.json` with
+For Molmo-7B-D on Apple Silicon, prefer the MLX-converted 4-bit worker rather
+than the 29.9 GiB upstream safetensors or a CUDA vLLM sidecar. The worker
+serves an OpenAI-compatible surface and advertises the original upstream id, so
+the engine can probe and route it through the existing vLLM/OpenAI-compatible
+adapter:
+
+```bash
+make install-mlx
+make molmo7b-mlx-download
+make molmo7b-openai-upstream
+
+# In another shell, once GET /v1/models lists allenai/Molmo-7B-D-0924:
+make vllm-molmo7b-init MOLMO7B_ENDPOINT=http://127.0.0.1:8001 \
+  VLLM_REQUIRE_UPSTREAM=1
+./scripts/native-service.sh restart
+make vlm-smoke MODEL=molmo-7b-d:vllm IMAGE=/path/to/vehicle.jpg
+```
+
+These targets write `fakeshield-22b:vllm`, `sida-13b:vllm`, or
+`molmo-7b-d:vllm` to `.vllm_models.json` with
 `supports_strict_image_json=false` and `strict_image_json_status=pending_smoke`.
 After the upstream is running, restart the engine, verify the id has
 `available=true` under `/v1/models.data` `data[]`, then run repeated vehicle-image
@@ -896,6 +915,8 @@ benchmark clients can distinguish acquisition progress from serving readiness.
 SIDA-13B is not expected to load in the generic vLLM compose sidecar; keep it in
 `unavailable[]` until the dedicated worker lists `saberzl/SIDA-13B` from
 `GET /v1/models`.
+Molmo-7B-D is similarly not a generic `mlx-lm` registry entry in this engine:
+use the dedicated `mlx-vlm` worker above so image content parts reach the model.
 
 For the current FraudGuard vehicle-photo model demand shortlist, including
 local bakeoff candidates and VLM serving/evaluation requirements, see

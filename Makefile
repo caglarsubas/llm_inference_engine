@@ -1,4 +1,4 @@
-.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init sida13b-openai-upstream smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
+.PHONY: install install-metal install-mlx install-otel sync run dev run-otel list-models openrouter-models-init vllm-model-promote vllm-fakeshield-init vllm-sida13b-init vllm-molmo7b-init sida13b-openai-upstream molmo7b-mlx-download molmo7b-openai-upstream smoke vlm-smoke download-mlx-model download-vlm-models otel-up otel-down compose-build compose-up compose-up-scale compose-logs compose-down compose-ps compose-vllm-up compose-vllm-down compose-vllm-multigpu-up compose-vllm-multigpu-down compose-up-sticky compose-down-sticky obs-up obs-down obs-logs obs-load native-install native-uninstall native-up native-down native-restart native-status native-logs share share-cf share-install share-uninstall share-restart share-status share-logs test lint clean
 
 install:
 	uv sync
@@ -250,6 +250,15 @@ vllm-sida13b-init:
 	  --strict-image-json-detail "Issue #46 SIDA OpenAI-compatible worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
 	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
 
+MOLMO7B_ENDPOINT ?= http://127.0.0.1:8001
+MOLMO7B_UPSTREAM_MODEL_ID ?= allenai/Molmo-7B-D-0924
+vllm-molmo7b-init:
+	uv run python scripts/promote_vllm_model.py molmo-7b-d:vllm \
+	  --endpoint "$(MOLMO7B_ENDPOINT)" \
+	  --model-id "$(MOLMO7B_UPSTREAM_MODEL_ID)" \
+	  --strict-image-json-detail "Molmo-7B-D Apple Silicon MLX worker descriptor. Keep supports_strict_image_json=false until repeated FraudGuard vehicle-image JSON smoke passes." \
+	  $(if $(filter 1 true yes,$(VLLM_REQUIRE_UPSTREAM)),--require-upstream,)
+
 SIDA_PYTHON ?= python
 SIDA_SRC_DIR ?=
 SIDA_MODEL_DIR ?= $(HOME)/.cache/inference_engine/hf-vlm/saberzl--SIDA-13B
@@ -267,6 +276,22 @@ sida13b-openai-upstream:
 	  --host "$(SIDA_UPSTREAM_HOST)" \
 	  --port "$(SIDA_UPSTREAM_PORT)" \
 	  --precision "$(SIDA_PRECISION)"
+
+MOLMO7B_MLX_REPO ?= mlx-community/Molmo-7B-D-0924-4bit
+MOLMO7B_MODEL_PATH ?= $(HOME)/.cache/inference_engine/mlx/Molmo-7B-D-0924-4bit
+MOLMO7B_UPSTREAM_HOST ?= 127.0.0.1
+MOLMO7B_UPSTREAM_PORT ?= 8001
+MOLMO7B_MAX_KV_SIZE ?=
+molmo7b-mlx-download:
+	uv run python scripts/download_mlx_model.py "$(MOLMO7B_MLX_REPO)"
+
+molmo7b-openai-upstream:
+	uv run --extra mlx python scripts/serve_molmo_mlx_openai.py \
+	  --model-path "$(MOLMO7B_MODEL_PATH)" \
+	  --served-model-name "$(MOLMO7B_UPSTREAM_MODEL_ID)" \
+	  --host "$(MOLMO7B_UPSTREAM_HOST)" \
+	  --port "$(MOLMO7B_UPSTREAM_PORT)" \
+	  $(if $(MOLMO7B_MAX_KV_SIZE),--max-kv-size "$(MOLMO7B_MAX_KV_SIZE)",)
 
 smoke:
 	uv run python scripts/smoke_test.py
