@@ -289,6 +289,22 @@ Exposed local benchmark candidates:
 | `qwen3.6:27b` | Image + strict JSON smoke validated through the engine after empty-response retry and JSON fence cleanup; nearby local candidate, not an exact Qwen3-VL id. |
 | `nemotron3:33b` | Unsuitable for this image-scoring benchmark shape today: it remains empty after the Ollama empty-response retry. Keep it out of the strict JSON benchmark until its image prompt path is fixed upstream or replaced with a dedicated Nemotron VL id. |
 
+Request-test the full VLM candidate surface after catalog or upstream changes:
+
+```bash
+ENGINE_API_KEY=... uv run python scripts/vlm_request_matrix.py \
+  --output /tmp/vlm-request-matrix.json \
+  --allow-failures
+```
+
+The matrix probe includes candidates from `.vllm_models.demanded.example.json`
+plus VLM-looking ids already visible in `/v1/models.data`. It sends a minimal
+image chat request to each id and records both catalog state
+(`available`, `demanded_not_configured`, `downloaded_but_not_served`,
+`upstream_unreachable`, etc.) and request outcome. Use
+`scripts/vlm_strict_json_smoke.py` afterward only for models that pass this
+basic callability test.
+
 ## Serving Contract
 
 Expose each validated candidate through the engine's OpenAI-compatible

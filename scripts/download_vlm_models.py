@@ -34,6 +34,48 @@ DEFAULT_ROOT = Path(
 
 FRAUDGUARD_LOCAL_MODELS: list[dict[str, Any]] = [
     {
+        "repo_id": "Qwen/Qwen2.5-VL-3B-Instruct",
+        "engine_id": "qwen2.5-vl-3b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 3,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+        "engine_id": "qwen2.5-vl-7b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 7,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "Qwen/Qwen2.5-VL-32B-Instruct",
+        "engine_id": "qwen2.5-vl-32b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 32,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "Qwen/Qwen2.5-VL-72B-Instruct",
+        "engine_id": "qwen2.5-vl-72b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 72,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "Qwen/Qwen3-VL-2B-Instruct",
+        "engine_id": "qwen3-vl-2b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 2,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "Qwen/Qwen3-VL-4B-Instruct",
+        "engine_id": "qwen3-vl-4b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 4,
+        "size_gib": None,
+    },
+    {
         "repo_id": "Qwen/Qwen3-VL-8B-Instruct",
         "engine_id": "qwen3-vl-8b-instruct:vllm",
         "tier": "core",
@@ -90,6 +132,27 @@ FRAUDGUARD_LOCAL_MODELS: list[dict[str, Any]] = [
         "size_gib": 15.9,
     },
     {
+        "repo_id": "OpenGVLab/InternVL3_5-1B",
+        "engine_id": "internvl3.5-1b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 1,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL3_5-2B",
+        "engine_id": "internvl3.5-2b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 2,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL3_5-4B",
+        "engine_id": "internvl3.5-4b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 4,
+        "size_gib": None,
+    },
+    {
         "repo_id": "OpenGVLab/InternVL3_5-14B",
         "engine_id": "internvl3.5-14b:vllm",
         "tier": "core",
@@ -102,6 +165,76 @@ FRAUDGUARD_LOCAL_MODELS: list[dict[str, Any]] = [
         "tier": "core",
         "parameter_count_b": 20,
         "size_gib": 39.6,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL3_5-30B-A3B",
+        "engine_id": "internvl3.5-30b-a3b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 30,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL3_5-38B",
+        "engine_id": "internvl3.5-38b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 38,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL2_5-8B",
+        "engine_id": "internvl2.5-8b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 8,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL2_5-26B",
+        "engine_id": "internvl2.5-26b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 26,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "OpenGVLab/InternVL2_5-78B",
+        "engine_id": "internvl2.5-78b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 78,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "internlm/internlm-xcomposer2d5-7b",
+        "engine_id": "internlm-xcomposer2.5-7b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 7,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "google/gemma-3-4b-it",
+        "engine_id": "gemma-3-4b-it:vllm",
+        "tier": "extended",
+        "parameter_count_b": 4,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "google/gemma-3-12b-it",
+        "engine_id": "gemma-3-12b-it:vllm",
+        "tier": "extended",
+        "parameter_count_b": 12,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "google/gemma-3-27b-it",
+        "engine_id": "gemma-3-27b-it:vllm",
+        "tier": "extended",
+        "parameter_count_b": 27,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "mistralai/Pixtral-12B-2409",
+        "engine_id": "pixtral-12b-2409:vllm",
+        "tier": "extended",
+        "parameter_count_b": 12,
+        "size_gib": None,
     },
     {
         "repo_id": "moonshotai/Kimi-VL-A3B-Thinking",
@@ -137,6 +270,90 @@ FRAUDGUARD_LOCAL_MODELS: list[dict[str, Any]] = [
         "size_gib": 30.1,
     },
     {
+        "repo_id": "meta-llama/Llama-3.2-11B-Vision-Instruct",
+        "engine_id": "llama-3.2-11b-vision-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 11,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "meta-llama/Llama-3.2-90B-Vision-Instruct",
+        "engine_id": "llama-3.2-90b-vision-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 90,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
+        "engine_id": "smolvlm-256m-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 0.256,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "HuggingFaceTB/SmolVLM-500M-Instruct",
+        "engine_id": "smolvlm-500m-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 0.5,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
+        "engine_id": "smolvlm2-2.2b-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 2.2,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "vikhyatk/moondream2",
+        "engine_id": "moondream2:vllm",
+        "tier": "extended",
+        "parameter_count_b": 1.9,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "apple/FastVLM-0.5B",
+        "engine_id": "fastvlm-0.5b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 0.5,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "apple/FastVLM-1.5B",
+        "engine_id": "fastvlm-1.5b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 1.5,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "apple/FastVLM-7B",
+        "engine_id": "fastvlm-7b:vllm",
+        "tier": "extended",
+        "parameter_count_b": 7,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "HuggingFaceM4/Idefics3-8B-Llama3",
+        "engine_id": "idefics3-8b-llama3:vllm",
+        "tier": "extended",
+        "parameter_count_b": 8,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "microsoft/Phi-3.5-vision-instruct",
+        "engine_id": "phi-3.5-vision-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 4.2,
+        "size_gib": None,
+    },
+    {
+        "repo_id": "microsoft/Phi-4-multimodal-instruct",
+        "engine_id": "phi-4-multimodal-instruct:vllm",
+        "tier": "extended",
+        "parameter_count_b": 5.6,
+        "size_gib": None,
+    },
+    {
         "repo_id": "allenai/Molmo-7B-D-0924",
         "engine_id": "molmo-7b-d:vllm",
         "tier": "core",
@@ -170,6 +387,13 @@ FRAUDGUARD_LOCAL_MODELS: list[dict[str, Any]] = [
         "tier": "specialized",
         "parameter_count_b": 22,
         "size_gib": 41.1,
+    },
+    {
+        "repo_id": "lingcco/fakeVLM",
+        "engine_id": "fakevlm:vllm",
+        "tier": "extended",
+        "parameter_count_b": 7,
+        "size_gib": None,
     },
     {
         "repo_id": "saberzl/SIDA-7B",
@@ -226,6 +450,8 @@ def _select_models(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     if args.core_only:
         return [m for m in FRAUDGUARD_LOCAL_MODELS if m["tier"] == "core"]
+    if not args.include_extended:
+        return [m for m in FRAUDGUARD_LOCAL_MODELS if m["tier"] != "extended"]
     return FRAUDGUARD_LOCAL_MODELS
 
 
@@ -257,6 +483,14 @@ def parse_args() -> argparse.Namespace:
         "--core-only",
         action="store_true",
         help="Skip specialized FakeShield/SIDA follow-ups.",
+    )
+    parser.add_argument(
+        "--include-extended",
+        action="store_true",
+        help=(
+            "Also include lower-priority candidates from the attached Apple-Silicon "
+            "VLM survey. By default these are selected only via --repo."
+        ),
     )
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument(
