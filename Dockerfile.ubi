@@ -1,19 +1,18 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
-# Orchestra inference engine - Debian runtime image.
+# Orchestra inference engine - Red Hat UBI9 runtime image.
 #
-# The builder contains compilers needed by llama-cpp-python. The final image
-# contains only the locked virtual environment and runtime libraries. The base
-# image is pinned by its multi-platform digest; update it deliberately through
-# a reviewed pull request.
-#
-# Build with OpenTelemetry support (the published profile):
-#   docker build --build-arg EXTRAS=otel -t inference-engine:local .
+# This is functionally equivalent to Dockerfile, with a UBI build/runtime pair
+# for OpenShift estates. UBI is not itself a Red Hat certification or a claim
+# that every dependency is FIPS validated. The final image is designed for the
+# restricted-v2 arbitrary-UID contract and is tested that way in CI.
 # ---------------------------------------------------------------------------
 
-ARG PYTHON_IMAGE=python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+ARG UBI_BUILD_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:88277e9671092de1c89e562e920823e82a70b75a6b02db9ba8ad78dcfaf6b591
+ARG UBI_RUNTIME_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal@sha256:2eef57a47c201792a5c6188800c88660a4dcc57b2d60f8874f618e694067d4f9
 
-FROM ${PYTHON_IMAGE} AS builder
+FROM ${UBI_BUILD_IMAGE} AS builder
+USER 0
 
 ARG CMAKE_ARGS=""
 ARG EXTRAS=""
@@ -27,28 +26,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_PYTHON_DOWNLOADS=never
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      build-essential \
-      ca-certificates \
-      cmake \
-      git \
- && rm -rf /var/lib/apt/lists/* \
+RUN dnf install -y cmake gcc gcc-c++ git-core make \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf \
  && python -m pip install --no-cache-dir "uv==${UV_VERSION}"
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
-# Install the project non-editably so the runtime does not depend on /app/src.
-# EXTRAS remains a build-time option; canonical published images pass "otel".
 RUN if [ -n "${EXTRAS}" ]; then \
       CMAKE_ARGS="${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable --extra "${EXTRAS}"; \
     else \
       CMAKE_ARGS="${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable; \
     fi
 
-FROM ${PYTHON_IMAGE} AS runtime
+FROM ${UBI_RUNTIME_IMAGE} AS runtime
+USER 0
 
 ARG VCS_REF="unknown"
 ARG IMAGE_VERSION="dev"
@@ -70,18 +64,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MODEL_ROUTING_TRUST_STORE_FILE=/config/model_routing_trust.json \
     MODEL_ROUTING_PRICING_FILE=/config/model_routing_pricing.json
 
-LABEL org.opencontainers.image.title="Orchestra Inference Engine" \
-      org.opencontainers.image.description="Tenant-deployed OpenAI-compatible Orchestra model plane" \
+LABEL org.opencontainers.image.title="Orchestra Inference Engine (UBI9)" \
+      org.opencontainers.image.description="Tenant-deployed OpenAI-compatible Orchestra model plane on Red Hat UBI9" \
       org.opencontainers.image.source="https://github.com/caglarsubas/llm_inference_engine" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      io.prometa.image.variant="debian"
+      io.prometa.image.variant="ubi9"
 
-# GID 0 permissions support OpenShift arbitrary UIDs.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates libgomp1 \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --gid 0 --no-create-home engine \
+RUN microdnf install -y libgomp \
+ && microdnf clean all \
  && mkdir -p \
       /app \
       /state \
@@ -89,17 +80,17 @@ RUN apt-get update \
       /models/ollama/blobs \
       /models/mlx \
       /models/hf-vlm \
- && chown 10001:0 /state \
+ && chown 1001:0 /state \
  && chmod 0770 /state
 
 WORKDIR /app
-COPY --from=builder --chown=10001:0 /opt/venv /opt/venv
+COPY --from=builder --chown=1001:0 /opt/venv /opt/venv
 
-# COPY preserves the locked environment's group read/execute permissions and
-# assigns GID 0. Only /state is group-writable (created above) so an arbitrary
-# SCC UID can persist last-known-good policy without mutating code.
+# Red Hat's Python image defines UID 1001 in GID 0. COPY preserves group
+# read/execute permissions for the locked environment; only /state is
+# group-writable for an SCC-assigned UID.
 
-USER 10001
+USER 1001
 EXPOSE 8080
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \

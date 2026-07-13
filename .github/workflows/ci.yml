@@ -47,3 +47,55 @@ jobs:
         env:
           AUTH_ENABLED: "false"
         run: uv run pytest -q
+
+  container:
+    name: "container (${{ matrix.variant }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: debian
+            dockerfile: Dockerfile
+          - variant: ubi9
+            dockerfile: Dockerfile.ubi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: inference-engine:ci-${{ matrix.variant }}
+          build-args: |
+            EXTRAS=otel
+            VCS_REF=${{ github.sha }}
+            IMAGE_VERSION=ci
+          provenance: false
+          cache-from: type=gha,scope=engine-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=engine-${{ matrix.variant }}
+
+      - name: Prove arbitrary-UID and read-only-root operation
+        run: ./scripts/container_smoke.sh inference-engine:ci-${{ matrix.variant }}
+
+      - name: Generate SBOM
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b "$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/syft" "inference-engine:ci-${{ matrix.variant }}" \
+            -o "spdx-json=sbom-${{ matrix.variant }}.spdx.json" \
+            -o "cyclonedx-json=sbom-${{ matrix.variant }}.cdx.json"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-inference-engine-${{ matrix.variant }}
+          path: sbom-${{ matrix.variant }}.*.json
+          if-no-files-found: error

@@ -1,0 +1,199 @@
+# Publish canonical engine images to an OCI registry.
+#
+# This workflow is gated: merging a branch publishes nothing. A version tag or
+# an explicit manual dispatch builds the Debian and UBI variants, pushes an
+# commit-derived SHA tag plus the requested release tag, generates SBOMs, and
+# adds keyless cosign signatures and CycloneDX attestations to image digests.
+name: publish-images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: "OCI registry namespace (default: this repo's GHCR namespace)"
+        required: false
+        default: ""
+      tag:
+        description: "Release tag (default: git tag, else short commit SHA)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  verify:
+    name: "verify ${{ matrix.image }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: inference-engine
+            dockerfile: Dockerfile
+          - image: inference-engine-ubi
+            dockerfile: Dockerfile.ubi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build exact release source before any push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: ${{ matrix.image }}:release-preflight
+          build-args: |
+            EXTRAS=otel
+            VCS_REF=${{ github.sha }}
+            IMAGE_VERSION=release-preflight
+          provenance: false
+          cache-from: type=gha,scope=release-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.image }}
+
+      - name: Prove release image identity and read-only-root operation
+        run: ./scripts/container_smoke.sh ${{ matrix.image }}:release-preflight
+
+  publish:
+    name: "publish ${{ matrix.image }}"
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: inference-engine
+            dockerfile: Dockerfile
+          - image: inference-engine-ubi
+            dockerfile: Dockerfile.ubi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve immutable image coordinates
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace="${{ inputs.registry }}"
+          namespace="${namespace:-ghcr.io/${GITHUB_REPOSITORY}}"
+          namespace="${namespace%/}"
+          namespace="$(printf '%s' "${namespace}" | tr '[:upper:]' '[:lower:]')"
+          case "${namespace}" in
+            *[[:space:]]*|*@*) echo "invalid registry namespace: ${namespace}" >&2; exit 1 ;;
+          esac
+
+          tag="${{ inputs.tag }}"
+          if [ -z "${tag}" ]; then
+            case "${GITHUB_REF}" in
+              refs/tags/*) tag="${GITHUB_REF#refs/tags/}" ;;
+              *) tag="$(git rev-parse --short=12 HEAD)" ;;
+            esac
+          fi
+          if ! printf '%s' "${tag}" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "invalid OCI tag: ${tag}" >&2
+            exit 1
+          fi
+
+          image="${namespace}/${{ matrix.image }}"
+          host="${namespace%%/*}"
+          sha_tag="sha-${GITHUB_SHA:0:12}"
+          {
+            echo "image=${image}"
+            echo "host=${host}"
+            echo "tag=${tag}"
+            echo "sha_tag=${sha_tag}"
+            if [ "${host}" = "ghcr.io" ]; then
+              echo "is_ghcr=true"
+            else
+              echo "is_ghcr=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.meta.outputs.host }}
+          username: ${{ steps.meta.outputs.is_ghcr == 'true' && github.actor || secrets.REGISTRY_USER }}
+          password: ${{ steps.meta.outputs.is_ghcr == 'true' && secrets.GITHUB_TOKEN || secrets.REGISTRY_TOKEN }}
+
+      - name: Build and push canonical image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+          build-args: |
+            EXTRAS=otel
+            VCS_REF=${{ github.sha }}
+            IMAGE_VERSION=${{ steps.meta.outputs.tag }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=release-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.image }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Generate release SBOMs
+        run: |
+          set -euo pipefail
+          ref="${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+          syft "${ref}" \
+            -o "spdx-json=sbom-${{ matrix.image }}.spdx.json" \
+            -o "cyclonedx-json=sbom-${{ matrix.image }}.cdx.json"
+
+      - name: Sign digest and attest CycloneDX SBOM
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          ref="${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+          cosign sign "${ref}"
+          cosign attest \
+            --predicate "sbom-${{ matrix.image }}.cdx.json" \
+            --type cyclonedx \
+            "${ref}"
+
+      - name: Upload release SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.image }}-${{ steps.meta.outputs.sha_tag }}
+          path: sbom-${{ matrix.image }}.*.json
+          if-no-files-found: error
+
+      - name: Record immutable digest
+        run: |
+          {
+            echo "### ${{ matrix.image }}"
+            echo '```text'
+            echo "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
