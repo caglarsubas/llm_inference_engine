@@ -29,6 +29,32 @@ curl http://127.0.0.1:8080/v1/health
 curl http://127.0.0.1:8080/v1/models | jq '.data[0]'
 ```
 
+### Canonical release images
+
+Release tags and explicit `publish-images` workflow dispatches produce two
+digest-addressable images:
+
+| Image | Deployment profile |
+|---|---|
+| `ghcr.io/caglarsubas/llm_inference_engine/inference-engine` | Minimal Debian runtime |
+| `ghcr.io/caglarsubas/llm_inference_engine/inference-engine-ubi` | Red Hat UBI9 runtime for OpenShift estates |
+
+Both published variants include the `otel` extra, run non-root, and are tested
+under an arbitrary high UID in GID 0 with a read-only root filesystem. The
+release workflow emits OCI provenance, SPDX and CycloneDX SBOMs, a keyless
+cosign signature, and a CycloneDX attestation for the exact image digest.
+Production deployments should use the digest printed in the workflow summary,
+not a mutable tag:
+
+```bash
+docker pull \
+  ghcr.io/caglarsubas/llm_inference_engine/inference-engine@sha256:<digest>
+```
+
+Image verification, registry relocation, air-gap transfer, supported
+architecture, and the precise UBI/FIPS boundary are documented in
+[`docs/CONTAINER_IMAGES.md`](docs/CONTAINER_IMAGES.md).
+
 ### Topology
 
 ```
@@ -170,8 +196,8 @@ For production, keep the same engine contract but run under Swarm/Kubernetes and
 ### What's installed in the container
 
 - llama-cpp-python compiled from source (CPU-only by default, CUDA build with `CMAKE_ARGS="-DGGML_CUDA=on"`)
-- The OTel extra (`uv sync --extra otel`) so `OTEL_ENABLED=true` works against an external collector
-- Non-root runtime user (UID 10001) for blast-radius reduction
+- The OTel extra in Compose and canonical release builds, so `OTEL_ENABLED=true` works against an external collector
+- A non-root default user plus GID-0 permissions for OpenShift-assigned arbitrary UIDs
 - Container `HEALTHCHECK` hitting `/v1/health` every 15s
 
 What's deliberately NOT installed:
