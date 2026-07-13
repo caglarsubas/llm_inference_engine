@@ -18,6 +18,7 @@ from ..evals.schemas import (
     RubricInfo,
     RubricList,
 )
+from . import _model_routing
 from .state import app_state
 
 router = APIRouter()
@@ -62,6 +63,10 @@ async def run_eval(
     req: EvalRequest,
     identity: Identity = Depends(require_identity),
 ) -> EvalResponse:
+    _model_routing.reject_unsupported_governed_workload(
+        identity=identity,
+        workload="eval.run",
+    )
     rubric = app_state.rubric_registry.get(req.rubric)
     if rubric is None:
         raise HTTPException(status_code=404, detail=f"unknown rubric: {req.rubric!r}")

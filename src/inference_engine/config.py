@@ -240,11 +240,14 @@ class Settings(BaseSettings):
     model_routing_policy_file: Path = Field(default=Path(".model_routing_policy.json"))
     model_routing_last_known_good_file: Path = Field(default=Path(".model_routing_policy.lkg.json"))
     model_routing_trust_store_file: Path = Field(default=Path(".model_routing_trust.json"))
+    model_routing_pricing_file: Path = Field(default=Path(".model_routing_pricing.json"))
     model_routing_expected_audience: str = Field(default="orchestra-model-plane")
     model_routing_expected_environment: str = Field(default="")
     model_routing_expected_org_id: str = Field(default="")
     model_routing_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
     model_routing_max_file_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
+    model_routing_input_token_reserve: int = Field(default=1_024, ge=0)
+    model_routing_rate_limit_max_buckets: int = Field(default=10_000, ge=1)
 
     # LLM-as-a-Judge default. Override per-request via EvalRequest.judge_model.
     default_judge_model: str = Field(default="llama3.2:3b")

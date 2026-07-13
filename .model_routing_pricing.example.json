@@ -1,0 +1,15 @@
+{
+  "pricingVersion": 1,
+  "models": [
+    {
+      "model": "qwen3:32b",
+      "inputCostMicrosPerMillionTokens": 0,
+      "outputCostMicrosPerMillionTokens": 0
+    },
+    {
+      "model": "llama3.3:70b:openrouter",
+      "inputCostMicrosPerMillionTokens": 100000,
+      "outputCostMicrosPerMillionTokens": 300000
+    }
+  ]
+}

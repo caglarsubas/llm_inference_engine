@@ -10,6 +10,7 @@ __pycache__/
 .model_routing_policy.json
 .model_routing_policy.lkg.json
 .model_routing_trust.json
+.model_routing_pricing.json
 .vllm_models.json
 .openrouter_models.json
 .DS_Store

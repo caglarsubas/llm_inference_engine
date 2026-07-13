@@ -12,6 +12,10 @@ from .auth import load_keys
 from .config import settings
 from .evals import load_policy
 from .model_routing import activate_model_routing_policy_from_settings
+from .model_routing_runtime import (
+    build_model_routing_runtime_state,
+    load_model_routing_pricing_catalog,
+)
 from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
 from .registry import get_openrouter_probe, get_probe, get_vllm_probe
@@ -86,6 +90,7 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
     ]
 
     routing_policy = app_state.model_routing_policy
+    routing_pricing = app_state.model_routing_pricing
     return {
         "version": __version__,
         "backend": app_state.backend_name,
@@ -117,6 +122,10 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
         ),
         "model_routing_policy_source": (
             routing_policy.source if routing_policy is not None else None
+        ),
+        "model_routing_request_enforcement": routing_policy is not None,
+        "model_routing_pricing_digest": (
+            routing_pricing.digest if routing_pricing is not None else None
         ),
         "startup_probe_duration_ms": round((time.perf_counter() - t0) * 1000, 2),
     }
@@ -172,7 +181,17 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     n_keys = load_keys()
     app_state.policy_registry = load_policy(settings.auto_eval_policies_file)
-    app_state.model_routing_policy = activate_model_routing_policy_from_settings()
+    routing_policy = activate_model_routing_policy_from_settings()
+    routing_pricing = load_model_routing_pricing_catalog(
+        settings.model_routing_pricing_file,
+        max_bytes=settings.model_routing_max_file_bytes,
+    )
+    app_state.model_routing_runtime = build_model_routing_runtime_state(
+        routing_policy,
+        routing_pricing,
+        auth_enabled=settings.auth_enabled,
+        expected_org_id=settings.model_routing_expected_org_id,
+    )
     log = get_logger("startup")
     app_state.mark_starting()
     startup_task = asyncio.create_task(
