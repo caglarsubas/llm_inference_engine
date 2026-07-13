@@ -8,6 +8,18 @@ from inference_engine.config import settings
 from inference_engine.scheduler import TenantScheduler
 
 
+class FakeObserver:
+    metrics_snapshot = {
+        "running": 1,
+        "attempts_total": 4,
+        "successes_total": 3,
+        "failures_total": 1,
+        "consecutive_failures": 0,
+        "pending": 0,
+        "last_success_unixtime": 1_789_000_000.0,
+    }
+
+
 @pytest.mark.asyncio
 async def test_metrics_include_scheduler_pressure(monkeypatch) -> None:
     monkeypatch.setattr(settings, "scheduler_enabled", True)
@@ -37,3 +49,16 @@ async def test_metrics_include_scheduler_pressure(monkeypatch) -> None:
         'inference_engine_scheduler_in_flight_by_resource{resource="llama_cpp:model"} 1'
         in body
     )
+
+
+@pytest.mark.asyncio
+async def test_metrics_include_model_plane_observer_delivery_state(monkeypatch) -> None:
+    monkeypatch.setattr(app_state, "model_plane_observer", FakeObserver())
+
+    body = await metrics()
+
+    assert "inference_engine_model_plane_observer_enabled 1" in body
+    assert "inference_engine_model_plane_observer_running 1" in body
+    assert "inference_engine_model_plane_observer_attempts_total 4" in body
+    assert "inference_engine_model_plane_observer_successes_total 3" in body
+    assert "inference_engine_model_plane_observer_failures_total 1" in body

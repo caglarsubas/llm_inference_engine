@@ -249,6 +249,32 @@ class Settings(BaseSettings):
     model_routing_input_token_reserve: int = Field(default=1_024, ge=0)
     model_routing_rate_limit_max_buckets: int = Field(default=10_000, ge=1)
 
+    # Asynchronous observed-state reporting to the Orchestra control plane.
+    # Off by default: standalone/observe-only deployments never make this
+    # control-plane call unless an operator explicitly configures it.
+    model_plane_observation_enabled: bool = Field(default=False)
+    model_plane_observation_endpoint: str = Field(default="")
+    model_plane_observation_api_key: str = Field(default="")
+    model_plane_observation_api_key_file: str = Field(default="")
+    model_plane_observation_deployment_id: str = Field(default="")
+    model_plane_observation_target_environment: str = Field(default="")
+    model_plane_observation_engine_instance_id: str = Field(default="")
+    model_plane_observation_interval_seconds: float = Field(
+        default=60.0,
+        ge=10.0,
+        le=86_400.0,
+    )
+    model_plane_observation_timeout_seconds: float = Field(
+        default=5.0,
+        ge=0.1,
+        le=30.0,
+    )
+    model_plane_observation_jitter_ratio: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=0.5,
+    )
+
     # LLM-as-a-Judge default. Override per-request via EvalRequest.judge_model.
     default_judge_model: str = Field(default="llama3.2:3b")
 

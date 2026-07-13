@@ -298,6 +298,17 @@ def _collect_registry_skips() -> list[UnavailableModel]:
     return out
 
 
+def collect_model_list() -> ModelList:
+    """Build the same payload returned by the authenticated models route."""
+    loadable, rejected = _partition_models()
+
+    available: list[ModelInfo] = [_to_info(d) for d in loadable]
+    unavailable = _unavailable_from_rejected(rejected)
+    _append_registry_skips(unavailable, available_ids={m.id for m in available})
+
+    return ModelList(data=available, unavailable=unavailable)
+
+
 @router.get("/v1/models", response_model=ModelList)
 async def list_models(_=Depends(require_identity)) -> ModelList:
     """Return models that are actually reachable end-to-end.
@@ -308,13 +319,7 @@ async def list_models(_=Depends(require_identity)) -> ModelList:
     Anything every source rejects shows up in ``unavailable`` with the
     first-source reason — typically the llama.cpp probe failure.
     """
-    loadable, rejected = _partition_models()
-
-    available: list[ModelInfo] = [_to_info(d) for d in loadable]
-    unavailable = _unavailable_from_rejected(rejected)
-    _append_registry_skips(unavailable, available_ids={m.id for m in available})
-
-    return ModelList(data=available, unavailable=unavailable)
+    return collect_model_list()
 
 
 @router.get("/v1/models.data", response_model=ModelCatalog)
