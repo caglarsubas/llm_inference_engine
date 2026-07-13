@@ -227,6 +227,8 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | GET    | `/v1/evals/rubrics`           | List built-in + registered rubrics                                         |
 | GET    | `/v1/evals/policy`            | Active server-side auto-eval policy entries (Prometa-driven)               |
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
+| GET    | `/v1/admin/model-routing-policy` | Payload-free activated signed-policy identity and LKG status             |
+| POST   | `/v1/admin/model-routing-policy:reload` | Verify candidate/LKG and atomically activate on success             |
 | POST   | `/v1/evals/run`               | LLM-as-a-Judge: candidate + rubric → structured verdict                    |
 | POST   | `/v1/chat/completions`        | (extension) `auto_eval: {rubrics, mode}` runs evals inline or in background |
 
@@ -321,6 +323,7 @@ src/inference_engine/
 ├── observability.py     # span() bridges structlog + OTel; Span.bind() mutates both
 ├── otel.py              # OTel SDK setup, NoOp span shim, FastAPI auto-instrumentation
 ├── auth.py              # bearer-token auth, Identity, key index, FastAPI dependency
+├── model_routing.py     # signed-policy trust, verification, atomic LKG activation
 ├── cancellation.py      # Cancellation flag + watch_disconnect() watchdog
 ├── schemas.py           # OpenAI-compatible request/response models
 ├── evals/
@@ -336,7 +339,7 @@ src/inference_engine/
 │   ├── embeddings.py    # /v1/embeddings (OpenAI-compatible; llama.cpp only, MLX 501)
 │   ├── rerank.py        # /v1/rerank — Cohere/Jina-shaped relevance via embedding cosine
 │   ├── evals.py         # /v1/evals/rubrics + /v1/evals/run
-│   ├── admin.py         # /v1/admin/policies:reload (hot-reload of auto-eval policy)
+│   ├── admin.py         # auto-eval + signed model-routing reload/status endpoints
 │   ├── _scheduling.py   # shared API helpers for scheduler admission/span attrs
 │   ├── _auto_eval.py    # blocking + background batch helpers for chat-attached eval
 │   ├── _batcher.py      # EmbedCoalescer — dynamic batching for /v1/embeddings
@@ -395,6 +398,8 @@ tests/
 ├── test_completions.py         # /v1/completions raw-prompt path + multi-prompt + spans
 ├── test_pairwise.py            # pairwise rubric: score mapping, runner enforcement, route + spans
 ├── test_admin_policies.py      # POST /v1/admin/policies:reload — atomic swap + auth gate + bad-file rejection
+├── test_model_routing_policy.py # cross-language signature, trust, revocation, lease, and LKG
+├── test_admin_model_routing_policy.py # payload-free status + atomic reload/auth behavior
 ├── test_streaming_tool_audit.py # ToolCallReassembler unit tests + end-of-stream gen_ai.tool_call events
 ├── test_tool_timing.py          # ToolCallTimingStore (TTL/LRU) + tool.execution_ms cross-event correlation
 ├── test_per_rubric_judges.py    # AutoEvalSpec.judge_models override + resolver precedence + dispatch
@@ -453,6 +458,14 @@ All knobs live in `.env` (see `.env.example`):
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
 | `AUTH_ENABLED`           | `false`                                                                                  | Bearer-token gate on `/v1/models` and `/v1/chat/completions` |
 | `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON array of `{"key": "...", "tenant": "..."}` records  |
+| `MODEL_ROUTING_POLICY_REQUIRED` | `false`                                                                         | Fail startup when no signed candidate or valid LKG can activate            |
+| `MODEL_ROUTING_POLICY_FILE` | `.model_routing_policy.json`                                                         | Operator-mounted signed desired-state candidate                            |
+| `MODEL_ROUTING_LAST_KNOWN_GOOD_FILE` | `.model_routing_policy.lkg.json`                                           | Atomic exact-envelope LKG persisted after successful verification          |
+| `MODEL_ROUTING_TRUST_STORE_FILE` | `.model_routing_trust.json`                                                   | Purpose-specific issuers/keys, org/env constraints, and revocations        |
+| `MODEL_ROUTING_EXPECTED_AUDIENCE` | `orchestra-model-plane`                                                    | Required signed audience                                                    |
+| `MODEL_ROUTING_EXPECTED_ENVIRONMENT` | empty                                                                        | Optional local environment binding                                          |
+| `MODEL_ROUTING_EXPECTED_ORG_ID` | empty                                                                             | Optional single-org deployment binding                                      |
+| `MODEL_ROUTING_CLOCK_SKEW_SECONDS` | `30`                                                                           | Explicit verification skew, bounded to 300 seconds                          |
 | `DEFAULT_JUDGE_MODEL`    | `llama3.2:3b`                                                                            | Used by `/v1/evals/run` when `judge_model` is not set    |
 | `AUTO_EVAL_POLICIES_FILE`| `.auto_eval_policies.json`                                                               | JSON array of `{name, match, auto_eval}` rules; missing = no policy |
 | `TOOL_AUDIT_ENABLED`     | `true`                                                                                   | Emit `gen_ai.tool_*` span events on every chat completion           |
@@ -1499,6 +1512,46 @@ Judge models occasionally wrap their structured output in commentary or fences. 
 * **`failed`** — judge refused or returned malformed output; we surface `score=0.0` so aggregations don't silently inherit garbage.
 
 The `parse_status` is always on the response and on the span, so eval failures are first-class signals rather than hidden behind exceptions.
+
+## Signed model-routing desired state
+
+The first Orchestra model-plane increment accepts a purpose-separated Ed25519
+routing-policy envelope produced by the Prometa control plane. Verification is
+entirely local. The engine does not call Prometa during startup, reload, or an
+inference request.
+
+The verifier requires exact canonical payload bytes, strict schema/version,
+issuer and key trust, organization/environment constraints, validity and
+offline-lease windows, and non-revoked key and policy JTIs. Files are bounded
+before parsing. A verified candidate is persisted with mode `0600` through a
+same-directory atomic replace and becomes last known good.
+
+Startup and reload follow this order:
+
+1. Verify the mounted candidate and activate it when valid.
+2. If the candidate is absent or invalid, verify last known good against the
+   current trust store and current time.
+3. Reject last known good after revocation, trust removal, binding mismatch,
+   expiry, or offline-lease expiry.
+4. Fail closed when `MODEL_ROUTING_POLICY_REQUIRED=true` and neither source is
+   valid. A present but invalid candidate never silently disables governance,
+   even when required mode is false.
+
+Use `.model_routing_trust.example.json` as the trust-store shape. Never reuse
+bundle or promotion keys for model routing. The payload-free operator endpoints
+show active policy identity and reload atomically:
+
+```bash
+curl -H "Authorization: Bearer $ENGINE_ADMIN_KEY" \
+  http://127.0.0.1:8080/v1/admin/model-routing-policy
+
+curl -X POST -H "Authorization: Bearer $ENGINE_ADMIN_KEY" \
+  http://127.0.0.1:8080/v1/admin/model-routing-policy:reload
+```
+
+This increment verifies and activates desired state. Request-time alias,
+fallback, token/rate/cost enforcement and policy decision span attributes are
+the next increment; they are not implied by an active signature alone.
 
 ## Auth + tenant attribution
 
