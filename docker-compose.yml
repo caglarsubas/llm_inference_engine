@@ -110,6 +110,15 @@ services:
       HF_VLM_MODELS_DIR: /models/hf-vlm
       AUTH_KEYS_FILE: /config/auth_keys.json
       AUTO_EVAL_POLICIES_FILE: /config/auto_eval_policies.json
+      MODEL_ROUTING_POLICY_REQUIRED: ${MODEL_ROUTING_POLICY_REQUIRED:-false}
+      MODEL_ROUTING_POLICY_FILE: /config/model_routing_policy.json
+      MODEL_ROUTING_LAST_KNOWN_GOOD_FILE: /state/model_routing_policy.lkg.json
+      MODEL_ROUTING_TRUST_STORE_FILE: /config/model_routing_trust.json
+      MODEL_ROUTING_EXPECTED_AUDIENCE: ${MODEL_ROUTING_EXPECTED_AUDIENCE:-orchestra-model-plane}
+      MODEL_ROUTING_EXPECTED_ENVIRONMENT: ${MODEL_ROUTING_EXPECTED_ENVIRONMENT:-}
+      MODEL_ROUTING_EXPECTED_ORG_ID: ${MODEL_ROUTING_EXPECTED_ORG_ID:-}
+      MODEL_ROUTING_CLOCK_SKEW_SECONDS: ${MODEL_ROUTING_CLOCK_SKEW_SECONDS:-30}
+      MODEL_ROUTING_MAX_FILE_BYTES: ${MODEL_ROUTING_MAX_FILE_BYTES:-1048576}
       MEMORY_BUDGET_GB: ${MEMORY_BUDGET_GB:-60.0}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
@@ -140,9 +149,10 @@ services:
       - "${OLLAMA_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/ollama}:/models/ollama:ro"
       - "${MLX_MODELS_HOST_DIR:-./.cache/mlx}:/models/mlx:ro"
       - "${HF_VLM_MODELS_HOST_DIR:-${HOME}/.cache/inference_engine/hf-vlm}:/models/hf-vlm:ro"
-      # Config (auth keys + auto-eval policy) — operator-provided. Empty by
-      # default; if you set AUTH_ENABLED=true you must mount a real keys file.
+      # Config (auth keys, auto-eval policy, signed routing candidate/trust) is
+      # operator-provided and read-only. Last-known-good uses separate state.
       - "${CONFIG_HOST_DIR:-./docker/config}:/config:ro"
+      - "model-routing-state:/state"
     deploy:
       # Swarm-mode replica count — also influences `up --scale` UX. For
       # plain compose, run `make compose-up-scale REPLICAS=N`.
@@ -183,3 +193,6 @@ services:
       timeout: 3s
       retries: 3
     restart: unless-stopped
+
+volumes:
+  model-routing-state:

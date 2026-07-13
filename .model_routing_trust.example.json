@@ -1,0 +1,14 @@
+{
+  "trustVersion": 1,
+  "entries": [
+    {
+      "issuer": "https://orchestra.example.com/model-routing",
+      "keyId": "orchestra-model-routing-2026-07",
+      "publicKeySpkiDerBase64": "REPLACE_WITH_BASE64_SPKI_DER",
+      "allowedOrgIds": ["org-example"],
+      "allowedEnvironments": ["staging"]
+    }
+  ],
+  "revokedKeyIds": [],
+  "revokedJtis": []
+}

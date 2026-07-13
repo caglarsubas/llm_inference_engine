@@ -1,0 +1,31 @@
+{
+  "fixtureVersion": 1,
+  "description": "Orchestra model routing policy v1 cross-language conformance vector",
+  "trust": {
+    "issuer": "https://orchestra.example.test/model-routing",
+    "keyId": "routing-test-key-v1",
+    "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAJlV634gBkK2hiCgRUYXlIdfdgFV21BKnPu50LA4oxrY=",
+    "allowedOrgIds": ["org-golden"],
+    "allowedEnvironments": ["staging"]
+  },
+  "verification": {
+    "now": "2026-07-13T00:10:00.000Z",
+    "expectedAudience": "orchestra-model-plane",
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "expectedReleaseId": "release-golden-model-v1",
+    "expectedDeploymentId": "model-plane-golden-v1",
+    "expectedDigest": "sha256:b320a77f8c2a14916c0776a051eca6be614fbdb52ac6854783e651680c6973be"
+  },
+  "policy": {
+    "policyId": "routing-golden-v1",
+    "policyVersion": 1,
+    "algorithm": "ed25519",
+    "canonicalization": "signed-payload-json-v1",
+    "issuer": "https://orchestra.example.test/model-routing",
+    "keyId": "routing-test-key-v1",
+    "signedPayload": "{\"artifactType\":\"orchestra.model-routing-policy\",\"audience\":\"orchestra-model-plane\",\"deploymentId\":\"model-plane-golden-v1\",\"expiresAt\":\"2026-07-13T01:00:00.000Z\",\"issuedAt\":\"2026-07-13T00:00:00.000Z\",\"issuer\":\"https://orchestra.example.test/model-routing\",\"jti\":\"routing-golden-v1-r1\",\"keyId\":\"routing-test-key-v1\",\"notBefore\":\"2026-07-13T00:01:00.000Z\",\"offlineLeaseExpiresAt\":\"2026-07-13T00:30:00.000Z\",\"orgId\":\"org-golden\",\"policyId\":\"routing-golden-v1\",\"policyVersion\":1,\"releaseId\":\"release-golden-model-v1\",\"revision\":1,\"revocationRef\":\"urn:prometa:model-routing-policy:routing-golden-v1:r1\",\"routes\":[{\"fallbackModels\":[\"llama3.3:70b:openrouter\"],\"limits\":{\"maxCostMicrosPerRequest\":250000,\"maxInputTokens\":32768,\"maxOutputTokens\":4096,\"maxRequestsPerMinute\":120},\"primaryModel\":\"qwen3:32b\",\"requestedModel\":\"reasoning\",\"routeId\":\"reasoning\"},{\"fallbackModels\":[],\"limits\":{\"maxCostMicrosPerRequest\":null,\"maxInputTokens\":null,\"maxOutputTokens\":1024,\"maxRequestsPerMinute\":null},\"primaryModel\":\"llama3.2:3b\",\"requestedModel\":\"*\",\"routeId\":\"default\"}],\"subject\":\"model-routing-policy:routing-golden-v1\",\"targetEnvironment\":\"staging\"}",
+    "signature": "p2vWz1IjNhVvhYnrPDC1SEwMrM/BgljrJftpaAt8hGLAiat2z0V9nNwNyyx1JgRxy9MSaiK/qj0fwOkG24bHDw==",
+    "signed": true
+  }
+}

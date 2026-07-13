@@ -15,6 +15,7 @@ from ..adapters.llama_cpp import LlamaCppAdapter
 from ..config import settings
 from ..evals import EvalRunner, PolicyRegistry, RubricRegistry
 from ..manager import ModelManager
+from ..model_routing import ActivatedModelRoutingPolicy
 from ..observability import get_logger
 from ..registry import (
     CompositeRegistry,
@@ -128,14 +129,17 @@ class AppState:
         # Policy is reloaded from disk in main.py's lifespan so a startup
         # failure surfaces with a clear log line rather than at first request.
         self.policy_registry: PolicyRegistry = PolicyRegistry([])
+        self.model_routing_policy: ActivatedModelRoutingPolicy | None = None
 
         # Dynamic-batching coalescer for /v1/embeddings. Lazy: queues are
         # created per-adapter on first submit, automatically replaced when
         # ModelManager reloads an adapter (we key by id(adapter)).
         from ._batcher import EmbedCoalescer  # noqa: PLC0415 — avoid early import cycle
+
         self.embed_coalescer = EmbedCoalescer()
 
         from ..scheduler import TenantScheduler  # noqa: PLC0415 — avoid eager settings cycles
+
         self.scheduler = TenantScheduler()
 
         # TestClient route tests often bypass ASGI lifespan, so the default

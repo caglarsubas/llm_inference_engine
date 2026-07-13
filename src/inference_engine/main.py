@@ -11,6 +11,7 @@ from .api.state import app_state
 from .auth import load_keys
 from .config import settings
 from .evals import load_policy
+from .model_routing import activate_model_routing_policy_from_settings
 from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
 from .registry import get_openrouter_probe, get_probe, get_vllm_probe
@@ -46,9 +47,7 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
 
     loadable, rejected = app_state.registry.list_loadable(_accept)
 
-    available_summary = [
-        {"model": d.qualified_name, "format": d.format} for d in loadable
-    ]
+    available_summary = [{"model": d.qualified_name, "format": d.format} for d in loadable]
     unavailable = []
     for desc in rejected:
         if desc.format == "gguf":
@@ -79,15 +78,14 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
                 }
             )
         else:
-            unavailable.append(
-                {"model": desc.qualified_name, "reason": "rejected_by_accept"}
-            )
+            unavailable.append({"model": desc.qualified_name, "reason": "rejected_by_accept"})
     skipped = [
         {"model": s.qualified_name, "reason": s.reason}
         for source in getattr(app_state.registry, "_sources", ())
         for s in (getattr(source, "list_skipped", lambda: [])() or [])
     ]
 
+    routing_policy = app_state.model_routing_policy
     return {
         "version": __version__,
         "backend": app_state.backend_name,
@@ -106,6 +104,20 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
         "auth_enabled": settings.auth_enabled,
         "n_keys": n_keys,
         "n_policies": len(app_state.policy_registry),
+        "model_routing_policy_required": settings.model_routing_policy_required,
+        "model_routing_policy_active": routing_policy is not None,
+        "model_routing_policy_id": (
+            routing_policy.policy_id if routing_policy is not None else None
+        ),
+        "model_routing_policy_revision": (
+            routing_policy.revision if routing_policy is not None else None
+        ),
+        "model_routing_policy_digest": (
+            routing_policy.digest if routing_policy is not None else None
+        ),
+        "model_routing_policy_source": (
+            routing_policy.source if routing_policy is not None else None
+        ),
         "startup_probe_duration_ms": round((time.perf_counter() - t0) * 1000, 2),
     }
 
@@ -160,6 +172,7 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     n_keys = load_keys()
     app_state.policy_registry = load_policy(settings.auto_eval_policies_file)
+    app_state.model_routing_policy = activate_model_routing_policy_from_settings()
     log = get_logger("startup")
     app_state.mark_starting()
     startup_task = asyncio.create_task(
