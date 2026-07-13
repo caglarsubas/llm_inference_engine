@@ -13,6 +13,9 @@ jobs:
     name: lint + tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      OLLAMA_MODELS_DIR: ${{ runner.temp }}/models/ollama
+      MLX_MODELS_DIR: ${{ runner.temp }}/models/mlx
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +34,9 @@ jobs:
 
       - name: Install locked dependencies
         run: uv sync --frozen --extra dev --extra otel --python ${{ matrix.python-version }}
+
+      - name: Provision empty model stores
+        run: mkdir -p "$OLLAMA_MODELS_DIR/manifests" "$OLLAMA_MODELS_DIR/blobs" "$MLX_MODELS_DIR"
 
       - name: Lint
         run: uv run ruff check src tests
