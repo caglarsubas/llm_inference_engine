@@ -11,6 +11,10 @@ from .api.state import app_state
 from .auth import load_keys
 from .config import settings
 from .evals import load_policy
+from .model_plane_observer import (
+    ModelPlaneObservationReporter,
+    load_model_plane_observation_config,
+)
 from .model_routing import activate_model_routing_policy_from_settings
 from .model_routing_runtime import (
     build_model_routing_runtime_state,
@@ -149,6 +153,22 @@ async def _finish_startup(log, n_keys: int) -> None:
     log.info("engine_ready", **summary)
 
 
+async def _run_observer_after_startup(
+    startup_task: asyncio.Task,
+    observer: ModelPlaneObservationReporter,
+) -> None:
+    try:
+        await asyncio.shield(startup_task)
+        await observer.run()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - observer cannot take inference down
+        get_logger("model_plane.observer").error(
+            "model_plane_observer_stopped",
+            error_type=type(exc).__name__,
+        )
+
+
 def _readiness_error_response() -> JSONResponse:
     readiness = app_state.readiness()
     error_type = "engine_starting"
@@ -192,21 +212,48 @@ async def lifespan(app: FastAPI):
         auth_enabled=settings.auth_enabled,
         expected_org_id=settings.model_routing_expected_org_id,
     )
+    observer_config = load_model_plane_observation_config(settings)
+    observer = (
+        ModelPlaneObservationReporter(
+            observer_config,
+            app_state,
+            models.collect_model_list,
+        )
+        if observer_config is not None
+        else None
+    )
+    app_state.model_plane_observer = observer
     log = get_logger("startup")
     app_state.mark_starting()
     startup_task = asyncio.create_task(
         _finish_startup(log, n_keys),
         name="inference-engine-startup-probes",
     )
+    observer_task = (
+        asyncio.create_task(
+            _run_observer_after_startup(startup_task, observer),
+            name="inference-engine-model-plane-observer",
+        )
+        if observer is not None
+        else None
+    )
     try:
         yield
     finally:
+        if observer_task is not None:
+            if not observer_task.done():
+                observer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await observer_task
         if not startup_task.done():
             startup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await startup_task
-        await app_state.manager.shutdown()
-        shutdown_tracing()
+        try:
+            await app_state.manager.shutdown()
+        finally:
+            app_state.model_plane_observer = None
+            shutdown_tracing()
 
 
 app = FastAPI(

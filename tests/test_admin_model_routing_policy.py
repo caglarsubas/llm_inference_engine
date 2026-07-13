@@ -206,9 +206,15 @@ def test_model_routing_admin_routes_require_bearer_when_auth_enabled(
     client = TestClient(app)
 
     assert client.get("/v1/admin/model-routing-policy").status_code == 401
+    assert client.get("/v1/admin/model-plane-observer").status_code == 401
     response = client.get(
         "/v1/admin/model-routing-policy",
         headers={"Authorization": "Bearer sk-model-admin"},
     )
     assert response.status_code == 200
     assert response.json()["active"] is True
+    observer_response = client.get(
+        "/v1/admin/model-plane-observer",
+        headers={"Authorization": "Bearer sk-model-admin"},
+    )
+    assert observer_response.status_code == 200

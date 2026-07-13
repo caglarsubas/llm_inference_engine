@@ -26,10 +26,11 @@ from ..model_routing import (
 )
 from ..model_routing_runtime import (
     ModelRoutingRuntimeConfigError,
-    ModelRoutingRuntimeState,
     build_model_routing_runtime_state,
     load_model_routing_pricing_catalog,
 )
+from ..model_routing_status import ModelRoutingPolicyStatus, build_model_routing_status
+from ..model_plane_observer import ModelPlaneObserverStatus
 from ..observability import get_logger, span
 from .state import app_state
 
@@ -42,59 +43,6 @@ class PolicyReloadResponse(BaseModel):
     reloaded_at: int
     policies_loaded: int
     source: str
-
-
-class ModelRoutingPolicyStatusResponse(BaseModel):
-    object: str = "model_routing_policy.status"
-    active: bool
-    policy_id: str | None = None
-    revision: int | None = None
-    digest: str | None = None
-    source: str | None = None
-    org_id: str | None = None
-    environment: str | None = None
-    release_id: str | None = None
-    deployment_id: str | None = None
-    offline_lease_expires_at: str | None = None
-    candidate_error_code: str | None = None
-    request_time_enforcement: bool = False
-    route_count: int = 0
-    rate_limit_scope: str | None = None
-    pricing_catalog_digest: str | None = None
-    pricing_model_count: int = 0
-    org_binding_mode: str | None = None
-
-
-def _model_routing_status(
-    state: ModelRoutingRuntimeState,
-) -> ModelRoutingPolicyStatusResponse:
-    active = state.policy
-    if active is None:
-        return ModelRoutingPolicyStatusResponse(
-            active=False,
-            pricing_catalog_digest=(state.pricing.digest if state.pricing else None),
-            pricing_model_count=(len(state.pricing.by_model) if state.pricing else 0),
-        )
-    claims = active.verified.claims
-    return ModelRoutingPolicyStatusResponse(
-        active=True,
-        policy_id=claims.policy_id,
-        revision=claims.revision,
-        digest=active.digest,
-        source=active.source,
-        org_id=claims.org_id,
-        environment=claims.target_environment,
-        release_id=claims.release_id,
-        deployment_id=claims.deployment_id,
-        offline_lease_expires_at=claims.offline_lease_expires_at,
-        candidate_error_code=active.candidate_error_code,
-        request_time_enforcement=True,
-        route_count=len(claims.routes),
-        rate_limit_scope="process-replica",
-        pricing_catalog_digest=(state.pricing.digest if state.pricing else None),
-        pricing_model_count=(len(state.pricing.by_model) if state.pricing else 0),
-        org_binding_mode=("auth-key-org" if settings.auth_enabled else "deployment-org"),
-    )
 
 
 @router.post("/v1/admin/policies:reload", response_model=PolicyReloadResponse)
@@ -153,22 +101,39 @@ async def reload_policies(identity: Identity = Depends(require_identity)) -> Pol
 
 @router.get(
     "/v1/admin/model-routing-policy",
-    response_model=ModelRoutingPolicyStatusResponse,
+    response_model=ModelRoutingPolicyStatus,
 )
 async def model_routing_policy_status(
     identity: Identity = Depends(require_identity),
-) -> ModelRoutingPolicyStatusResponse:
+) -> ModelRoutingPolicyStatus:
     del identity
-    return _model_routing_status(app_state.model_routing_runtime)
+    return build_model_routing_status(
+        app_state.model_routing_runtime,
+        auth_enabled=settings.auth_enabled,
+    )
+
+
+@router.get(
+    "/v1/admin/model-plane-observer",
+    response_model=ModelPlaneObserverStatus,
+)
+async def model_plane_observer_status(
+    identity: Identity = Depends(require_identity),
+) -> ModelPlaneObserverStatus:
+    del identity
+    observer = app_state.model_plane_observer
+    if observer is None:
+        return ModelPlaneObserverStatus(enabled=False)
+    return observer.status()
 
 
 @router.post(
     "/v1/admin/model-routing-policy:reload",
-    response_model=ModelRoutingPolicyStatusResponse,
+    response_model=ModelRoutingPolicyStatus,
 )
 async def reload_model_routing_policy(
     identity: Identity = Depends(require_identity),
-) -> ModelRoutingPolicyStatusResponse:
+) -> ModelRoutingPolicyStatus:
     """Verify and atomically activate candidate or last-known-good policy."""
 
     previous_state = app_state.model_routing_runtime
@@ -258,4 +223,7 @@ async def reload_model_routing_policy(
             }
         )
 
-    return _model_routing_status(next_state)
+    return build_model_routing_status(
+        next_state,
+        auth_enabled=settings.auth_enabled,
+    )

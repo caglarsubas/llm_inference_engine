@@ -10,6 +10,10 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 from threading import RLock
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..model_plane_observer import ModelPlaneObservationReporter
 
 from ..adapters import InferenceAdapter
 from ..adapters.llama_cpp import LlamaCppAdapter
@@ -139,6 +143,7 @@ class AppState:
         self.model_routing_rate_limiter = ModelRoutingRateLimiter(
             max_buckets=settings.model_routing_rate_limit_max_buckets
         )
+        self.model_plane_observer: ModelPlaneObservationReporter | None = None
 
         # Dynamic-batching coalescer for /v1/embeddings. Lazy: queues are
         # created per-adapter on first submit, automatically replaced when

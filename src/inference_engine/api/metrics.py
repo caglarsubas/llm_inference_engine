@@ -29,6 +29,35 @@ async def metrics() -> str:
         f'inference_engine_info{{version="{__version__}",backend="{app_state.backend_name}"}} 1'
     )
 
+    observer = app_state.model_plane_observer
+    observer_metrics = observer.metrics_snapshot if observer is not None else {}
+    lines.append(
+        "# HELP inference_engine_model_plane_observer_enabled "
+        "Asynchronous model-plane observer enabled flag."
+    )
+    lines.append("# TYPE inference_engine_model_plane_observer_enabled gauge")
+    lines.append(
+        f"inference_engine_model_plane_observer_enabled {1 if observer is not None else 0}"
+    )
+    for metric, metric_type, help_text in (
+        ("running", "gauge", "Model-plane observer background loop running flag."),
+        ("attempts_total", "counter", "Model-plane observation cycles attempted."),
+        ("successes_total", "counter", "Model-plane observations accepted."),
+        ("failures_total", "counter", "Model-plane observation cycles failed."),
+        ("consecutive_failures", "gauge", "Consecutive model-plane observation failures."),
+        ("pending", "gauge", "Observation retained for idempotent retry."),
+        (
+            "last_success_unixtime",
+            "gauge",
+            "Unix timestamp of the last accepted model-plane observation.",
+        ),
+    ):
+        name = f"inference_engine_model_plane_observer_{metric}"
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {metric_type}")
+        value = observer_metrics.get(metric)
+        lines.append(f"{name} {value if value is not None else 0}")
+
     lines.append("# HELP inference_engine_models_loaded Number of models currently loaded.")
     lines.append("# TYPE inference_engine_models_loaded gauge")
     lines.append(f"inference_engine_models_loaded {len(app_state.manager.loaded_models())}")

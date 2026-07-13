@@ -217,7 +217,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 |--------|-------------------------------|----------------------------------------------------------------------------|
 | GET    | `/v1/health`                  | Liveness + every currently-loaded model + budget usage                     |
 | GET    | `/v1/ready`                   | Readiness probe; returns 503 + `Retry-After` while startup probes run      |
-| GET    | `/v1/metrics`                 | Prometheus-format scrape: loaded count, loaded bytes, budget, total models |
+| GET    | `/v1/metrics`                 | Prometheus scrape for model, scheduler, cache, and observer health         |
 | GET    | `/v1/models`                  | All models discoverable in the unified registry                            |
 | GET    | `/v1/models/{model:tag}`      | Single model details (size, blob path, backend)                            |
 | POST   | `/v1/chat/completions`        | Blocking + SSE streaming (`stream: true`)                                  |
@@ -229,6 +229,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
 | GET    | `/v1/admin/model-routing-policy` | Payload-free activated signed-policy identity and LKG status             |
 | POST   | `/v1/admin/model-routing-policy:reload` | Verify candidate/LKG and atomically activate on success             |
+| GET    | `/v1/admin/model-plane-observer` | Payload-free asynchronous reporter delivery status                    |
 | POST   | `/v1/evals/run`               | LLM-as-a-Judge: candidate + rubric → structured verdict                    |
 | POST   | `/v1/chat/completions`        | (extension) `auto_eval: {rubrics, mode}` runs evals inline or in background |
 
@@ -472,6 +473,16 @@ All knobs live in `.env` (see `.env.example`):
 | `MODEL_ROUTING_CLOCK_SKEW_SECONDS` | `30`                                                                           | Explicit verification skew, bounded to 300 seconds                          |
 | `MODEL_ROUTING_INPUT_TOKEN_RESERVE` | `1024`                                                                        | Conservative reserve for model-side chat templates during pre-dispatch bounds |
 | `MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS` | `10000`                                                                     | Fail-closed cap for process-local policy RPM buckets                        |
+| `MODEL_PLANE_OBSERVATION_ENABLED` | `false`                                                                         | Enable asynchronous payload-free observed-state reporting                   |
+| `MODEL_PLANE_OBSERVATION_ENDPOINT` | empty                                                                           | Exact HTTPS Orchestra `/api/model-routing-observations` URL                  |
+| `MODEL_PLANE_OBSERVATION_API_KEY` | empty                                                                            | Direct `model-plane:observe` key; prefer the rotatable file source           |
+| `MODEL_PLANE_OBSERVATION_API_KEY_FILE` | empty                                                                       | Mounted key file re-read before every dispatch                              |
+| `MODEL_PLANE_OBSERVATION_DEPLOYMENT_ID` | empty                                                                      | Deployment identity; must match an active signed routing policy              |
+| `MODEL_PLANE_OBSERVATION_TARGET_ENVIRONMENT` | empty                                                                 | One of `dev`, `test`, `staging`, or `prod`; must match active policy         |
+| `MODEL_PLANE_OBSERVATION_ENGINE_INSTANCE_ID` | empty                                                                    | Stable instance identity, normally the Kubernetes pod name                  |
+| `MODEL_PLANE_OBSERVATION_INTERVAL_SECONDS` | `60`                                                                        | Report cadence, bounded to 10 seconds through 24 hours                       |
+| `MODEL_PLANE_OBSERVATION_TIMEOUT_SECONDS` | `5`                                                                          | Per-dispatch timeout, bounded to 100 ms through 30 seconds                   |
+| `MODEL_PLANE_OBSERVATION_JITTER_RATIO` | `0.1`                                                                          | Symmetric cadence jitter, from 0 through 0.5                                 |
 | `DEFAULT_JUDGE_MODEL`    | `llama3.2:3b`                                                                            | Used by `/v1/evals/run` when `judge_model` is not set    |
 | `AUTO_EVAL_POLICIES_FILE`| `.auto_eval_policies.json`                                                               | JSON array of `{name, match, auto_eval}` rules; missing = no policy |
 | `TOOL_AUDIT_ENABLED`     | `true`                                                                                   | Emit `gen_ai.tool_*` span events on every chat completion           |
@@ -1589,9 +1600,37 @@ Enforcement currently covers `/v1/chat/completions` and `/v1/completions`.
 While a policy is active, chat auto-eval plus `/v1/embeddings`, `/v1/rerank`,
 and `/v1/evals/run` return a payload-free
 `model_routing_workload_not_integrated` denial instead of reaching
-`ModelManager` outside governance. Desired/observed platform APIs, those
-workload integrations, multi-replica rate coordination, Helm packaging, and
-SLO certification remain open Phase 1 work.
+`ModelManager` outside governance. Those workload integrations,
+multi-replica rate coordination, Helm packaging, and SLO certification remain
+open Phase 1 work.
+
+### Asynchronous model-plane observations
+
+The engine can continuously report observed state to Orchestra without making
+the control plane a request-time dependency. The reporter is disabled by
+default. When enabled, startup validates the exact HTTPS endpoint, deployment
+and environment scope, instance identity, and one API-key source. Plain HTTP is
+accepted only for loopback integration tests.
+
+Each cycle computes the sorted, deduplicated `/v1/models` ID digest locally and
+sends only that digest, available/unavailable counts, readiness, engine
+version, and the exact payload-free routing-policy status. Model names, routes,
+prompts, responses, credentials, and inference payloads never leave through
+this path. An active policy must match the configured deployment and
+environment or the cycle fails closed locally.
+
+Use a platform API key scoped to `model-plane:observe`. A mounted key file is
+re-read before every request, which permits rotation without engine restart.
+Transient transport, authentication, throttling, and server failures retain
+the same observation ID for idempotent retry. Permanent contract rejection
+drops that payload so the next cycle can report corrected state. Redirects are
+never followed.
+
+Reporting begins after startup model probes and runs on a separate background
+task. A platform outage cannot change engine readiness, routing, or inference;
+the last-known-good policy continues to govern locally. Inspect delivery state
+at `/v1/admin/model-plane-observer` and through the
+`inference_engine_model_plane_observer_*` metrics on `/v1/metrics`.
 
 ## Auth + tenant attribution
 
