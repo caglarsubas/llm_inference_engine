@@ -32,6 +32,7 @@ from ..schemas import (
     EmbeddingResponse,
     Usage,
 )
+from . import _model_routing
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -64,6 +65,10 @@ async def create_embeddings(
     req: EmbeddingRequest,
     identity: Identity = Depends(require_identity),
 ) -> EmbeddingResponse:
+    _model_routing.reject_unsupported_governed_workload(
+        identity=identity,
+        workload="embeddings.run",
+    )
     inputs = [req.input] if isinstance(req.input, str) else list(req.input)
     if not inputs:
         raise HTTPException(status_code=400, detail="input must contain at least one string")
@@ -117,10 +122,7 @@ async def create_embeddings(
         await app_state.scheduler.release(lease)
 
     return EmbeddingResponse(
-        data=[
-            EmbeddingObject(index=i, embedding=vec)
-            for i, vec in enumerate(outcome.embeddings)
-        ],
+        data=[EmbeddingObject(index=i, embedding=vec) for i, vec in enumerate(outcome.embeddings)],
         model=model_name,
         request_key_source=_request_key_source(adapter),
         usage=Usage(

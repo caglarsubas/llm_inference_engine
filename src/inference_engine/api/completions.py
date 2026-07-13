@@ -28,7 +28,6 @@ from ..adapters import (
     UpstreamGenerationError,
 )
 from ..auth import Identity, require_identity
-from ..manager import ModelNotFoundError
 from ..observability import span
 from ..schemas import (
     CompletionChoice,
@@ -36,7 +35,7 @@ from ..schemas import (
     CompletionResponse,
     Usage,
 )
-from . import _fallback
+from . import _fallback, _model_routing
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -44,7 +43,10 @@ router = APIRouter()
 
 
 def _identity_attrs(identity: Identity) -> dict:
-    return {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    attrs = {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    if identity.org_id is not None:
+        attrs["prometa.org_id"] = identity.org_id
+    return attrs
 
 
 def _request_key_source(adapter: InferenceAdapter) -> str:
@@ -53,14 +55,6 @@ def _request_key_source(adapter: InferenceAdapter) -> str:
 
 def _request_key_attrs(adapter: InferenceAdapter) -> dict:
     return {"llm.request.key_source": _request_key_source(adapter)}
-
-
-async def _resolve(model_id: str) -> tuple[InferenceAdapter, str]:
-    try:
-        adapter, desc = await app_state.manager.get(model_id)
-    except ModelNotFoundError:
-        raise HTTPException(status_code=404, detail=f"model not found: {model_id!r}") from None
-    return adapter, desc.qualified_name
 
 
 def _params(req: CompletionRequest) -> GenerationParams:
@@ -96,54 +90,57 @@ async def create_completion(
     if not prompts:
         raise HTTPException(status_code=400, detail="prompt must contain at least one string")
 
-    adapter, model_name = await _resolve(req.model)
     params = _params(req)
+    decision = _model_routing.enforce_generation_request(
+        identity=identity,
+        requested_model=req.model,
+        input_token_upper_bound=_model_routing.completion_input_token_upper_bound(req),
+        output_token_budget=int(params.max_tokens or 0) * len(prompts),
+    )
+    active = await _model_routing.resolve_initial_candidate(
+        requested_model=req.model,
+        decision=decision,
+        identity=identity,
+    )
 
-    active_adapter = adapter
-    active_model_name = model_name
-    fallback_info: _fallback.FallbackInfo | None = None
-
-    try:
-        choices, total_prompt_tokens, total_completion_tokens = await _complete_once(
-            active_adapter,
-            active_model_name,
-            prompts,
-            params,
-            identity,
-        )
-    except ContextLengthExceededError as exc:
-        _raise_generation_http_error(exc)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        fallback = await _fallback.resolve_openrouter_fallback(
-            adapter=active_adapter,
-            model_name=active_model_name,
-            exc=exc,
-            identity=identity,
-        )
-        if fallback is None:
-            _raise_generation_http_error(exc)
-
-        active_adapter, active_model_name, fallback_info = fallback
+    while True:
         try:
             choices, total_prompt_tokens, total_completion_tokens = await _complete_once(
-                active_adapter,
-                active_model_name,
+                active.adapter,
+                active.model_name,
                 prompts,
                 params,
                 identity,
-                fallback_info,
+                active.fallback_info,
+                decision,
+                active.candidate_index,
             )
-        except Exception as fallback_exc:
-            _raise_generation_http_error(fallback_exc)
+            break
+        except ContextLengthExceededError as exc:
+            _raise_generation_http_error(exc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if decision is None and active.fallback_info is not None:
+                _raise_generation_http_error(exc)
+            fallback = await _model_routing.resolve_next_fallback(
+                decision=decision,
+                current_candidate_index=active.candidate_index,
+                adapter=active.adapter,
+                model_name=active.model_name,
+                exc=exc,
+                identity=identity,
+            )
+            if fallback is None:
+                _raise_generation_http_error(exc)
+            active = fallback
 
     return CompletionResponse(
         id=f"cmpl-{uuid.uuid4().hex}",
         created=int(time.time()),
-        model=active_model_name,
-        request_key_source=_request_key_source(active_adapter),
-        **_fallback.response_fields(fallback_info),
+        model=active.model_name,
+        request_key_source=_request_key_source(active.adapter),
+        **_fallback.response_fields(active.fallback_info),
         choices=choices,
         usage=Usage(
             prompt_tokens=total_prompt_tokens,
@@ -172,6 +169,8 @@ async def _complete_once(
     params: GenerationParams,
     identity: Identity,
     fallback_info: _fallback.FallbackInfo | None = None,
+    routing_decision: _model_routing.ModelRoutingDecision | None = None,
+    candidate_index: int | None = None,
 ) -> tuple[list[CompletionChoice], int, int]:
     lease = await acquire_slot(
         identity=identity,
@@ -198,6 +197,11 @@ async def _complete_once(
                 **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
                 **_fallback.span_attrs(fallback_info),
+                **_model_routing.model_routing_span_attrs(
+                    routing_decision,
+                    candidate_model=model_name,
+                    candidate_index=candidate_index,
+                ),
                 **scheduler_span_attrs(lease),
             },
         ) as s:

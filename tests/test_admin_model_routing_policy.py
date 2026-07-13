@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,13 @@ from inference_engine.model_routing import (
     ModelRoutingTrustStore,
     verify_model_routing_policy,
 )
+from inference_engine.model_routing_runtime import (
+    LoadedModelRoutingPricingCatalog,
+    ModelRoutingModelPrice,
+    ModelRoutingPricingCatalog,
+    ModelRoutingRuntimeConfigError,
+    ModelRoutingRuntimeState,
+)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.json"
@@ -26,7 +34,32 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.jso
 
 @pytest.fixture(autouse=True)
 def _explicit_auth_baseline(monkeypatch):
+    previous = app_state.model_routing_runtime
     monkeypatch.setattr(settings, "auth_enabled", False)
+    app_state.model_routing_runtime = ModelRoutingRuntimeState()
+    yield
+    app_state.model_routing_runtime = previous
+
+
+def _pricing() -> LoadedModelRoutingPricingCatalog:
+    prices = [
+        ModelRoutingModelPrice(
+            model="qwen3:32b",
+            input_cost_micros_per_million_tokens=0,
+            output_cost_micros_per_million_tokens=0,
+        ),
+        ModelRoutingModelPrice(
+            model="llama3.3:70b:openrouter",
+            input_cost_micros_per_million_tokens=100_000,
+            output_cost_micros_per_million_tokens=100_000,
+        ),
+    ]
+    catalog = ModelRoutingPricingCatalog(pricing_version=1, models=prices)
+    return LoadedModelRoutingPricingCatalog(
+        catalog=catalog,
+        digest="sha256:pricing",
+        by_model=MappingProxyType({price.model: price for price in prices}),
+    )
 
 
 def _active_policy(
@@ -79,6 +112,12 @@ def test_status_is_payload_free_and_reports_active_identity() -> None:
         "deployment_id": "model-plane-golden-v1",
         "offline_lease_expires_at": "2026-07-13T00:30:00.000Z",
         "candidate_error_code": "invalid_signature",
+        "request_time_enforcement": True,
+        "route_count": 2,
+        "rate_limit_scope": "process-replica",
+        "pricing_catalog_digest": None,
+        "pricing_model_count": 0,
+        "org_binding_mode": "deployment-org",
     }
 
 
@@ -98,12 +137,20 @@ def test_reload_atomically_replaces_active_policy(monkeypatch) -> None:
         "activate_model_routing_policy_from_settings",
         lambda: activated,
     )
+    monkeypatch.setattr(
+        admin_mod,
+        "load_model_routing_pricing_catalog",
+        lambda *args, **kwargs: _pricing(),
+    )
+    monkeypatch.setattr(settings, "model_routing_expected_org_id", "org-golden")
 
     response = TestClient(app).post("/v1/admin/model-routing-policy:reload")
 
     assert response.status_code == 200
     assert response.json()["digest"] == activated.digest
+    assert response.json()["pricing_catalog_digest"] == "sha256:pricing"
     assert app_state.model_routing_policy is activated
+    assert app_state.model_routing_pricing is not None
 
 
 def test_failed_reload_preserves_previous_policy(monkeypatch) -> None:
@@ -128,6 +175,26 @@ def test_failed_reload_preserves_previous_policy(monkeypatch) -> None:
         "last_known_good_error_code": "offline_lease_expired",
     }
     assert app_state.model_routing_policy is previous
+
+
+def test_runtime_config_failure_preserves_previous_atomic_state(monkeypatch) -> None:
+    previous = ModelRoutingRuntimeState(policy=_active_policy(), pricing=_pricing())
+    app_state.model_routing_runtime = previous
+    monkeypatch.setattr(
+        admin_mod,
+        "activate_model_routing_policy_from_settings",
+        _active_policy,
+    )
+
+    def fail_pricing(*args, **kwargs):
+        raise ModelRoutingRuntimeConfigError("pricing_catalog_invalid")
+
+    monkeypatch.setattr(admin_mod, "load_model_routing_pricing_catalog", fail_pricing)
+    response = TestClient(app).post("/v1/admin/model-routing-policy:reload")
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["type"] == "pricing_catalog_invalid"
+    assert app_state.model_routing_runtime is previous
 
 
 def test_model_routing_admin_routes_require_bearer_when_auth_enabled(

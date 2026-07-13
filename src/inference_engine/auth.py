@@ -4,8 +4,8 @@ Keys live in a JSON file pointed to by ``AUTH_KEYS_FILE``. The file holds an
 array of records:
 
     [
-      {"key": "sk-dev-12345",  "tenant": "dev"},
-      {"key": "sk-prod-67890", "tenant": "production"}
+      {"key": "sk-dev-12345",  "tenant": "dev", "org_id": "org-acme"},
+      {"key": "sk-prod-67890", "tenant": "production", "org_id": "org-acme"}
     ]
 
 When ``AUTH_ENABLED=false`` (default for local dev), every request resolves to
@@ -38,12 +38,14 @@ class Identity:
 
     tenant: str
     key_id: str  # redacted key suitable for logs / span attributes
+    org_id: str | None = None
 
 
 @dataclass(frozen=True)
 class _KeyRecord:
     key: str
     tenant: str
+    org_id: str | None = None
 
 
 _keys_by_value: dict[str, _KeyRecord] = {}
@@ -69,9 +71,7 @@ def load_keys() -> int:
     path = Path(settings.auth_keys_file)
     if not path.exists():
         if settings.auth_enabled:
-            raise FileNotFoundError(
-                f"AUTH_ENABLED=true but keys file missing: {path}"
-            )
+            raise FileNotFoundError(f"AUTH_ENABLED=true but keys file missing: {path}")
         _keys_by_value = {}
         _keys_loaded = True
         log.info("auth.keys_missing_but_disabled", path=str(path))
@@ -82,10 +82,29 @@ def load_keys() -> int:
         raise ValueError(f"keys file must be a JSON array, got {type(raw).__name__}")
 
     index: dict[str, _KeyRecord] = {}
-    for entry in raw:
+    for position, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"key record {position} must be an object")
         if "key" not in entry or "tenant" not in entry:
-            raise ValueError(f"key record missing 'key' or 'tenant': {entry}")
-        record = _KeyRecord(key=entry["key"], tenant=entry["tenant"])
+            raise ValueError(f"key record {position} missing 'key' or 'tenant'")
+        key = entry["key"]
+        tenant = entry["tenant"]
+        if not isinstance(key, str) or not key or key != key.strip():
+            raise ValueError(f"key record {position} has invalid 'key'")
+        if not isinstance(tenant, str) or not tenant or tenant != tenant.strip():
+            raise ValueError(f"key record {position} has invalid 'tenant'")
+        org_id = entry.get("org_id")
+        if org_id is not None and (
+            not isinstance(org_id, str) or not org_id or org_id != org_id.strip()
+        ):
+            raise ValueError(f"key record {position} has invalid 'org_id'")
+        record = _KeyRecord(
+            key=key,
+            tenant=tenant,
+            org_id=org_id,
+        )
+        if record.key in index:
+            raise ValueError(f"key record {position} duplicates an earlier key")
         index[record.key] = record
 
     _keys_by_value = index
@@ -109,7 +128,11 @@ def require_identity(request: Request) -> Identity:
         return request.state.identity
 
     if not settings.auth_enabled:
-        identity = Identity(tenant="anonymous", key_id="anon")
+        identity = Identity(
+            tenant="anonymous",
+            key_id="anon",
+            org_id=settings.model_routing_expected_org_id or None,
+        )
         request.state.identity = identity
         return identity
 
@@ -125,7 +148,11 @@ def require_identity(request: Request) -> Identity:
         log.warning("auth.invalid_key", key_id=_redact(key))
         raise HTTPException(status_code=401, detail="invalid api key")
 
-    identity = Identity(tenant=record.tenant, key_id=_redact(key))
+    identity = Identity(
+        tenant=record.tenant,
+        key_id=_redact(key),
+        org_id=record.org_id,
+    )
     request.state.identity = identity
     return identity
 
@@ -134,10 +161,19 @@ def require_identity(request: Request) -> Identity:
 # Test helpers — keep production code from importing test paths.
 # ---------------------------------------------------------------------------
 
-def _set_keys_for_tests(records: list[tuple[str, str]]) -> None:
+
+def _set_keys_for_tests(records: list[tuple[str, str] | tuple[str, str, str]]) -> None:
     """Install a key index directly. Used by the auth tests."""
     global _keys_by_value, _keys_loaded
-    _keys_by_value = {key: _KeyRecord(key=key, tenant=tenant) for key, tenant in records}
+    index: dict[str, _KeyRecord] = {}
+    for record in records:
+        key, tenant, *org_id = record
+        index[key] = _KeyRecord(
+            key=key,
+            tenant=tenant,
+            org_id=(org_id[0] if org_id else None),
+        )
+    _keys_by_value = index
     _keys_loaded = True
 
 

@@ -8,6 +8,7 @@ loaded model uses the runtime that matches its on-disk format.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from threading import RLock
 
 from ..adapters import InferenceAdapter
@@ -16,6 +17,11 @@ from ..config import settings
 from ..evals import EvalRunner, PolicyRegistry, RubricRegistry
 from ..manager import ModelManager
 from ..model_routing import ActivatedModelRoutingPolicy
+from ..model_routing_runtime import (
+    LoadedModelRoutingPricingCatalog,
+    ModelRoutingRateLimiter,
+    ModelRoutingRuntimeState,
+)
 from ..observability import get_logger
 from ..registry import (
     CompositeRegistry,
@@ -129,7 +135,10 @@ class AppState:
         # Policy is reloaded from disk in main.py's lifespan so a startup
         # failure surfaces with a clear log line rather than at first request.
         self.policy_registry: PolicyRegistry = PolicyRegistry([])
-        self.model_routing_policy: ActivatedModelRoutingPolicy | None = None
+        self.model_routing_runtime = ModelRoutingRuntimeState()
+        self.model_routing_rate_limiter = ModelRoutingRateLimiter(
+            max_buckets=settings.model_routing_rate_limit_max_buckets
+        )
 
         # Dynamic-batching coalescer for /v1/embeddings. Lazy: queues are
         # created per-adapter on first submit, automatically replaced when
@@ -154,6 +163,25 @@ class AppState:
             "ready_at": time.time(),
             "error": None,
         }
+
+    @property
+    def model_routing_policy(self) -> ActivatedModelRoutingPolicy | None:
+        return self.model_routing_runtime.policy
+
+    @model_routing_policy.setter
+    def model_routing_policy(self, policy: ActivatedModelRoutingPolicy | None) -> None:
+        self.model_routing_runtime = replace(self.model_routing_runtime, policy=policy)
+
+    @property
+    def model_routing_pricing(self) -> LoadedModelRoutingPricingCatalog | None:
+        return self.model_routing_runtime.pricing
+
+    @model_routing_pricing.setter
+    def model_routing_pricing(
+        self,
+        pricing: LoadedModelRoutingPricingCatalog | None,
+    ) -> None:
+        self.model_routing_runtime = replace(self.model_routing_runtime, pricing=pricing)
 
     def mark_starting(self, message: str = "startup model probes are running") -> None:
         with self._readiness_lock:

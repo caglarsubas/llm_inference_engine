@@ -32,6 +32,7 @@ from ..auth import Identity, require_identity
 from ..manager import ModelNotFoundError
 from ..observability import span
 from ..schemas import RerankRequest, RerankResponse, RerankResult, Usage
+from . import _model_routing
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -79,6 +80,10 @@ async def rerank(
     req: RerankRequest,
     identity: Identity = Depends(require_identity),
 ) -> RerankResponse:
+    _model_routing.reject_unsupported_governed_workload(
+        identity=identity,
+        workload="rerank.run",
+    )
     adapter, model_name = await _resolve(req.model)
     estimated_tokens = max(1, (len(req.query) + sum(len(doc) for doc in req.documents)) // 4)
     lease = await acquire_slot(

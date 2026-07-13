@@ -4,6 +4,10 @@
 .env
 .auth_keys.json
 .auto_eval_policies.json
+.model_routing_policy.json
+.model_routing_policy.lkg.json
+.model_routing_trust.json
+.model_routing_pricing.json
 .openrouter_models.json
 __pycache__
 **/__pycache__

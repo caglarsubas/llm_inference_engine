@@ -27,6 +27,7 @@ def _reset_auth_state(monkeypatch):
     """Each test starts with a fresh in-memory key index and AUTH_ENABLED=false."""
     auth_mod._reset_for_tests()
     monkeypatch.setattr(settings, "auth_enabled", False)
+    monkeypatch.setattr(settings, "model_routing_expected_org_id", "")
     yield
     auth_mod._reset_for_tests()
 
@@ -34,6 +35,12 @@ def _reset_auth_state(monkeypatch):
 def test_anonymous_when_disabled() -> None:
     identity = require_identity(_fake_request())
     assert identity == Identity(tenant="anonymous", key_id="anon")
+
+
+def test_anonymous_identity_uses_explicit_deployment_org_binding(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "model_routing_expected_org_id", "org-local")
+    identity = require_identity(_fake_request())
+    assert identity.org_id == "org-local"
 
 
 def test_anonymous_path_caches_on_request_state() -> None:
@@ -51,6 +58,15 @@ def test_resolves_valid_bearer_when_enabled(monkeypatch) -> None:
     identity = require_identity(_fake_request({"authorization": "Bearer sk-alpha-1234567890"}))
     assert identity.tenant == "alpha"
     assert "sk-alp" in identity.key_id and "7890" in identity.key_id
+
+
+def test_resolves_org_bound_bearer_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    auth_mod._set_keys_for_tests([("sk-org-key", "runtime", "org-acme")])
+
+    identity = require_identity(_fake_request({"authorization": "Bearer sk-org-key"}))
+
+    assert identity.org_id == "org-acme"
 
 
 def test_case_insensitive_bearer_scheme(monkeypatch) -> None:
@@ -84,7 +100,12 @@ def test_redaction_keeps_short_keys_terse() -> None:
 def test_load_keys_reads_json_file(tmp_path: Path, monkeypatch) -> None:
     keys_path = tmp_path / "keys.json"
     keys_path.write_text(
-        json.dumps([{"key": "sk-foo", "tenant": "team-foo"}, {"key": "sk-bar", "tenant": "bar"}])
+        json.dumps(
+            [
+                {"key": "sk-foo", "tenant": "team-foo", "org_id": "org-acme"},
+                {"key": "sk-bar", "tenant": "bar"},
+            ]
+        )
     )
     monkeypatch.setattr(settings, "auth_keys_file", keys_path)
     monkeypatch.setattr(settings, "auth_enabled", True)
@@ -94,6 +115,39 @@ def test_load_keys_reads_json_file(tmp_path: Path, monkeypatch) -> None:
 
     identity = require_identity(_fake_request({"authorization": "Bearer sk-foo"}))
     assert identity.tenant == "team-foo"
+    assert identity.org_id == "org-acme"
+
+
+def test_load_keys_rejects_blank_org_binding(tmp_path: Path, monkeypatch) -> None:
+    keys_path = tmp_path / "keys.json"
+    keys_path.write_text(json.dumps([{"key": "sk-foo", "tenant": "team-foo", "org_id": ""}]))
+    monkeypatch.setattr(settings, "auth_keys_file", keys_path)
+    monkeypatch.setattr(settings, "auth_enabled", True)
+
+    with pytest.raises(ValueError, match="invalid 'org_id'"):
+        load_keys()
+
+
+def test_load_keys_rejects_duplicates_without_echoing_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    keys_path = tmp_path / "keys.json"
+    secret = "sk-secret-duplicate"
+    keys_path.write_text(
+        json.dumps(
+            [
+                {"key": secret, "tenant": "one", "org_id": "org-acme"},
+                {"key": secret, "tenant": "two", "org_id": "org-acme"},
+            ]
+        )
+    )
+    monkeypatch.setattr(settings, "auth_keys_file", keys_path)
+    monkeypatch.setattr(settings, "auth_enabled", True)
+
+    with pytest.raises(ValueError, match="duplicates an earlier key") as raised:
+        load_keys()
+    assert secret not in str(raised.value)
 
 
 def test_missing_keys_file_is_fatal_when_enabled(tmp_path: Path, monkeypatch) -> None:

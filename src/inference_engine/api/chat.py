@@ -26,7 +26,6 @@ from ..auth import Identity, require_identity
 from ..cancellation import watch_disconnect
 from ..config import settings
 from ..evals import PolicyEntry
-from ..manager import ModelNotFoundError
 from ..observability import get_logger, span
 from ..schemas import (
     AutoEvalSpec,
@@ -44,7 +43,7 @@ from ..schemas import (
     Usage,
     chat_content_text,
 )
-from . import _auto_eval, _fallback, _tool_audit
+from . import _auto_eval, _fallback, _model_routing, _tool_audit
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -65,11 +64,7 @@ def _params_from_request(req: ChatCompletionRequest) -> GenerationParams:
 
     # tools come in as ToolDefinition pydantic models; the backend wants the
     # plain OpenAI dict shape, so dump back to dicts here.
-    tools = (
-        [t.model_dump() for t in req.tools]
-        if req.tools
-        else None
-    )
+    tools = [t.model_dump() for t in req.tools] if req.tools else None
 
     return GenerationParams(
         temperature=req.temperature if req.temperature is not None else 0.7,
@@ -87,10 +82,13 @@ def _params_from_request(req: ChatCompletionRequest) -> GenerationParams:
 
 def _identity_attrs(identity: Identity) -> dict:
     """Span attributes that flag the calling tenant on every inference span."""
-    return {
+    attrs = {
         "prometa.tenant": identity.tenant,
         "prometa.key_id": identity.key_id,
     }
+    if identity.org_id is not None:
+        attrs["prometa.org_id"] = identity.org_id
+    return attrs
 
 
 def _request_key_source(adapter: InferenceAdapter) -> str:
@@ -133,19 +131,14 @@ async def _resolve(
     identity: Identity,
     intent_attrs: dict | None = None,
 ) -> tuple[InferenceAdapter, str]:
-    """Resolve `model_id` against the manager. Returns the adapter and qualified name."""
-    try:
-        with span(
-            "model.acquire",
-            model=model_id,
-            **_identity_attrs(identity),
-            **(intent_attrs or {}),
-        ) as s:
-            adapter, desc = await app_state.manager.get(model_id)
-            s.bind(**_request_key_attrs(adapter))
-    except ModelNotFoundError:
-        raise HTTPException(status_code=404, detail=f"model not found: {model_id!r}") from None
-    return adapter, desc.qualified_name
+    """Compatibility wrapper for direct, non-governed model resolution tests."""
+    resolved = await _model_routing.resolve_initial_candidate(
+        requested_model=model_id,
+        decision=None,
+        identity=identity,
+        extra_span_attrs=intent_attrs,
+    )
+    return resolved.adapter, resolved.model_name
 
 
 @router.post("/v1/chat/completions")
@@ -155,12 +148,29 @@ async def chat_completions(
     identity: Identity = Depends(require_identity),
 ):
     intent_attrs = _intent_attrs(req)
-    adapter, model_name = await _resolve(req.model, identity, intent_attrs)
+    params = _params_from_request(req)
+    decision = _model_routing.enforce_generation_request(
+        identity=identity,
+        requested_model=req.model,
+        input_token_upper_bound=_model_routing.chat_input_token_upper_bound(req),
+        output_token_budget=int(params.max_tokens or 0),
+    )
+    active = await _model_routing.resolve_initial_candidate(
+        requested_model=req.model,
+        decision=decision,
+        identity=identity,
+        extra_span_attrs=intent_attrs,
+    )
 
     # Resolve the effective auto-eval spec from server policy + request.
     auto_eval, policy = _resolve_auto_eval(
-        req.auto_eval, tenant=identity.tenant, model_name=model_name
+        req.auto_eval, tenant=identity.tenant, model_name=active.model_name
     )
+    if decision is not None and auto_eval is not None:
+        _model_routing.reject_unsupported_governed_workload(
+            identity=identity,
+            workload="chat.auto_eval",
+        )
 
     if req.stream and auto_eval and auto_eval.mode == "blocking":
         # Blocking auto-eval needs the full response in hand — incompatible
@@ -170,26 +180,45 @@ async def chat_completions(
             detail="auto_eval.mode='blocking' is incompatible with stream=true",
         )
 
-    params = _params_from_request(req)
-
     if req.stream:
         lease = await acquire_slot(
             identity=identity,
-            adapter=adapter,
-            model_name=model_name,
+            adapter=active.adapter,
+            model_name=active.model_name,
             workload="chat.stream",
             priority=30.0,
             estimated_tokens=_estimated_chat_tokens(req.messages, params),
         )
         return EventSourceResponse(
             _stream_response(
-                adapter, model_name, req.messages, params, identity, request,
-                auto_eval, policy, intent_attrs, lease,
+                active.adapter,
+                active.model_name,
+                req.messages,
+                params,
+                identity,
+                request,
+                auto_eval,
+                policy,
+                intent_attrs,
+                lease,
+                active.fallback_info,
+                decision,
+                active.candidate_index,
             )
         )
 
     return await _blocking_response(
-        adapter, model_name, req.messages, params, identity, auto_eval, policy, intent_attrs
+        active.adapter,
+        active.model_name,
+        req.messages,
+        params,
+        identity,
+        auto_eval,
+        policy,
+        intent_attrs,
+        decision,
+        active.candidate_index,
+        active.fallback_info,
     )
 
 
@@ -384,6 +413,8 @@ async def _generate_blocking_once(
     policy: PolicyEntry | None = None,
     intent_attrs: dict | None = None,
     fallback_info: _fallback.FallbackInfo | None = None,
+    routing_decision: _model_routing.ModelRoutingDecision | None = None,
+    candidate_index: int | None = None,
 ):
     lease = await acquire_slot(
         identity=identity,
@@ -419,6 +450,11 @@ async def _generate_blocking_once(
                 **_prefix_cache_attrs(adapter),
                 **_auto_eval_attrs(auto_eval, policy),
                 **_fallback.span_attrs(fallback_info),
+                **_model_routing.model_routing_span_attrs(
+                    routing_decision,
+                    candidate_model=model_name,
+                    candidate_index=candidate_index,
+                ),
                 **scheduler_span_attrs(lease),
             },
         ) as s:
@@ -458,9 +494,7 @@ async def _generate_blocking_once(
             # llama.cpp emits a delta because its raw cache_size grows with each
             # call; MLX exposes overlap directly so a delta is meaningless there.
             if "prefix_cache.size_bytes" in post_attrs:
-                post_attrs["prefix_cache.size_delta_bytes"] = (
-                    cache_size_after - cache_size_before
-                )
+                post_attrs["prefix_cache.size_delta_bytes"] = cache_size_after - cache_size_before
             s.bind(
                 **{
                     "gen_ai.usage.input_tokens": result.prompt_tokens,
@@ -496,52 +530,51 @@ async def _blocking_response(
     auto_eval: AutoEvalSpec | None = None,
     policy: PolicyEntry | None = None,
     intent_attrs: dict | None = None,
+    routing_decision: _model_routing.ModelRoutingDecision | None = None,
+    candidate_index: int | None = None,
+    initial_fallback_info: _fallback.FallbackInfo | None = None,
 ) -> ChatCompletionResponse:
-    active_adapter = adapter
-    active_model_name = model_name
-    fallback_info: _fallback.FallbackInfo | None = None
-
-    try:
-        result = await _generate_blocking_once(
-            active_adapter,
-            active_model_name,
-            messages,
-            params,
-            identity,
-            auto_eval,
-            policy,
-            intent_attrs,
-        )
-    except ContextLengthExceededError as exc:
-        _raise_generation_http_error(exc)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        fallback = await _fallback.resolve_openrouter_fallback(
-            adapter=active_adapter,
-            model_name=active_model_name,
-            exc=exc,
-            identity=identity,
-            intent_attrs=intent_attrs,
-        )
-        if fallback is None:
-            _raise_generation_http_error(exc)
-
-        active_adapter, active_model_name, fallback_info = fallback
+    active = _model_routing.ResolvedRoutingCandidate(
+        adapter=adapter,
+        model_name=model_name,
+        candidate_index=candidate_index,
+        fallback_info=initial_fallback_info,
+    )
+    while True:
         try:
             result = await _generate_blocking_once(
-                active_adapter,
-                active_model_name,
+                active.adapter,
+                active.model_name,
                 messages,
                 params,
                 identity,
                 auto_eval,
                 policy,
                 intent_attrs,
-                fallback_info,
+                active.fallback_info,
+                routing_decision,
+                active.candidate_index,
             )
-        except Exception as fallback_exc:
-            _raise_generation_http_error(fallback_exc)
+            break
+        except ContextLengthExceededError as exc:
+            _raise_generation_http_error(exc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if routing_decision is None and active.fallback_info is not None:
+                _raise_generation_http_error(exc)
+            fallback = await _model_routing.resolve_next_fallback(
+                decision=routing_decision,
+                current_candidate_index=active.candidate_index,
+                adapter=active.adapter,
+                model_name=active.model_name,
+                exc=exc,
+                identity=identity,
+                extra_span_attrs=intent_attrs,
+            )
+            if fallback is None:
+                _raise_generation_http_error(exc)
+            active = fallback
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
 
@@ -556,7 +589,7 @@ async def _blocking_response(
                 default_judge_model=settings.default_judge_model,
                 prompt=prompt_for_eval,
                 response=result.text,
-                candidate_model=active_model_name,
+                candidate_model=active.model_name,
                 candidate_completion_id=completion_id,
                 identity=identity,
             )
@@ -569,7 +602,7 @@ async def _blocking_response(
                 default_judge_model=settings.default_judge_model,
                 prompt=prompt_for_eval,
                 response=result.text,
-                candidate_model=active_model_name,
+                candidate_model=active.model_name,
                 candidate_completion_id=completion_id,
                 identity=identity,
             )
@@ -591,9 +624,9 @@ async def _blocking_response(
     return ChatCompletionResponse(
         id=completion_id,
         created=int(time.time()),
-        model=active_model_name,
-        request_key_source=_request_key_source(active_adapter),
-        **_fallback.response_fields(fallback_info),
+        model=active.model_name,
+        request_key_source=_request_key_source(active.adapter),
+        **_fallback.response_fields(active.fallback_info),
         choices=[
             ChatCompletionChoice(
                 index=0,
@@ -603,7 +636,9 @@ async def _blocking_response(
                     reasoning_content=result.reasoning_content,
                     tool_calls=response_tool_calls,
                 ),
-                finish_reason=result.finish_reason if result.finish_reason in ("stop", "length", "tool_calls") else "stop",
+                finish_reason=result.finish_reason
+                if result.finish_reason in ("stop", "length", "tool_calls")
+                else "stop",
             )
         ],
         usage=Usage(
@@ -627,6 +662,8 @@ async def _stream_response(
     intent_attrs: dict | None = None,
     scheduler_lease=None,
     fallback_info: _fallback.FallbackInfo | None = None,
+    routing_decision: _model_routing.ModelRoutingDecision | None = None,
+    candidate_index: int | None = None,
 ) -> AsyncIterator[dict]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -677,9 +714,7 @@ async def _stream_response(
                     out.append(_chunk(ChatCompletionDelta(content=d.content)))
                 if d.reasoning_content:
                     chunks_emitted += 1
-                    out.append(
-                        _chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content))
-                    )
+                    out.append(_chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content)))
                 if d.tool_call:
                     tc = d.tool_call
                     fn = tc.get("function") or {}
@@ -781,6 +816,11 @@ async def _stream_response(
                     **(intent_attrs or {}),
                     **_auto_eval_attrs(auto_eval, policy),
                     **_fallback.span_attrs(fallback_info),
+                    **_model_routing.model_routing_span_attrs(
+                        routing_decision,
+                        candidate_model=model_name,
+                        candidate_index=candidate_index,
+                    ),
                     **scheduler_span_attrs(scheduler_lease),
                 },
             ) as s:
@@ -819,22 +859,27 @@ async def _stream_response(
                     yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
                     return
                 except GenerationTimeoutError as exc:
-                    if not role_emitted and chunks_emitted == 0:
-                        fallback = await _fallback.resolve_openrouter_fallback(
+                    if (
+                        not role_emitted
+                        and chunks_emitted == 0
+                        and not (routing_decision is None and fallback_info is not None)
+                    ):
+                        fallback = await _model_routing.resolve_next_fallback(
+                            decision=routing_decision,
+                            current_candidate_index=candidate_index,
                             adapter=adapter,
                             model_name=model_name,
                             exc=exc,
                             identity=identity,
-                            intent_attrs=intent_attrs,
+                            extra_span_attrs=intent_attrs,
                         )
                         if fallback is not None:
-                            fallback_adapter, fallback_model_name, stream_fallback_info = fallback
                             finish_reason = "fallback"
                             s.bind(
                                 **{
                                     "llm.fallback.dispatched": True,
-                                    "llm.fallback.to_model": fallback_model_name,
-                                    "llm.fallback.to_backend": fallback_adapter.backend_name,
+                                    "llm.fallback.to_model": fallback.model_name,
+                                    "llm.fallback.to_backend": fallback.adapter.backend_name,
                                 }
                             )
                             if scheduler_lease is not None:
@@ -842,15 +887,15 @@ async def _stream_response(
                                 scheduler_lease = None
                             fallback_lease = await acquire_slot(
                                 identity=identity,
-                                adapter=fallback_adapter,
-                                model_name=fallback_model_name,
+                                adapter=fallback.adapter,
+                                model_name=fallback.model_name,
                                 workload="chat.stream",
                                 priority=30.0,
                                 estimated_tokens=_estimated_chat_tokens(messages, params),
                             )
                             async for chunk in _stream_response(
-                                fallback_adapter,
-                                fallback_model_name,
+                                fallback.adapter,
+                                fallback.model_name,
                                 messages,
                                 params,
                                 identity,
@@ -859,7 +904,9 @@ async def _stream_response(
                                 policy,
                                 intent_attrs,
                                 fallback_lease,
-                                stream_fallback_info,
+                                fallback.fallback_info,
+                                routing_decision,
+                                fallback.candidate_index,
                             ):
                                 yield chunk
                             return
@@ -868,22 +915,27 @@ async def _stream_response(
                     yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
                     return
                 except Exception as exc:
-                    if not role_emitted and chunks_emitted == 0:
-                        fallback = await _fallback.resolve_openrouter_fallback(
+                    if (
+                        not role_emitted
+                        and chunks_emitted == 0
+                        and not (routing_decision is None and fallback_info is not None)
+                    ):
+                        fallback = await _model_routing.resolve_next_fallback(
+                            decision=routing_decision,
+                            current_candidate_index=candidate_index,
                             adapter=adapter,
                             model_name=model_name,
                             exc=exc,
                             identity=identity,
-                            intent_attrs=intent_attrs,
+                            extra_span_attrs=intent_attrs,
                         )
                         if fallback is not None:
-                            fallback_adapter, fallback_model_name, stream_fallback_info = fallback
                             finish_reason = "fallback"
                             s.bind(
                                 **{
                                     "llm.fallback.dispatched": True,
-                                    "llm.fallback.to_model": fallback_model_name,
-                                    "llm.fallback.to_backend": fallback_adapter.backend_name,
+                                    "llm.fallback.to_model": fallback.model_name,
+                                    "llm.fallback.to_backend": fallback.adapter.backend_name,
                                 }
                             )
                             if scheduler_lease is not None:
@@ -891,15 +943,15 @@ async def _stream_response(
                                 scheduler_lease = None
                             fallback_lease = await acquire_slot(
                                 identity=identity,
-                                adapter=fallback_adapter,
-                                model_name=fallback_model_name,
+                                adapter=fallback.adapter,
+                                model_name=fallback.model_name,
                                 workload="chat.stream",
                                 priority=30.0,
                                 estimated_tokens=_estimated_chat_tokens(messages, params),
                             )
                             async for chunk in _stream_response(
-                                fallback_adapter,
-                                fallback_model_name,
+                                fallback.adapter,
+                                fallback.model_name,
                                 messages,
                                 params,
                                 identity,
@@ -908,7 +960,9 @@ async def _stream_response(
                                 policy,
                                 intent_attrs,
                                 fallback_lease,
-                                stream_fallback_info,
+                                fallback.fallback_info,
+                                routing_decision,
+                                fallback.candidate_index,
                             ):
                                 yield chunk
                             return

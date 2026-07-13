@@ -21,9 +21,14 @@ from ..auth import Identity, require_identity
 from ..config import settings
 from ..evals import load_policy
 from ..model_routing import (
-    ActivatedModelRoutingPolicy,
     ModelRoutingPolicyActivationError,
     activate_model_routing_policy_from_settings,
+)
+from ..model_routing_runtime import (
+    ModelRoutingRuntimeConfigError,
+    ModelRoutingRuntimeState,
+    build_model_routing_runtime_state,
+    load_model_routing_pricing_catalog,
 )
 from ..observability import get_logger, span
 from .state import app_state
@@ -52,13 +57,24 @@ class ModelRoutingPolicyStatusResponse(BaseModel):
     deployment_id: str | None = None
     offline_lease_expires_at: str | None = None
     candidate_error_code: str | None = None
+    request_time_enforcement: bool = False
+    route_count: int = 0
+    rate_limit_scope: str | None = None
+    pricing_catalog_digest: str | None = None
+    pricing_model_count: int = 0
+    org_binding_mode: str | None = None
 
 
 def _model_routing_status(
-    active: ActivatedModelRoutingPolicy | None,
+    state: ModelRoutingRuntimeState,
 ) -> ModelRoutingPolicyStatusResponse:
+    active = state.policy
     if active is None:
-        return ModelRoutingPolicyStatusResponse(active=False)
+        return ModelRoutingPolicyStatusResponse(
+            active=False,
+            pricing_catalog_digest=(state.pricing.digest if state.pricing else None),
+            pricing_model_count=(len(state.pricing.by_model) if state.pricing else 0),
+        )
     claims = active.verified.claims
     return ModelRoutingPolicyStatusResponse(
         active=True,
@@ -72,6 +88,12 @@ def _model_routing_status(
         deployment_id=claims.deployment_id,
         offline_lease_expires_at=claims.offline_lease_expires_at,
         candidate_error_code=active.candidate_error_code,
+        request_time_enforcement=True,
+        route_count=len(claims.routes),
+        rate_limit_scope="process-replica",
+        pricing_catalog_digest=(state.pricing.digest if state.pricing else None),
+        pricing_model_count=(len(state.pricing.by_model) if state.pricing else 0),
+        org_binding_mode=("auth-key-org" if settings.auth_enabled else "deployment-org"),
     )
 
 
@@ -137,7 +159,7 @@ async def model_routing_policy_status(
     identity: Identity = Depends(require_identity),
 ) -> ModelRoutingPolicyStatusResponse:
     del identity
-    return _model_routing_status(app_state.model_routing_policy)
+    return _model_routing_status(app_state.model_routing_runtime)
 
 
 @router.post(
@@ -149,7 +171,8 @@ async def reload_model_routing_policy(
 ) -> ModelRoutingPolicyStatusResponse:
     """Verify and atomically activate candidate or last-known-good policy."""
 
-    previous = app_state.model_routing_policy
+    previous_state = app_state.model_routing_runtime
+    previous = previous_state.policy
     with span(
         "admin.model_routing_policy.reload",
         **{
@@ -157,6 +180,9 @@ async def reload_model_routing_policy(
             "prometa.key_id": identity.key_id,
             "model_routing.policy.previous_digest": (
                 previous.digest if previous is not None else ""
+            ),
+            "model_routing.pricing.previous_digest": (
+                previous_state.pricing.digest if previous_state.pricing is not None else ""
             ),
         },
     ) as s:
@@ -190,7 +216,32 @@ async def reload_model_routing_policy(
                 },
             ) from exc
 
-        app_state.model_routing_policy = activated
+        try:
+            pricing = load_model_routing_pricing_catalog(
+                settings.model_routing_pricing_file,
+                max_bytes=settings.model_routing_max_file_bytes,
+            )
+            next_state = build_model_routing_runtime_state(
+                activated,
+                pricing,
+                auth_enabled=settings.auth_enabled,
+                expected_org_id=settings.model_routing_expected_org_id,
+            )
+        except ModelRoutingRuntimeConfigError as exc:
+            log.error(
+                "admin.model_routing_policy.runtime_config_failed",
+                error_code=exc.code,
+            )
+            s.bind(**{"model_routing.policy.reload.error_code": exc.code})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "model routing policy runtime configuration failed",
+                    "type": exc.code,
+                },
+            ) from exc
+
+        app_state.model_routing_runtime = next_state
         s.bind(
             **{
                 "model_routing.policy.active": activated is not None,
@@ -201,7 +252,10 @@ async def reload_model_routing_policy(
                 "model_routing.policy.source": (
                     activated.source if activated is not None else "disabled"
                 ),
+                "model_routing.pricing.digest": (
+                    next_state.pricing.digest if next_state.pricing is not None else ""
+                ),
             }
         )
 
-    return _model_routing_status(activated)
+    return _model_routing_status(next_state)

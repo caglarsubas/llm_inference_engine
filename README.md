@@ -324,6 +324,7 @@ src/inference_engine/
 ├── otel.py              # OTel SDK setup, NoOp span shim, FastAPI auto-instrumentation
 ├── auth.py              # bearer-token auth, Identity, key index, FastAPI dependency
 ├── model_routing.py     # signed-policy trust, verification, atomic LKG activation
+├── model_routing_runtime.py # local route/limit/pricing/RPM enforcement
 ├── cancellation.py      # Cancellation flag + watch_disconnect() watchdog
 ├── schemas.py           # OpenAI-compatible request/response models
 ├── evals/
@@ -400,6 +401,8 @@ tests/
 ├── test_admin_policies.py      # POST /v1/admin/policies:reload — atomic swap + auth gate + bad-file rejection
 ├── test_model_routing_policy.py # cross-language signature, trust, revocation, lease, and LKG
 ├── test_admin_model_routing_policy.py # payload-free status + atomic reload/auth behavior
+├── test_model_routing_runtime.py # policy freshness, limits, pricing, RPM, evidence attrs
+├── test_model_routing_api.py # alias and signed-only fallback across generation APIs
 ├── test_streaming_tool_audit.py # ToolCallReassembler unit tests + end-of-stream gen_ai.tool_call events
 ├── test_tool_timing.py          # ToolCallTimingStore (TTL/LRU) + tool.execution_ms cross-event correlation
 ├── test_per_rubric_judges.py    # AutoEvalSpec.judge_models override + resolver precedence + dispatch
@@ -457,15 +460,18 @@ All knobs live in `.env` (see `.env.example`):
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`                                                              | Any OTLP/gRPC collector (Jaeger, otel-collector, …)      |
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
 | `AUTH_ENABLED`           | `false`                                                                                  | Bearer-token gate on `/v1/models` and `/v1/chat/completions` |
-| `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON array of `{"key": "...", "tenant": "..."}` records  |
+| `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON array of `{"key": "...", "tenant": "...", "org_id": "..."}` records  |
 | `MODEL_ROUTING_POLICY_REQUIRED` | `false`                                                                         | Fail startup when no signed candidate or valid LKG can activate            |
 | `MODEL_ROUTING_POLICY_FILE` | `.model_routing_policy.json`                                                         | Operator-mounted signed desired-state candidate                            |
 | `MODEL_ROUTING_LAST_KNOWN_GOOD_FILE` | `.model_routing_policy.lkg.json`                                           | Atomic exact-envelope LKG persisted after successful verification          |
 | `MODEL_ROUTING_TRUST_STORE_FILE` | `.model_routing_trust.json`                                                   | Purpose-specific issuers/keys, org/env constraints, and revocations        |
+| `MODEL_ROUTING_PRICING_FILE` | `.model_routing_pricing.json`                                                       | Explicit per-model input/output rates used for fail-closed cost ceilings    |
 | `MODEL_ROUTING_EXPECTED_AUDIENCE` | `orchestra-model-plane`                                                    | Required signed audience                                                    |
 | `MODEL_ROUTING_EXPECTED_ENVIRONMENT` | empty                                                                        | Optional local environment binding                                          |
 | `MODEL_ROUTING_EXPECTED_ORG_ID` | empty                                                                             | Optional single-org deployment binding                                      |
 | `MODEL_ROUTING_CLOCK_SKEW_SECONDS` | `30`                                                                           | Explicit verification skew, bounded to 300 seconds                          |
+| `MODEL_ROUTING_INPUT_TOKEN_RESERVE` | `1024`                                                                        | Conservative reserve for model-side chat templates during pre-dispatch bounds |
+| `MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS` | `10000`                                                                     | Fail-closed cap for process-local policy RPM buckets                        |
 | `DEFAULT_JUDGE_MODEL`    | `llama3.2:3b`                                                                            | Used by `/v1/evals/run` when `judge_model` is not set    |
 | `AUTO_EVAL_POLICIES_FILE`| `.auto_eval_policies.json`                                                               | JSON array of `{name, match, auto_eval}` rules; missing = no policy |
 | `TOOL_AUDIT_ENABLED`     | `true`                                                                                   | Emit `gen_ai.tool_*` span events on every chat completion           |
@@ -1549,9 +1555,43 @@ curl -X POST -H "Authorization: Bearer $ENGINE_ADMIN_KEY" \
   http://127.0.0.1:8080/v1/admin/model-routing-policy:reload
 ```
 
-This increment verifies and activates desired state. Request-time alias,
-fallback, token/rate/cost enforcement and policy decision span attributes are
-the next increment; they are not implied by an active signature alone.
+The generation endpoints now enforce an active policy before model registry
+lookup:
+
+1. Re-check policy validity, expiry, and offline lease at request time.
+2. Require the caller's `org_id` to match the signed policy organization.
+3. Resolve an exact requested-model alias or the final wildcard route.
+4. Reject caller input/output bounds, RPM, or worst-case fallback cost before
+   loading a model or contacting an upstream.
+5. Try only the signed primary and ordered fallback set for timeout or backend
+   failures. Global OpenRouter fallback is not consulted in governed mode.
+6. Stamp policy ID, revision, digest, release, deployment, organization,
+   environment, route, selected candidate, limits, and pricing digest on route
+   and generation spans.
+
+`maxInputTokens` uses the UTF-8 byte count of model-bound request fields plus
+`MODEL_ROUTING_INPUT_TOKEN_RESERVE` as a conservative tokenizer-independent
+upper bound. Remote image URLs have no locally knowable image-token cost and
+fail closed when the selected route bounds input or cost; inline data URLs are
+counted. `maxCostMicrosPerRequest` reserves the worst case across the primary
+and every possible fallback using `.model_routing_pricing.json`. A costed route
+cannot activate unless every signed candidate has pricing. The catalog is
+deployment metadata, not hidden policy: its digest is exposed in status and on
+every governed decision span.
+
+`maxRequestsPerMinute` is a sliding window keyed by policy, route,
+organization, and tenant. It is intentionally process-local in this increment;
+multi-replica aggregate enforcement remains part of the deployment/SLO phase.
+The admin reload swaps policy and pricing as one immutable runtime snapshot, so
+requests cannot observe a mixed revision.
+
+Enforcement currently covers `/v1/chat/completions` and `/v1/completions`.
+While a policy is active, chat auto-eval plus `/v1/embeddings`, `/v1/rerank`,
+and `/v1/evals/run` return a payload-free
+`model_routing_workload_not_integrated` denial instead of reaching
+`ModelManager` outside governance. Desired/observed platform APIs, those
+workload integrations, multi-replica rate coordination, Helm packaging, and
+SLO certification remain open Phase 1 work.
 
 ## Auth + tenant attribution
 
@@ -1559,19 +1599,22 @@ Per-key bearer-token auth — off by default for local dev, switch on with `AUTH
 
 ```json
 [
-  {"key": "sk-dev-local-1", "tenant": "dev"},
-  {"key": "sk-eval-1",      "tenant": "evals"},
-  {"key": "sk-agent-prod-1", "tenant": "agent-runtime"}
+  {"key": "sk-dev-local-1", "tenant": "dev", "org_id": "org-acme"},
+  {"key": "sk-eval-1", "tenant": "evals", "org_id": "org-acme"},
+  {"key": "sk-agent-prod-1", "tenant": "agent-runtime", "org_id": "org-acme"}
 ]
 ```
 
 Behaviour:
 
-- `Authorization: Bearer <key>` → resolves to `Identity(tenant, key_id)` and caches on `request.state`.
+- `Authorization: Bearer <key>` → resolves to `Identity(tenant, key_id, org_id)` and caches on `request.state`.
 - Missing or unknown key → `401 {"detail": "missing bearer token"}` / `401 {"detail": "invalid api key"}`.
 - `/v1/health` and `/v1/ready` are left open so liveness/readiness probes work without keys.
 - `/v1/models` and `/v1/chat/completions` require a valid key when auth is on.
 - Every span (model.acquire, chat.generate, chat.stream) carries `prometa.tenant=<name>` and `prometa.key_id=<redacted>` — Prometa can route signals per tenant out of the box.
+- Governed routing requires `org_id` on every auth-key record. With auth off,
+  local development must set `MODEL_ROUTING_EXPECTED_ORG_ID` to the signed
+  policy organization.
 
 The keys file is the seam where Prometa's control plane drops a generated set; rotation is a `load_keys()` call away.
 
