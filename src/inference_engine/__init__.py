@@ -1,3 +1,3 @@
 """Local LLM inference engine — backend-agnostic, OpenAI-compatible."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

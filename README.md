@@ -155,7 +155,7 @@ Server slots are over-provisioned (10 by default) so scale-out up to 10 replicas
 
 Anonymous traffic (no Authorization header) hashes to a single bucket and effectively all anonymous requests land on one replica. That's a documented design choice — for multi-tenant production deployments you'd run `AUTH_ENABLED=true` anyway, which gives every tenant a distinct hash bucket.
 
-**MLX adapter doesn't run in containers.** Apple Silicon Docker Desktop runs a Linux VM with no Metal passthrough; mlx-lm needs Metal. The composite registry handles this cleanly — the MLX directory mount is empty inside the container, the registry returns zero MLX models, and llama.cpp serves everything. The container's llama.cpp build is CPU-only by default; switch to CUDA on a GPU host with `--build-arg CMAKE_ARGS="-DGGML_CUDA=on"`.
+**MLX adapter doesn't run in containers.** Apple Silicon Docker Desktop runs a Linux VM with no Metal passthrough; mlx-lm needs Metal. The composite registry handles this cleanly — the MLX directory mount is empty inside the container, the registry returns zero MLX models, and llama.cpp serves everything. The container's llama.cpp build is CPU-only and disables host-native instruction tuning by default so published images remain portable; switch to CUDA on a GPU host with `--build-arg CMAKE_ARGS="-DGGML_CUDA=on"`.
 
 **No metric-driven auto-scaling on plain Compose.** `docker compose up --scale` is manual. The `deploy.replicas` block in the compose file is read by **Docker Swarm** (`docker stack deploy`) for declarative scaling; for true HPA-style autoscaling, deploy on Kubernetes. Both paths work without code changes — the engine itself is stateless modulo the instance-local caches called out above.
 
@@ -195,7 +195,7 @@ For production, keep the same engine contract but run under Swarm/Kubernetes and
 
 ### What's installed in the container
 
-- llama-cpp-python compiled from source (CPU-only by default, CUDA build with `CMAKE_ARGS="-DGGML_CUDA=on"`)
+- llama-cpp-python compiled from source (portable CPU baseline by default, CUDA build with `CMAKE_ARGS="-DGGML_CUDA=on"`)
 - The OTel extra in Compose and canonical release builds, so `OTEL_ENABLED=true` works against an external collector
 - A non-root default user plus GID-0 permissions for OpenShift-assigned arbitrary UIDs
 - Container `HEALTHCHECK` hitting `/v1/health` every 15s
