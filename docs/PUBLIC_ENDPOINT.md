@@ -144,10 +144,20 @@ Keys live in `.auth_keys.json` on the server, mapping each key to a tenant:
 
 ```json
 [
-  {"key": "sk-prometa-prod", "tenant": "prometa"},
-  {"key": "sk-dev-1",        "tenant": "dev"}
+  {
+    "key": "mpk-runtime-secret",
+    "key_id": "mpk_runtime_r4",
+    "tenant": "runtime",
+    "org_id": "org-acme",
+    "not_before": "2026-07-14T00:00:00Z",
+    "expires_at": "2026-10-12T00:00:00Z"
+  }
 ]
 ```
+
+`key_id`, `not_before`, and `expires_at` are optional for legacy files. New
+managed credentials should set all three. Validity timestamps must include a
+timezone, and governed routing also requires `org_id`.
 
 Behaviour with auth on:
 
@@ -630,7 +640,8 @@ A public URL means the internet can reach your engine. Before sharing:
 - [ ] **Turn auth on.** Set `AUTH_ENABLED=true`, create `.auth_keys.json`,
       restart. Without it, anyone with the URL runs your models for free.
 - [ ] **Use a unique key per consumer** (one per tenant) so you can revoke one
-      without breaking the rest. Rotation = edit the file + reload.
+      without breaking the rest. Rotate with a bounded old/new overlap, then
+      call `POST /v1/admin/auth-keys:reload` using the retained current key.
 - [ ] **Prefer a reserved domain** over rotating free URLs so you're not
       tempted to disable auth for convenience.
 - [ ] **Don't commit** `.auth_keys.json` or `.env` (already gitignored).
