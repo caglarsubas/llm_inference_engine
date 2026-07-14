@@ -35,13 +35,17 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.jso
 @pytest.fixture(autouse=True)
 def _explicit_auth_baseline(monkeypatch):
     previous = app_state.model_routing_runtime
+    auth_mod._reset_for_tests()
     monkeypatch.setattr(settings, "auth_enabled", False)
     app_state.model_routing_runtime = ModelRoutingRuntimeState()
     yield
     app_state.model_routing_runtime = previous
+    auth_mod._reset_for_tests()
 
 
-def _pricing() -> LoadedModelRoutingPricingCatalog:
+def _pricing(
+    digest: str = "sha256:pricing",
+) -> LoadedModelRoutingPricingCatalog:
     prices = [
         ModelRoutingModelPrice(
             model="qwen3:32b",
@@ -57,7 +61,7 @@ def _pricing() -> LoadedModelRoutingPricingCatalog:
     catalog = ModelRoutingPricingCatalog(pricing_version=1, models=prices)
     return LoadedModelRoutingPricingCatalog(
         catalog=catalog,
-        digest="sha256:pricing",
+        digest=digest,
         by_model=MappingProxyType({price.model: price for price in prices}),
     )
 
@@ -197,6 +201,83 @@ def test_runtime_config_failure_preserves_previous_atomic_state(monkeypatch) -> 
     assert app_state.model_routing_runtime is previous
 
 
+def test_pricing_reload_atomically_replaces_only_pricing(monkeypatch) -> None:
+    policy = _active_policy()
+    previous = ModelRoutingRuntimeState(
+        policy=policy,
+        pricing=_pricing("sha256:old-pricing"),
+    )
+    replacement = _pricing("sha256:new-pricing")
+    app_state.model_routing_runtime = previous
+    monkeypatch.setattr(
+        admin_mod,
+        "load_model_routing_pricing_catalog",
+        lambda *args, **kwargs: replacement,
+    )
+    monkeypatch.setattr(settings, "model_routing_expected_org_id", "org-golden")
+
+    response = TestClient(app).post("/v1/admin/model-routing-pricing:reload")
+
+    assert response.status_code == 200
+    assert response.json()["digest"] == policy.digest
+    assert response.json()["pricing_catalog_digest"] == "sha256:new-pricing"
+    assert app_state.model_routing_policy is policy
+    assert app_state.model_routing_pricing is replacement
+
+
+@pytest.mark.parametrize(
+    ("active_policy", "loaded_pricing", "error_code"),
+    [
+        (None, _pricing(), "model_routing_policy_required"),
+        (_active_policy(), None, "pricing_catalog_required"),
+    ],
+)
+def test_pricing_reload_requires_policy_and_catalog(
+    monkeypatch,
+    active_policy,
+    loaded_pricing,
+    error_code: str,
+) -> None:
+    previous = ModelRoutingRuntimeState(
+        policy=active_policy,
+        pricing=_pricing("sha256:old-pricing"),
+    )
+    app_state.model_routing_runtime = previous
+    monkeypatch.setattr(
+        admin_mod,
+        "load_model_routing_pricing_catalog",
+        lambda *args, **kwargs: loaded_pricing,
+    )
+    monkeypatch.setattr(settings, "model_routing_expected_org_id", "org-golden")
+
+    response = TestClient(app).post("/v1/admin/model-routing-pricing:reload")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "message": "model routing pricing reload failed",
+        "type": error_code,
+    }
+    assert app_state.model_routing_runtime is previous
+
+
+def test_invalid_pricing_reload_preserves_previous_atomic_state(monkeypatch) -> None:
+    previous = ModelRoutingRuntimeState(
+        policy=_active_policy(),
+        pricing=_pricing("sha256:old-pricing"),
+    )
+    app_state.model_routing_runtime = previous
+
+    def fail_pricing(*args, **kwargs):
+        raise ModelRoutingRuntimeConfigError("pricing_catalog_invalid")
+
+    monkeypatch.setattr(admin_mod, "load_model_routing_pricing_catalog", fail_pricing)
+    response = TestClient(app).post("/v1/admin/model-routing-pricing:reload")
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["type"] == "pricing_catalog_invalid"
+    assert app_state.model_routing_runtime is previous
+
+
 def test_model_routing_admin_routes_require_bearer_when_auth_enabled(
     monkeypatch,
 ) -> None:
@@ -206,6 +287,7 @@ def test_model_routing_admin_routes_require_bearer_when_auth_enabled(
     client = TestClient(app)
 
     assert client.get("/v1/admin/model-routing-policy").status_code == 401
+    assert client.post("/v1/admin/model-routing-pricing:reload").status_code == 401
     assert client.get("/v1/admin/model-plane-observer").status_code == 401
     response = client.get(
         "/v1/admin/model-routing-policy",
