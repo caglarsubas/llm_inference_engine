@@ -214,6 +214,7 @@ async def model_routing_policy_status(
     return build_model_routing_status(
         app_state.model_routing_runtime,
         auth_enabled=settings.auth_enabled,
+        rate_limit_scope=app_state.model_routing_rate_limiter.scope,
     )
 
 
@@ -330,6 +331,7 @@ async def reload_model_routing_policy(
     return build_model_routing_status(
         next_state,
         auth_enabled=settings.auth_enabled,
+        rate_limit_scope=app_state.model_routing_rate_limiter.scope,
     )
 
 
@@ -405,4 +407,5 @@ async def reload_model_routing_pricing(
     return build_model_routing_status(
         next_state,
         auth_enabled=settings.auth_enabled,
+        rate_limit_scope=app_state.model_routing_rate_limiter.scope,
     )

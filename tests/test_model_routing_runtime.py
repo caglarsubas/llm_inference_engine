@@ -327,3 +327,13 @@ def test_policy_evidence_attributes_are_complete_and_payload_free() -> None:
     assert attrs["model_routing.route.selected_model"] == "qwen3:32b"
     assert attrs["model_routing.pricing.digest"] == "sha256:pricing"
     assert "signed_payload" not in attrs
+
+
+def test_policy_evidence_reports_deployment_shared_rate_limit_scope() -> None:
+    class SharedScopeLimiter(ModelRoutingRateLimiter):
+        scope = "deployment-shared"
+
+    decision = _enforce(limiter=SharedScopeLimiter())
+    attrs = model_routing_span_attrs(decision)
+
+    assert attrs["model_routing.rate_limit.scope"] == "deployment-shared"

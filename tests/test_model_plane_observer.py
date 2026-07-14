@@ -22,7 +22,7 @@ from inference_engine.model_plane_observer import (
     model_inventory_summary,
     read_model_plane_observation_api_key,
 )
-from inference_engine.model_routing_runtime import ModelRoutingRuntimeState
+from inference_engine.model_routing_runtime import ModelRoutingRateLimiter, ModelRoutingRuntimeState
 from inference_engine.model_routing_status import ModelRoutingPolicyStatus
 from inference_engine.schemas import ModelInfo, ModelList, UnavailableModel
 
@@ -30,6 +30,7 @@ from inference_engine.schemas import ModelInfo, ModelList, UnavailableModel
 class FakeState:
     def __init__(self, *, ready: bool = True) -> None:
         self.model_routing_runtime = ModelRoutingRuntimeState()
+        self.model_routing_rate_limiter = ModelRoutingRateLimiter()
         self._ready = ready
 
     def readiness(self) -> dict:

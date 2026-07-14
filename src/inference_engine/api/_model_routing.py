@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 
@@ -97,6 +98,7 @@ def _enforcement_http_error(exc: ModelRoutingEnforcementError) -> HTTPException:
         "policy_expired",
         "policy_offline_lease_expired",
         "pricing_catalog_unavailable",
+        "rate_limit_backend_unavailable",
         "rate_limit_state_capacity",
     }:
         status_code = 503
@@ -129,6 +131,7 @@ def _emit_denial_span(
         "model_routing.enforced": active is not None,
         "model_routing.decision": "deny",
         "model_routing.denial.code": code,
+        "model_routing.rate_limit.scope": app_state.model_routing_rate_limiter.scope,
         **_identity_attrs(identity),
     }
     if active is not None:
@@ -152,7 +155,7 @@ def _emit_denial_span(
         pass
 
 
-def enforce_generation_request(
+async def enforce_generation_request(
     *,
     identity: Identity,
     requested_model: str,
@@ -160,7 +163,8 @@ def enforce_generation_request(
     output_token_budget: int,
 ) -> ModelRoutingDecision | None:
     try:
-        return enforce_model_routing_request(
+        return await asyncio.to_thread(
+            enforce_model_routing_request,
             app_state.model_routing_runtime,
             identity=identity,
             requested_model=requested_model,

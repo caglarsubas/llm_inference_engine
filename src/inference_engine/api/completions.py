@@ -91,7 +91,7 @@ async def create_completion(
         raise HTTPException(status_code=400, detail="prompt must contain at least one string")
 
     params = _params(req)
-    decision = _model_routing.enforce_generation_request(
+    decision = await _model_routing.enforce_generation_request(
         identity=identity,
         requested_model=req.model,
         input_token_upper_bound=_model_routing.completion_input_token_upper_bound(req),

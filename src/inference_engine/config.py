@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -248,6 +249,23 @@ class Settings(BaseSettings):
     model_routing_max_file_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
     model_routing_input_token_reserve: int = Field(default=1_024, ge=0)
     model_routing_rate_limit_max_buckets: int = Field(default=10_000, ge=1)
+    model_routing_rate_limit_scope: Literal["process-replica", "deployment-shared"] = Field(
+        default="process-replica"
+    )
+    model_routing_rate_limit_redis_url: str = Field(default="")
+    model_routing_rate_limit_redis_url_file: str = Field(default="")
+    model_routing_rate_limit_allow_insecure_redis: bool = Field(default=False)
+    model_routing_rate_limit_key_prefix: str = Field(default="orchestra:model-routing")
+    model_routing_rate_limit_connect_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=30.0,
+    )
+    model_routing_rate_limit_operation_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=30.0,
+    )
 
     # Asynchronous observed-state reporting to the Orchestra control plane.
     # Off by default: standalone/observe-only deployments never make this

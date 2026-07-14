@@ -35,11 +35,13 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.jso
 @pytest.fixture(autouse=True)
 def _explicit_auth_baseline(monkeypatch):
     previous = app_state.model_routing_runtime
+    previous_limiter = app_state.model_routing_rate_limiter
     auth_mod._reset_for_tests()
     monkeypatch.setattr(settings, "auth_enabled", False)
     app_state.model_routing_runtime = ModelRoutingRuntimeState()
     yield
     app_state.model_routing_runtime = previous
+    app_state.model_routing_rate_limiter = previous_limiter
     auth_mod._reset_for_tests()
 
 
@@ -131,6 +133,19 @@ def test_status_reports_disabled_without_claiming_policy() -> None:
     assert response.status_code == 200
     assert response.json()["active"] is False
     assert response.json()["digest"] is None
+
+
+def test_status_reports_deployment_shared_rate_limit_scope() -> None:
+    class SharedLimiter:
+        scope = "deployment-shared"
+
+    app_state.model_routing_policy = _active_policy()
+    app_state.model_routing_rate_limiter = SharedLimiter()
+
+    response = TestClient(app).get("/v1/admin/model-routing-policy")
+
+    assert response.status_code == 200
+    assert response.json()["rate_limit_scope"] == "deployment-shared"
 
 
 def test_reload_atomically_replaces_active_policy(monkeypatch) -> None:

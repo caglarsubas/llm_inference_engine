@@ -6,7 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from .model_routing_runtime import ModelRoutingRuntimeState
+from .model_routing_runtime import (
+    MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS,
+    ModelRoutingRuntimeState,
+)
 
 
 class ModelRoutingPolicyStatus(BaseModel):
@@ -34,6 +37,7 @@ def build_model_routing_status(
     state: ModelRoutingRuntimeState,
     *,
     auth_enabled: bool,
+    rate_limit_scope: str = MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS,
 ) -> ModelRoutingPolicyStatus:
     active = state.policy
     if active is None:
@@ -58,7 +62,7 @@ def build_model_routing_status(
         candidate_error_code=active.candidate_error_code,
         request_time_enforcement=True,
         route_count=len(claims.routes),
-        rate_limit_scope="process-replica",
+        rate_limit_scope=rate_limit_scope,
         pricing_catalog_digest=(state.pricing.digest if state.pricing else None),
         pricing_model_count=(len(state.pricing.by_model) if state.pricing else 0),
         org_binding_mode=("auth-key-org" if auth_enabled else "deployment-org"),
