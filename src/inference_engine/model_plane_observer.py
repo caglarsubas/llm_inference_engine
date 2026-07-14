@@ -27,7 +27,10 @@ import httpx
 from pydantic import BaseModel
 
 from . import __version__
-from .model_routing_runtime import ModelRoutingRuntimeState
+from .model_routing_runtime import (
+    ModelRoutingRateLimiterProtocol,
+    ModelRoutingRuntimeState,
+)
 from .model_routing_status import build_model_routing_status
 from .observability import get_logger, span
 from .schemas import ModelList
@@ -53,6 +56,7 @@ class ModelPlaneObservationConfigError(ValueError):
 
 class _ObservationState(Protocol):
     model_routing_runtime: ModelRoutingRuntimeState
+    model_routing_rate_limiter: ModelRoutingRateLimiterProtocol
 
     def readiness(self) -> dict: ...
 
@@ -240,6 +244,7 @@ def build_model_plane_observation(
     routing = build_model_routing_status(
         state.model_routing_runtime,
         auth_enabled=config.auth_enabled,
+        rate_limit_scope=state.model_routing_rate_limiter.scope,
     )
     if routing.active and (
         routing.deployment_id != config.deployment_id

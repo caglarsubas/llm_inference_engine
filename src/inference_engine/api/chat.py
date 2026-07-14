@@ -149,7 +149,7 @@ async def chat_completions(
 ):
     intent_attrs = _intent_attrs(req)
     params = _params_from_request(req)
-    decision = _model_routing.enforce_generation_request(
+    decision = await _model_routing.enforce_generation_request(
         identity=identity,
         requested_model=req.model,
         input_token_upper_bound=_model_routing.chat_input_token_upper_bound(req),

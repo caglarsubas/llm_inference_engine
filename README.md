@@ -502,6 +502,13 @@ All knobs live in `.env` (see `.env.example`):
 | `MODEL_ROUTING_CLOCK_SKEW_SECONDS` | `30`                                                                           | Explicit verification skew, bounded to 300 seconds                          |
 | `MODEL_ROUTING_INPUT_TOKEN_RESERVE` | `1024`                                                                        | Conservative reserve for model-side chat templates during pre-dispatch bounds |
 | `MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS` | `10000`                                                                     | Fail-closed cap for process-local policy RPM buckets                        |
+| `MODEL_ROUTING_RATE_LIMIT_SCOPE` | `process-replica`                                                                  | `process-replica` or exact `deployment-shared` policy RPM enforcement       |
+| `MODEL_ROUTING_RATE_LIMIT_REDIS_URL` | empty                                                                         | Direct Redis-compatible URL for shared scope; prefer the mounted file source |
+| `MODEL_ROUTING_RATE_LIMIT_REDIS_URL_FILE` | empty                                                                    | Mounted Redis-compatible URL used by the shared limiter                     |
+| `MODEL_ROUTING_RATE_LIMIT_ALLOW_INSECURE_REDIS` | `false`                                                            | Permit non-TLS remote Redis only for explicitly isolated test environments  |
+| `MODEL_ROUTING_RATE_LIMIT_KEY_PREFIX` | `orchestra:model-routing`                                                   | Bounded, non-secret namespace for hashed shared RPM keys                    |
+| `MODEL_ROUTING_RATE_LIMIT_CONNECT_TIMEOUT_SECONDS` | `1`                                                               | Shared-store connection timeout; an unavailable store fails startup         |
+| `MODEL_ROUTING_RATE_LIMIT_OPERATION_TIMEOUT_SECONDS` | `1`                                                             | Per-request shared-store timeout; failures deny before model acquisition    |
 | `MODEL_PLANE_OBSERVATION_ENABLED` | `false`                                                                         | Enable asynchronous payload-free observed-state reporting                   |
 | `MODEL_PLANE_OBSERVATION_ENDPOINT` | empty                                                                           | Exact HTTPS Orchestra `/api/model-routing-observations` URL                  |
 | `MODEL_PLANE_OBSERVATION_API_KEY` | empty                                                                            | Direct `model-plane:observe` key; prefer the rotatable file source           |
@@ -1630,18 +1637,24 @@ deployment metadata, not hidden policy: its digest is exposed in status and on
 every governed decision span.
 
 `maxRequestsPerMinute` is a sliding window keyed by policy, route,
-organization, and tenant. It is intentionally process-local in this increment;
-multi-replica aggregate enforcement remains part of the deployment/SLO phase.
-The admin reload swaps policy and pricing as one immutable runtime snapshot, so
-requests cannot observe a mixed revision.
+organization, and tenant. The dependency-free default remains
+`process-replica`. Setting `MODEL_ROUTING_RATE_LIMIT_SCOPE=deployment-shared`
+uses a tenant-owned Redis-compatible service and one atomic server-time script
+for exact aggregate enforcement across replicas. Store keys contain only a
+SHA-256 identity digest; request, route, tenant, and organization values are not
+stored in clear text. Remote connections require `rediss://` unless the
+operator explicitly enables insecure transport for an isolated test profile.
+Startup and request-time store failures are fail-closed, with no downgrade to
+the local limiter and no call to the Orchestra control plane. The admin reload
+swaps policy and pricing as one immutable runtime snapshot, so requests cannot
+observe a mixed revision.
 
 Enforcement currently covers `/v1/chat/completions` and `/v1/completions`.
 While a policy is active, chat auto-eval plus `/v1/embeddings`, `/v1/rerank`,
 and `/v1/evals/run` return a payload-free
 `model_routing_workload_not_integrated` denial instead of reaching
-`ModelManager` outside governance. Those workload integrations,
-multi-replica rate coordination, Helm packaging, and SLO certification remain
-open Phase 1 work.
+`ModelManager` outside governance. Those workload integrations, tenant chart
+wiring, and multi-replica load/HA/SLO certification remain open Phase 1 work.
 
 ### Asynchronous model-plane observations
 

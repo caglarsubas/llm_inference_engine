@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
+import re
+import secrets
 import threading
 import time
 from collections import OrderedDict, deque
@@ -12,10 +15,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, ValidationError
 from pydantic.alias_generators import to_camel
+from redis import Redis
+from redis.exceptions import RedisError
 
 from .auth import Identity
 from .model_routing import (
@@ -27,6 +33,39 @@ from .model_routing import (
 
 MODEL_ROUTING_PRICING_VERSION = 1
 MODEL_ROUTING_RATE_LIMIT_WINDOW_SECONDS = 60.0
+MODEL_ROUTING_RATE_LIMIT_WINDOW_MILLISECONDS = 60_000
+MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS = "process-replica"
+MODEL_ROUTING_RATE_LIMIT_SCOPE_SHARED = "deployment-shared"
+MODEL_ROUTING_RATE_LIMIT_REDIS_URL_MAX_BYTES = 4_096
+
+ModelRoutingRateLimitScope = Literal["process-replica", "deployment-shared"]
+
+_RATE_LIMIT_KEY_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
+_SHARED_RATE_LIMIT_SCRIPT = """
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local nonce = ARGV[3]
+local server_time = redis.call('TIME')
+local now_ms = (tonumber(server_time[1]) * 1000) + math.floor(tonumber(server_time[2]) / 1000)
+local cutoff_ms = now_ms - window_ms
+
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff_ms)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local retry_ms = window_ms
+    if oldest[2] then
+        retry_ms = math.max(1, tonumber(oldest[2]) + window_ms - now_ms)
+    end
+    redis.call('PEXPIRE', key, window_ms)
+    return {0, retry_ms, count}
+end
+
+redis.call('ZADD', key, now_ms, tostring(now_ms) .. ':' .. nonce)
+redis.call('PEXPIRE', key, window_ms)
+return {1, 0, count + 1}
+"""
 
 
 class _RuntimeConfigModel(BaseModel):
@@ -72,6 +111,7 @@ class ModelRoutingDecision:
     output_token_budget: int
     estimated_max_cost_micros: int | None
     pricing_digest: str | None
+    rate_limit_scope: ModelRoutingRateLimitScope
 
 
 class ModelRoutingRuntimeConfigError(ValueError):
@@ -99,6 +139,25 @@ class ModelRoutingEnforcementError(ValueError):
         self.route_id = route_id
         self.retry_after_seconds = retry_after_seconds
         super().__init__(code)
+
+
+class ModelRoutingRateLimiterProtocol(Protocol):
+    scope: ModelRoutingRateLimitScope
+
+    def consume(
+        self,
+        *,
+        digest: str,
+        route_id: str,
+        org_id: str,
+        tenant: str,
+        limit: int,
+        policy_id: str,
+    ) -> None: ...
+
+    def ping(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 def _validate_pricing_catalog(catalog: ModelRoutingPricingCatalog) -> None:
@@ -201,6 +260,8 @@ def build_model_routing_runtime_state(
 class ModelRoutingRateLimiter:
     """Process-local sliding-window limiter keyed by policy, route, and tenant."""
 
+    scope: ModelRoutingRateLimitScope = MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS
+
     def __init__(
         self,
         *,
@@ -271,6 +332,181 @@ class ModelRoutingRateLimiter:
         with self._lock:
             self._buckets.clear()
 
+    def ping(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class RedisModelRoutingRateLimiter:
+    """Deployment-wide sliding window using one atomic Redis-protocol script."""
+
+    scope: ModelRoutingRateLimitScope = MODEL_ROUTING_RATE_LIMIT_SCOPE_SHARED
+
+    def __init__(self, client: Redis, *, key_prefix: str) -> None:
+        if not _RATE_LIMIT_KEY_PREFIX.fullmatch(key_prefix):
+            raise ModelRoutingRuntimeConfigError("rate_limit_key_prefix_invalid")
+        self._client = client
+        self._key_prefix = key_prefix
+
+    def _key(self, *, digest: str, route_id: str, org_id: str, tenant: str) -> str:
+        canonical = json.dumps(
+            [digest, route_id, org_id, tenant],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        identity_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return f"{self._key_prefix}:rpm:{identity_digest}"
+
+    def ping(self) -> None:
+        try:
+            if self._client.ping() is not True:
+                raise ModelRoutingRuntimeConfigError("rate_limit_backend_unavailable")
+        except ModelRoutingRuntimeConfigError:
+            raise
+        except (RedisError, OSError, ValueError, TypeError) as exc:
+            raise ModelRoutingRuntimeConfigError("rate_limit_backend_unavailable") from exc
+
+    def consume(
+        self,
+        *,
+        digest: str,
+        route_id: str,
+        org_id: str,
+        tenant: str,
+        limit: int,
+        policy_id: str,
+    ) -> None:
+        key = self._key(
+            digest=digest,
+            route_id=route_id,
+            org_id=org_id,
+            tenant=tenant,
+        )
+        try:
+            result = self._client.eval(
+                _SHARED_RATE_LIMIT_SCRIPT,
+                1,
+                key,
+                limit,
+                MODEL_ROUTING_RATE_LIMIT_WINDOW_MILLISECONDS,
+                secrets.token_hex(16),
+            )
+            if not isinstance(result, (list, tuple)) or len(result) != 3:
+                raise ValueError("invalid rate-limit response")
+            accepted = int(result[0])
+            retry_after_milliseconds = int(result[1])
+            if accepted == 1:
+                return
+            if accepted != 0:
+                raise ValueError("invalid rate-limit decision")
+            raise ModelRoutingEnforcementError(
+                "rate_limit_exceeded",
+                policy_id=policy_id,
+                route_id=route_id,
+                retry_after_seconds=max(1, math.ceil(retry_after_milliseconds / 1000)),
+            )
+        except ModelRoutingEnforcementError:
+            raise
+        except (RedisError, OSError, ValueError, TypeError) as exc:
+            raise ModelRoutingEnforcementError(
+                "rate_limit_backend_unavailable",
+                policy_id=policy_id,
+                route_id=route_id,
+                retry_after_seconds=1,
+            ) from exc
+
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except (RedisError, OSError):
+            return None
+
+
+def _is_loopback(hostname: str) -> bool:
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_rate_limit_redis_url(value: str, *, allow_insecure: bool) -> str:
+    if not value or any(character.isspace() for character in value):
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_invalid")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname or ""
+        parsed.port
+    except ValueError as exc:
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_invalid") from exc
+    if not hostname or parsed.fragment or parsed.scheme not in {"redis", "rediss"}:
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_invalid")
+    if parsed.scheme == "redis" and not (_is_loopback(hostname) or allow_insecure):
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_tls_required")
+    return value
+
+
+def _read_rate_limit_redis_url(path: Path) -> str:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MODEL_ROUTING_RATE_LIMIT_REDIS_URL_MAX_BYTES + 1)
+        if not raw or len(raw) > MODEL_ROUTING_RATE_LIMIT_REDIS_URL_MAX_BYTES:
+            raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_invalid")
+        return raw.decode("utf-8").strip()
+    except ModelRoutingRuntimeConfigError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_unavailable") from exc
+
+
+def build_model_routing_rate_limiter(settings) -> ModelRoutingRateLimiterProtocol:
+    """Build a strict local or tenant-owned shared limiter without connecting yet."""
+
+    scope = settings.model_routing_rate_limit_scope
+    direct_url = settings.model_routing_rate_limit_redis_url.strip()
+    url_file_value = settings.model_routing_rate_limit_redis_url_file.strip()
+
+    if scope == MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS:
+        if direct_url or url_file_value:
+            raise ModelRoutingRuntimeConfigError("rate_limit_backend_config_unused")
+        return ModelRoutingRateLimiter(
+            max_buckets=settings.model_routing_rate_limit_max_buckets,
+        )
+    if scope != MODEL_ROUTING_RATE_LIMIT_SCOPE_SHARED:
+        raise ModelRoutingRuntimeConfigError("rate_limit_scope_invalid")
+    if bool(direct_url) == bool(url_file_value):
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_source_invalid")
+
+    redis_url = (
+        _read_rate_limit_redis_url(Path(url_file_value).expanduser())
+        if url_file_value
+        else direct_url
+    )
+    redis_url = _validate_rate_limit_redis_url(
+        redis_url,
+        allow_insecure=settings.model_routing_rate_limit_allow_insecure_redis,
+    )
+    key_prefix = settings.model_routing_rate_limit_key_prefix.strip()
+    if not _RATE_LIMIT_KEY_PREFIX.fullmatch(key_prefix):
+        raise ModelRoutingRuntimeConfigError("rate_limit_key_prefix_invalid")
+
+    try:
+        client = Redis.from_url(
+            redis_url,
+            decode_responses=False,
+            health_check_interval=30,
+            retry_on_timeout=False,
+            socket_connect_timeout=settings.model_routing_rate_limit_connect_timeout_seconds,
+            socket_keepalive=True,
+            socket_timeout=settings.model_routing_rate_limit_operation_timeout_seconds,
+        )
+    except (RedisError, OSError, ValueError, TypeError) as exc:
+        raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_invalid") from exc
+    return RedisModelRoutingRateLimiter(client, key_prefix=key_prefix)
+
 
 def _parse_timestamp(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
@@ -314,7 +550,7 @@ def enforce_model_routing_request(
     requested_model: str,
     input_token_upper_bound: int | None,
     output_token_budget: int,
-    rate_limiter: ModelRoutingRateLimiter,
+    rate_limiter: ModelRoutingRateLimiterProtocol,
     now: datetime | None = None,
     clock_skew_seconds: int = 0,
 ) -> ModelRoutingDecision | None:
@@ -442,6 +678,7 @@ def enforce_model_routing_request(
         output_token_budget=output_token_budget,
         estimated_max_cost_micros=estimated_cost,
         pricing_digest=(state.pricing.digest if state.pricing is not None else None),
+        rate_limit_scope=rate_limiter.scope,
     )
 
 
@@ -469,7 +706,7 @@ def model_routing_span_attrs(
         "model_routing.route.requested_model": decision.requested_model,
         "model_routing.route.candidate_count": len(decision.candidate_models),
         "model_routing.output_token_budget": decision.output_token_budget,
-        "model_routing.rate_limit.scope": "process-replica",
+        "model_routing.rate_limit.scope": decision.rate_limit_scope,
     }
     if decision.input_token_upper_bound is not None:
         attrs["model_routing.input_token_upper_bound"] = decision.input_token_upper_bound

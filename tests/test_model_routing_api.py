@@ -30,6 +30,7 @@ from inference_engine.model_routing import (
 )
 from inference_engine.model_routing_runtime import (
     LoadedModelRoutingPricingCatalog,
+    ModelRoutingEnforcementError,
     ModelRoutingModelPrice,
     ModelRoutingPricingCatalog,
     ModelRoutingRateLimiter,
@@ -389,7 +390,7 @@ async def test_streaming_chat_falls_back_before_first_chunk(monkeypatch) -> None
     )
 
     identity = Identity(tenant="runtime", key_id="sk-test", org_id="org-golden")
-    decision = _model_routing.enforce_generation_request(
+    decision = await _model_routing.enforce_generation_request(
         identity=identity,
         requested_model="reasoning",
         input_token_upper_bound=10,
@@ -626,3 +627,36 @@ def test_rate_limit_isolated_by_authenticated_tenant_key(monkeypatch) -> None:
     assert second.headers["Retry-After"]
     assert second.json()["detail"]["type"] == "rate_limit_exceeded"
     assert adapter.generate_calls == 2
+
+
+def test_shared_rate_limit_outage_denies_before_model_acquire(monkeypatch) -> None:
+    class UnavailableSharedLimiter:
+        scope = "deployment-shared"
+
+        def consume(self, **kwargs) -> None:
+            raise ModelRoutingEnforcementError(
+                "rate_limit_backend_unavailable",
+                policy_id=kwargs["policy_id"],
+                route_id=kwargs["route_id"],
+                retry_after_seconds=1,
+            )
+
+    active = _replace_reasoning_limits(
+        _active_policy(),
+        max_requests_per_minute=1,
+    )
+    app_state.model_routing_runtime = _runtime_state(active)
+    app_state.model_routing_rate_limiter = UnavailableSharedLimiter()
+    adapter = _RoutingAdapter("must-not-run")
+    calls = _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        json={"model": "reasoning", "messages": [{"role": "user", "content": "one"}]},
+    )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert response.json()["detail"]["type"] == "rate_limit_backend_unavailable"
+    assert calls == []
+    assert adapter.generate_calls == 0

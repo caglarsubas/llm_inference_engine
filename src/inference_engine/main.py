@@ -17,6 +17,7 @@ from .model_plane_observer import (
 )
 from .model_routing import activate_model_routing_policy_from_settings
 from .model_routing_runtime import (
+    build_model_routing_rate_limiter,
     build_model_routing_runtime_state,
     load_model_routing_pricing_catalog,
 )
@@ -128,6 +129,7 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
             routing_policy.source if routing_policy is not None else None
         ),
         "model_routing_request_enforcement": routing_policy is not None,
+        "model_routing_rate_limit_scope": app_state.model_routing_rate_limiter.scope,
         "model_routing_pricing_digest": (
             routing_pricing.digest if routing_pricing is not None else None
         ),
@@ -222,6 +224,14 @@ async def lifespan(app: FastAPI):
         if observer_config is not None
         else None
     )
+    previous_rate_limiter = app_state.model_routing_rate_limiter
+    rate_limiter = build_model_routing_rate_limiter(settings)
+    try:
+        await asyncio.to_thread(rate_limiter.ping)
+    except Exception:
+        await asyncio.to_thread(rate_limiter.close)
+        raise
+    app_state.model_routing_rate_limiter = rate_limiter
     app_state.model_plane_observer = observer
     log = get_logger("startup")
     app_state.mark_starting()
@@ -252,8 +262,12 @@ async def lifespan(app: FastAPI):
         try:
             await app_state.manager.shutdown()
         finally:
-            app_state.model_plane_observer = None
-            shutdown_tracing()
+            try:
+                await asyncio.to_thread(rate_limiter.close)
+            finally:
+                app_state.model_routing_rate_limiter = previous_rate_limiter
+                app_state.model_plane_observer = None
+                shutdown_tracing()
 
 
 app = FastAPI(
