@@ -1,7 +1,7 @@
 """``/v1/admin/...`` — operator-facing endpoints.
 
 Anything that mutates operator-owned engine state belongs here (future:
-``keys:reload``, ``models:warmup``, etc.). Prometa may issue desired artifacts,
+``models:warmup``, etc.). Prometa may issue desired artifacts,
 but tenant automation remains responsible for mounting them and invoking these
 endpoints.
 
@@ -14,11 +14,18 @@ only behind the API gateway's allowlist.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from ..auth import Identity, require_identity
+from ..auth import (
+    Identity,
+    auth_key_status,
+    presented_bearer_token,
+    reload_keys,
+    require_identity,
+)
 from ..config import settings
 from ..evals import load_policy
 from ..model_routing import (
@@ -44,6 +51,102 @@ class PolicyReloadResponse(BaseModel):
     reloaded_at: int
     policies_loaded: int
     source: str
+
+
+class AuthKeyStatusItem(BaseModel):
+    key_id: str
+    tenant: str
+    org_id: str | None
+    not_before: datetime | None
+    expires_at: datetime | None
+    active: bool
+
+
+class AuthKeyStatusResponse(BaseModel):
+    object: str = "auth_keys.status"
+    source: str
+    digest: str | None
+    keys_loaded: int
+    active_keys: int
+    checked_at: datetime
+    keys: list[AuthKeyStatusItem]
+
+
+class AuthKeyReloadResponse(AuthKeyStatusResponse):
+    object: str = "auth_keys.reload"
+    reloaded_at: int
+    retained_caller: bool
+
+
+@router.get("/v1/admin/auth-keys", response_model=AuthKeyStatusResponse)
+async def auth_keys_status(
+    identity: Identity = Depends(require_identity),
+) -> AuthKeyStatusResponse:
+    del identity
+    return AuthKeyStatusResponse(**auth_key_status())
+
+
+@router.post("/v1/admin/auth-keys:reload", response_model=AuthKeyReloadResponse)
+async def reload_auth_keys(
+    request: Request,
+    identity: Identity = Depends(require_identity),
+) -> AuthKeyReloadResponse:
+    """Validate and atomically activate the mounted auth-key candidate."""
+
+    previous = auth_key_status()
+    required_key = presented_bearer_token(request) if settings.auth_enabled else None
+    with span(
+        "admin.auth_keys.reload",
+        **{
+            "prometa.tenant": identity.tenant,
+            "prometa.key_id": identity.key_id,
+            "auth_keys.previous_digest": previous["digest"] or "",
+            "auth_keys.previous_count": previous["keys_loaded"],
+        },
+    ) as s:
+        try:
+            result = reload_keys(required_key=required_key)
+        except (FileNotFoundError, ValueError) as exc:
+            error_type = "auth_keys_file_missing"
+            if isinstance(exc, ValueError):
+                error_type = (
+                    "auth_keys_caller_not_retained"
+                    if "retain the active credential" in str(exc)
+                    else "auth_keys_invalid"
+                )
+            log.error("admin.auth_keys.reload_failed", error_type=error_type)
+            s.bind(**{"auth_keys.reload.error_type": error_type})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "auth key reload failed",
+                    "type": error_type,
+                },
+            ) from exc
+
+        current = auth_key_status()
+        s.bind(
+            **{
+                "auth_keys.digest": result.digest,
+                "auth_keys.loaded_count": result.keys_loaded,
+                "auth_keys.active_count": result.active_keys,
+                "auth_keys.retained_caller": result.retained_caller,
+            }
+        )
+
+    log.info(
+        "admin.auth_keys.reloaded",
+        tenant=identity.tenant,
+        key_id=identity.key_id,
+        digest=result.digest,
+        keys_loaded=result.keys_loaded,
+        active_keys=result.active_keys,
+    )
+    return AuthKeyReloadResponse(
+        **current,
+        reloaded_at=int(time.time()),
+        retained_caller=result.retained_caller,
+    )
 
 
 @router.post("/v1/admin/policies:reload", response_model=PolicyReloadResponse)

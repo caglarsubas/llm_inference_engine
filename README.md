@@ -253,6 +253,8 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | GET    | `/v1/evals/rubrics`           | List built-in + registered rubrics                                         |
 | GET    | `/v1/evals/policy`            | Active server-side auto-eval policy entries (Prometa-driven)               |
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
+| GET    | `/v1/admin/auth-keys`         | Secret-free loaded key IDs, validity windows, digest, and active count     |
+| POST   | `/v1/admin/auth-keys:reload`  | Atomically activate a mounted key set while retaining the calling key      |
 | GET    | `/v1/admin/model-routing-policy` | Payload-free activated signed-policy identity and LKG status             |
 | POST   | `/v1/admin/model-routing-policy:reload` | Verify candidate/LKG and atomically activate on success             |
 | POST   | `/v1/admin/model-routing-pricing:reload` | Validate mounted pricing against the active policy and atomically replace pricing |
@@ -488,7 +490,7 @@ All knobs live in `.env` (see `.env.example`):
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`                                                              | Any OTLP/gRPC collector (Jaeger, otel-collector, …)      |
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
 | `AUTH_ENABLED`           | `false`                                                                                  | Bearer-token gate on `/v1/models` and `/v1/chat/completions` |
-| `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON array of `{"key": "...", "tenant": "...", "org_id": "..."}` records  |
+| `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON key records; optional `key_id`, `not_before`, and `expires_at` enable managed rotation |
 | `MODEL_ROUTING_POLICY_REQUIRED` | `false`                                                                         | Fail startup when no signed candidate or valid LKG can activate            |
 | `MODEL_ROUTING_POLICY_FILE` | `.model_routing_policy.json`                                                         | Operator-mounted signed desired-state candidate                            |
 | `MODEL_ROUTING_LAST_KNOWN_GOOD_FILE` | `.model_routing_policy.lkg.json`                                           | Atomic exact-envelope LKG persisted after successful verification          |
@@ -1675,9 +1677,22 @@ Per-key bearer-token auth — off by default for local dev, switch on with `AUTH
 
 ```json
 [
-  {"key": "sk-dev-local-1", "tenant": "dev", "org_id": "org-acme"},
-  {"key": "sk-eval-1", "tenant": "evals", "org_id": "org-acme"},
-  {"key": "sk-agent-prod-1", "tenant": "agent-runtime", "org_id": "org-acme"}
+  {
+    "key": "mpk-old-secret",
+    "key_id": "mpk_orders_r3",
+    "tenant": "orders-runtime",
+    "org_id": "org-acme",
+    "not_before": "2026-07-14T00:00:00Z",
+    "expires_at": "2026-07-15T00:00:00Z"
+  },
+  {
+    "key": "mpk-new-secret",
+    "key_id": "mpk_orders_r4",
+    "tenant": "orders-runtime",
+    "org_id": "org-acme",
+    "not_before": "2026-07-14T00:00:00Z",
+    "expires_at": "2026-10-12T00:00:00Z"
+  }
 ]
 ```
 
@@ -1685,6 +1700,7 @@ Behaviour:
 
 - `Authorization: Bearer <key>` → resolves to `Identity(tenant, key_id, org_id)` and caches on `request.state`.
 - Missing or unknown key → `401 {"detail": "missing bearer token"}` / `401 {"detail": "invalid api key"}`.
+- A key before `not_before` or at/after `expires_at` is rejected as an invalid key. Both fields are optional for legacy files but timezone-aware when present.
 - `/v1/health` and `/v1/ready` are left open so liveness/readiness probes work without keys.
 - `/v1/models` and `/v1/chat/completions` require a valid key when auth is on.
 - Every span (model.acquire, chat.generate, chat.stream) carries `prometa.tenant=<name>` and `prometa.key_id=<redacted>` — Prometa can route signals per tenant out of the box.
@@ -1692,7 +1708,22 @@ Behaviour:
   local development must set `MODEL_ROUTING_EXPECTED_ORG_ID` to the signed
   policy organization.
 
-The keys file is the seam where Prometa's control plane drops a generated set; rotation is a `load_keys()` call away.
+The keys file is the seam where Prometa's control plane hands a generated set
+to tenant automation. Rotation remains tenant-controlled:
+
+1. Mount a candidate containing the current key plus the new key. Give the old
+   key a short `expires_at` overlap and the new key its full validity window.
+2. Call `POST /v1/admin/auth-keys:reload` with the current key. The engine
+   parses the complete file before one atomic swap and refuses a candidate
+   that does not retain the credential invoking reload.
+3. Distribute the new key to callers. The old key stops authenticating at its
+   declared expiry without another engine restart.
+
+`GET /v1/admin/auth-keys` and the reload response expose only key IDs,
+bindings, validity metadata, counts, and the file digest. Secret values are
+never returned or logged; legacy records without `key_id` use an irreversible
+SHA-256 fingerprint in status output. A malformed, oversized, missing, or
+lockout-causing candidate preserves the previous in-memory key set.
 
 ## KV-cache prefix reuse
 
