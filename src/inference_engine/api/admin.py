@@ -1,8 +1,9 @@
 """``/v1/admin/...`` — operator-facing endpoints.
 
-Right now the only entry is ``policies:reload``, but anything Prometa's
-control plane calls to mutate engine state belongs here (future: ``keys:reload``,
-``models:warmup``, etc.).
+Anything that mutates operator-owned engine state belongs here (future:
+``keys:reload``, ``models:warmup``, etc.). Prometa may issue desired artifacts,
+but tenant automation remains responsible for mounting them and invoking these
+endpoints.
 
 All admin endpoints are gated by ``require_identity``. When ``AUTH_ENABLED``
 is on, that means a valid bearer key; when it's off, callers resolve to
@@ -223,6 +224,81 @@ async def reload_model_routing_policy(
             }
         )
 
+    return build_model_routing_status(
+        next_state,
+        auth_enabled=settings.auth_enabled,
+    )
+
+
+@router.post(
+    "/v1/admin/model-routing-pricing:reload",
+    response_model=ModelRoutingPolicyStatus,
+)
+async def reload_model_routing_pricing(
+    identity: Identity = Depends(require_identity),
+) -> ModelRoutingPolicyStatus:
+    """Atomically replace pricing while preserving the active policy."""
+
+    previous_state = app_state.model_routing_runtime
+    previous_policy = previous_state.policy
+    previous_pricing = previous_state.pricing
+    with span(
+        "admin.model_routing_pricing.reload",
+        **{
+            "prometa.tenant": identity.tenant,
+            "prometa.key_id": identity.key_id,
+            "model_routing.policy.digest": (
+                previous_policy.digest if previous_policy is not None else ""
+            ),
+            "model_routing.pricing.previous_digest": (
+                previous_pricing.digest if previous_pricing is not None else ""
+            ),
+        },
+    ) as s:
+        try:
+            if previous_policy is None:
+                raise ModelRoutingRuntimeConfigError("model_routing_policy_required")
+            pricing = load_model_routing_pricing_catalog(
+                settings.model_routing_pricing_file,
+                max_bytes=settings.model_routing_max_file_bytes,
+            )
+            if pricing is None:
+                raise ModelRoutingRuntimeConfigError("pricing_catalog_required")
+            next_state = build_model_routing_runtime_state(
+                previous_policy,
+                pricing,
+                auth_enabled=settings.auth_enabled,
+                expected_org_id=settings.model_routing_expected_org_id,
+            )
+        except ModelRoutingRuntimeConfigError as exc:
+            log.error(
+                "admin.model_routing_pricing.reload_failed",
+                error_code=exc.code,
+            )
+            s.bind(**{"model_routing.pricing.reload.error_code": exc.code})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "model routing pricing reload failed",
+                    "type": exc.code,
+                },
+            ) from exc
+
+        app_state.model_routing_runtime = next_state
+        s.bind(
+            **{
+                "model_routing.pricing.digest": pricing.digest,
+                "model_routing.pricing.model_count": len(pricing.by_model),
+            }
+        )
+
+    log.info(
+        "admin.model_routing_pricing.reloaded",
+        tenant=identity.tenant,
+        policy_digest=previous_policy.digest,
+        pricing_digest=pricing.digest,
+        model_count=len(pricing.by_model),
+    )
     return build_model_routing_status(
         next_state,
         auth_enabled=settings.auth_enabled,

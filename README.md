@@ -255,6 +255,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
 | GET    | `/v1/admin/model-routing-policy` | Payload-free activated signed-policy identity and LKG status             |
 | POST   | `/v1/admin/model-routing-policy:reload` | Verify candidate/LKG and atomically activate on success             |
+| POST   | `/v1/admin/model-routing-pricing:reload` | Validate mounted pricing against the active policy and atomically replace pricing |
 | GET    | `/v1/admin/model-plane-observer` | Payload-free asynchronous reporter delivery status                    |
 | POST   | `/v1/evals/run`               | LLM-as-a-Judge: candidate + rubric → structured verdict                    |
 | POST   | `/v1/chat/completions`        | (extension) `auto_eval: {rubrics, mode}` runs evals inline or in background |
@@ -1590,7 +1591,17 @@ curl -H "Authorization: Bearer $ENGINE_ADMIN_KEY" \
 
 curl -X POST -H "Authorization: Bearer $ENGINE_ADMIN_KEY" \
   http://127.0.0.1:8080/v1/admin/model-routing-policy:reload
+
+curl -X POST -H "Authorization: Bearer $ENGINE_ADMIN_KEY" \
+  http://127.0.0.1:8080/v1/admin/model-routing-pricing:reload
 ```
+
+The pricing-only reload keeps the active signed policy unchanged. It requires
+both an active policy and a nonempty mounted pricing catalog, validates every
+cost-bounded route against the candidate catalog, and swaps the combined
+runtime state only on success. Missing, malformed, or incomplete pricing leaves
+the previous in-memory policy and pricing state untouched. Artifact mounting
+and reload invocation remain tenant CI/CD responsibilities.
 
 The generation endpoints now enforce an active policy before model registry
 lookup:
