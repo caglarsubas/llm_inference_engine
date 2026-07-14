@@ -36,9 +36,9 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
 RUN if [ -n "${EXTRAS}" ]; then \
-      CMAKE_ARGS="${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable --extra "${EXTRAS}"; \
+      CMAKE_ARGS="-DGGML_NATIVE=OFF ${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable --extra "${EXTRAS}"; \
     else \
-      CMAKE_ARGS="${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable; \
+      CMAKE_ARGS="-DGGML_NATIVE=OFF ${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable; \
     fi
 
 FROM ${UBI_RUNTIME_IMAGE} AS runtime

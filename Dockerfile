@@ -43,9 +43,9 @@ COPY src ./src
 # Install the project non-editably so the runtime does not depend on /app/src.
 # EXTRAS remains a build-time option; canonical published images pass "otel".
 RUN if [ -n "${EXTRAS}" ]; then \
-      CMAKE_ARGS="${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable --extra "${EXTRAS}"; \
+      CMAKE_ARGS="-DGGML_NATIVE=OFF ${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable --extra "${EXTRAS}"; \
     else \
-      CMAKE_ARGS="${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable; \
+      CMAKE_ARGS="-DGGML_NATIVE=OFF ${CMAKE_ARGS}" uv sync --frozen --no-dev --no-editable; \
     fi
 
 FROM ${PYTHON_IMAGE} AS runtime

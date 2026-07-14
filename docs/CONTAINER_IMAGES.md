@@ -59,6 +59,11 @@ docker build -f Dockerfile.ubi --build-arg EXTRAS=otel \
 ./scripts/container_smoke.sh inference-engine:ubi
 ```
 
+Canonical CPU builds disable llama.cpp host-native instruction tuning. This
+keeps an image built on a newer x86 runner portable to older tenant nodes and
+avoids coupling the UBI compiler to assembler features detected on the build
+host. Additional `CMAKE_ARGS`, including CUDA, are appended to that baseline.
+
 Use a CUDA-capable builder and runtime host to create an accelerated Debian
 variant:
 
@@ -114,16 +119,16 @@ signatures and attestations:
 cosign login ghcr.io -u <source-user> -p <source-token>
 cosign login registry.customer.example -u <destination-user> -p <destination-token>
 
-ORCHESTRA_ENGINE_TAG=v0.1.1 \
+ORCHESTRA_ENGINE_TAG=v0.1.2 \
   ./scripts/relocate_images.sh copy registry.customer.example/orchestra
 ```
 
 For disconnected transfer:
 
 ```bash
-ORCHESTRA_ENGINE_TAG=v0.1.1 ./scripts/relocate_images.sh save ./engine-images
+ORCHESTRA_ENGINE_TAG=v0.1.2 ./scripts/relocate_images.sh save ./engine-images
 # Move ./engine-images across the boundary.
-ORCHESTRA_ENGINE_TAG=v0.1.1 \
+ORCHESTRA_ENGINE_TAG=v0.1.2 \
   ./scripts/relocate_images.sh load registry.airgap.example/orchestra ./engine-images
 ```
 
