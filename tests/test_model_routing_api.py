@@ -11,7 +11,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from inference_engine import auth as auth_mod
-from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
+from inference_engine.adapters import (
+    EmbeddingResult,
+    EmbeddingsNotSupportedError,
+    GenerationParams,
+    InferenceAdapter,
+    StreamChunk,
+)
 from inference_engine.adapters.base import GenerationResult, GenerationTimeoutError
 from inference_engine.api import _model_routing
 from inference_engine.api.chat import _stream_response
@@ -132,13 +138,24 @@ def _descriptor(model_id: str) -> ModelDescriptor:
 class _RoutingAdapter(InferenceAdapter):
     backend_name = "routing-test"
 
-    def __init__(self, text: str, *, fail: bool = False, backend: str = "routing-test"):
+    def __init__(
+        self,
+        text: str,
+        *,
+        fail: bool = False,
+        backend: str = "routing-test",
+        embed_supported: bool = True,
+        embedding_value: float = 1.0,
+    ):
         self.text = text
         self.fail = fail
         self.backend_name = backend
+        self.embed_supported = embed_supported
+        self.embedding_value = embedding_value
         self.generate_calls = 0
         self.complete_calls = 0
         self.stream_calls = 0
+        self.embed_calls = 0
 
     @property
     def is_loaded(self) -> bool:
@@ -204,6 +221,16 @@ class _RoutingAdapter(InferenceAdapter):
         self._raise_if_failed()
         yield StreamChunk(text=self.text)
         yield StreamChunk(text="", finish_reason="stop")
+
+    async def embed(self, inputs: list[str]) -> EmbeddingResult:
+        self.embed_calls += 1
+        self._raise_if_failed()
+        if not self.embed_supported:
+            raise EmbeddingsNotSupportedError(self.backend_name)
+        return EmbeddingResult(
+            embeddings=[[self.embedding_value, self.embedding_value + 1] for _ in inputs],
+            prompt_tokens=len(inputs) * 3,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -450,6 +477,149 @@ def test_legacy_completions_uses_same_alias_and_fallback(monkeypatch) -> None:
     assert calls == ["qwen3:32b", "llama3.3:70b:openrouter"]
 
 
+def test_embeddings_use_signed_alias_limits_and_policy_evidence(
+    monkeypatch,
+    _session_exporter,
+) -> None:
+    _session_exporter.clear()
+    primary = _RoutingAdapter("primary", embedding_value=2.0)
+    calls = _install_models(monkeypatch, {"qwen3:32b": primary})
+
+    response = TestClient(app).post(
+        "/v1/embeddings",
+        json={"model": "reasoning", "input": ["first", "second"]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"] == "qwen3:32b"
+    assert body["data"][0]["embedding"] == [2.0, 3.0]
+    assert body["usage"] == {
+        "prompt_tokens": 6,
+        "completion_tokens": 0,
+        "total_tokens": 6,
+    }
+    assert body["fallback_from_model"] is None
+    assert calls == ["qwen3:32b"]
+    assert primary.embed_calls == 1
+
+    [embedding] = [
+        item for item in _session_exporter.get_finished_spans() if item.name == "embeddings.run"
+    ]
+    assert embedding.attributes["model_routing.policy.id"] == "routing-golden-v1"
+    assert embedding.attributes["model_routing.route.id"] == "reasoning"
+    assert embedding.attributes["model_routing.route.selected_model"] == "qwen3:32b"
+    assert embedding.attributes["model_routing.output_token_budget"] == 0
+    assert embedding.attributes["model_routing.estimated_max_cost_micros"] > 0
+    assert embedding.attributes["prometa.org_id"] == "org-golden"
+
+
+def test_embeddings_try_only_ordered_signed_fallbacks(monkeypatch) -> None:
+    primary = _RoutingAdapter("primary", embed_supported=False, backend="local")
+    fallback = _RoutingAdapter(
+        "signed-fallback",
+        backend="openrouter",
+        embedding_value=4.0,
+    )
+    unsigned = _RoutingAdapter("unsigned", embedding_value=9.0)
+    calls = _install_models(
+        monkeypatch,
+        {
+            "qwen3:32b": primary,
+            "llama3.3:70b:openrouter": fallback,
+            "escape:openrouter": unsigned,
+        },
+    )
+
+    response = TestClient(app).post(
+        "/v1/embeddings",
+        json={"model": "reasoning", "input": "embed this"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"] == "llama3.3:70b:openrouter"
+    assert body["data"][0]["embedding"] == [4.0, 5.0]
+    assert body["fallback_from_model"] == "qwen3:32b"
+    assert body["fallback_reason"] == "capability_not_supported"
+    assert body["fallback_error_type"] == "EmbeddingsNotSupportedError"
+    assert calls == ["qwen3:32b", "llama3.3:70b:openrouter"]
+    assert unsigned.embed_calls == 0
+
+
+def test_embeddings_do_not_escape_signed_candidates(monkeypatch) -> None:
+    primary = _RoutingAdapter("primary", embed_supported=False)
+    signed_fallback = _RoutingAdapter("signed", embed_supported=False)
+    unsigned = _RoutingAdapter("unsigned", embedding_value=9.0)
+    calls = _install_models(
+        monkeypatch,
+        {
+            "qwen3:32b": primary,
+            "llama3.3:70b:openrouter": signed_fallback,
+            "escape:openrouter": unsigned,
+        },
+    )
+
+    response = TestClient(app).post(
+        "/v1/embeddings",
+        json={"model": "reasoning", "input": "embed this"},
+    )
+
+    assert response.status_code == 501
+    assert "embeddings not supported" in response.json()["detail"]
+    assert calls == ["qwen3:32b", "llama3.3:70b:openrouter"]
+    assert unsigned.embed_calls == 0
+
+
+def test_embedding_bounds_deny_before_model_lookup(monkeypatch) -> None:
+    active = _replace_reasoning_limits(
+        _active_policy(),
+        max_input_tokens=1,
+        max_cost_micros_per_request=None,
+    )
+    app_state.model_routing_runtime = _runtime_state(active)
+    calls = _install_models(monkeypatch, {"qwen3:32b": _RoutingAdapter("unused")})
+
+    response = TestClient(app).post(
+        "/v1/embeddings",
+        json={"model": "reasoning", "input": "private input"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["type"] == "input_token_limit_exceeded"
+    assert calls == []
+
+
+def test_embeddings_enforce_authenticated_org_binding(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    auth_mod._set_keys_for_tests(
+        [
+            ("sk-embed-good", "tenant-good", "org-golden"),
+            ("sk-embed-wrong", "tenant-wrong", "org-other"),
+        ]
+    )
+    adapter = _RoutingAdapter("primary", embedding_value=6.0)
+    calls = _install_models(monkeypatch, {"qwen3:32b": adapter})
+    client = TestClient(app)
+
+    denied = client.post(
+        "/v1/embeddings",
+        json={"model": "reasoning", "input": "private"},
+        headers={"Authorization": "Bearer sk-embed-wrong"},
+    )
+    accepted = client.post(
+        "/v1/embeddings",
+        json={"model": "reasoning", "input": "private"},
+        headers={"Authorization": "Bearer sk-embed-good"},
+    )
+
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["type"] == "org_identity_mismatch"
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["data"][0]["embedding"] == [6.0, 7.0]
+    assert calls == ["qwen3:32b"]
+
+
 def test_output_and_cost_denials_happen_before_model_lookup(monkeypatch) -> None:
     calls = _install_models(monkeypatch, {"qwen3:32b": _RoutingAdapter("unused")})
     client = TestClient(app)
@@ -531,11 +701,6 @@ def test_governed_chat_blocks_unrouted_auto_eval(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("path", "payload", "workload"),
     [
-        (
-            "/v1/embeddings",
-            {"model": "reasoning", "input": "embed this"},
-            "embeddings.run",
-        ),
         (
             "/v1/rerank",
             {"model": "reasoning", "query": "q", "documents": ["d"]},

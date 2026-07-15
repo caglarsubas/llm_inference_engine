@@ -84,6 +84,16 @@ def completion_input_token_upper_bound(req: CompletionRequest) -> int:
     return len(encoded) + settings.model_routing_input_token_reserve
 
 
+def embedding_input_token_upper_bound(inputs: list[str]) -> int:
+    encoded = json.dumps(
+        {"input": inputs},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return len(encoded) + settings.model_routing_input_token_reserve
+
+
 def _enforcement_http_error(exc: ModelRoutingEnforcementError) -> HTTPException:
     if exc.code == "rate_limit_exceeded":
         status_code = 429
@@ -387,6 +397,7 @@ __all__ = [
     "ResolvedRoutingCandidate",
     "chat_input_token_upper_bound",
     "completion_input_token_upper_bound",
+    "embedding_input_token_upper_bound",
     "enforce_generation_request",
     "model_routing_span_attrs",
     "reject_unsupported_governed_workload",

@@ -22,9 +22,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..adapters import EmbeddingsNotSupportedError, InferenceAdapter
+from ..adapters import EmbeddingResult, EmbeddingsNotSupportedError, InferenceAdapter
 from ..auth import Identity, require_identity
-from ..manager import ModelNotFoundError
 from ..observability import span
 from ..schemas import (
     EmbeddingObject,
@@ -32,7 +31,7 @@ from ..schemas import (
     EmbeddingResponse,
     Usage,
 )
-from . import _model_routing
+from . import _fallback, _model_routing
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -40,8 +39,10 @@ router = APIRouter()
 
 
 def _identity_attrs(identity: Identity) -> dict:
-    # Same shape chat uses; duplicated to keep this module self-contained.
-    return {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    attrs = {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    if identity.org_id is not None:
+        attrs["prometa.org_id"] = identity.org_id
+    return attrs
 
 
 def _request_key_source(adapter: InferenceAdapter) -> str:
@@ -52,33 +53,18 @@ def _request_key_attrs(adapter: InferenceAdapter) -> dict:
     return {"llm.request.key_source": _request_key_source(adapter)}
 
 
-async def _resolve(model_id: str) -> tuple[InferenceAdapter, str]:
-    try:
-        adapter, desc = await app_state.manager.get(model_id)
-    except ModelNotFoundError:
-        raise HTTPException(status_code=404, detail=f"model not found: {model_id!r}") from None
-    return adapter, desc.qualified_name
-
-
-@router.post("/v1/embeddings", response_model=EmbeddingResponse)
-async def create_embeddings(
-    req: EmbeddingRequest,
-    identity: Identity = Depends(require_identity),
-) -> EmbeddingResponse:
-    _model_routing.reject_unsupported_governed_workload(
-        identity=identity,
-        workload="embeddings.run",
-    )
-    inputs = [req.input] if isinstance(req.input, str) else list(req.input)
-    if not inputs:
-        raise HTTPException(status_code=400, detail="input must contain at least one string")
-
-    adapter, model_name = await _resolve(req.model)
+async def _embed_once(
+    *,
+    active: _model_routing.ResolvedRoutingCandidate,
+    inputs: list[str],
+    identity: Identity,
+    decision: _model_routing.ModelRoutingDecision | None,
+) -> EmbeddingResult:
     estimated_tokens = max(1, sum(len(item) for item in inputs) // 4)
     lease = await acquire_slot(
         identity=identity,
-        adapter=adapter,
-        model_name=model_name,
+        adapter=active.adapter,
+        model_name=active.model_name,
         workload="embeddings.run",
         priority=-10.0,
         estimated_tokens=estimated_tokens,
@@ -88,29 +74,26 @@ async def create_embeddings(
         with span(
             "embeddings.run",
             **{
-                "gen_ai.system": adapter.backend_name,
-                "gen_ai.request.model": model_name,
+                "gen_ai.system": active.adapter.backend_name,
+                "gen_ai.request.model": active.model_name,
                 "embedding.batch_size": len(inputs),
-                **_request_key_attrs(adapter),
+                **_request_key_attrs(active.adapter),
                 **_identity_attrs(identity),
+                **_fallback.span_attrs(active.fallback_info),
+                **_model_routing.model_routing_span_attrs(
+                    decision,
+                    candidate_model=active.model_name,
+                    candidate_index=active.candidate_index,
+                ),
                 **scheduler_span_attrs(lease),
             },
-        ) as s:
-            try:
-                outcome = await app_state.embed_coalescer.submit(adapter, inputs)
-            except EmbeddingsNotSupportedError as exc:
-                raise HTTPException(
-                    status_code=501,
-                    detail=f"embeddings not supported by {exc} backend",
-                ) from exc
-
+        ) as embedding_span:
+            outcome = await app_state.embed_coalescer.submit(active.adapter, inputs)
             dims = len(outcome.embeddings[0]) if outcome.embeddings else 0
-            s.bind(
+            embedding_span.bind(
                 **{
                     "gen_ai.usage.input_tokens": outcome.prompt_tokens,
                     "embedding.dimensions": dims,
-                    # Dynamic-batching observability — every embedding span
-                    # carries enough to reconstruct who batched with whom.
                     "batch.id": outcome.batch_id,
                     "batch.coalesced_with": outcome.coalesced_with,
                     "batch.total_inputs": outcome.total_inputs,
@@ -118,13 +101,73 @@ async def create_embeddings(
                     "batch.adapter_action": outcome.adapter_action,
                 }
             )
+            return outcome
     finally:
         await app_state.scheduler.release(lease)
 
+
+@router.post("/v1/embeddings", response_model=EmbeddingResponse)
+async def create_embeddings(
+    req: EmbeddingRequest,
+    identity: Identity = Depends(require_identity),
+) -> EmbeddingResponse:
+    inputs = [req.input] if isinstance(req.input, str) else list(req.input)
+    if not inputs:
+        raise HTTPException(status_code=400, detail="input must contain at least one string")
+
+    decision = await _model_routing.enforce_generation_request(
+        identity=identity,
+        requested_model=req.model,
+        input_token_upper_bound=_model_routing.embedding_input_token_upper_bound(inputs),
+        output_token_budget=0,
+    )
+    active = await _model_routing.resolve_initial_candidate(
+        requested_model=req.model,
+        decision=decision,
+        identity=identity,
+    )
+
+    while True:
+        try:
+            outcome = await _embed_once(
+                active=active,
+                inputs=inputs,
+                identity=identity,
+                decision=decision,
+            )
+            break
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if decision is None:
+                if isinstance(exc, EmbeddingsNotSupportedError):
+                    raise HTTPException(
+                        status_code=501,
+                        detail=f"embeddings not supported by {exc} backend",
+                    ) from exc
+                raise
+            fallback = await _model_routing.resolve_next_fallback(
+                decision=decision,
+                current_candidate_index=active.candidate_index,
+                adapter=active.adapter,
+                model_name=active.model_name,
+                exc=exc,
+                identity=identity,
+            )
+            if fallback is None:
+                if isinstance(exc, EmbeddingsNotSupportedError):
+                    raise HTTPException(
+                        status_code=501,
+                        detail=f"embeddings not supported by {exc} backend",
+                    ) from exc
+                raise
+            active = fallback
+
     return EmbeddingResponse(
         data=[EmbeddingObject(index=i, embedding=vec) for i, vec in enumerate(outcome.embeddings)],
-        model=model_name,
-        request_key_source=_request_key_source(adapter),
+        model=active.model_name,
+        request_key_source=_request_key_source(active.adapter),
+        **_fallback.response_fields(active.fallback_info),
         usage=Usage(
             prompt_tokens=outcome.prompt_tokens,
             completion_tokens=0,

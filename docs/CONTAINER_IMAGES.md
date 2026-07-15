@@ -119,16 +119,16 @@ signatures and attestations:
 cosign login ghcr.io -u <source-user> -p <source-token>
 cosign login registry.customer.example -u <destination-user> -p <destination-token>
 
-ORCHESTRA_ENGINE_TAG=v0.1.3 \
+ORCHESTRA_ENGINE_TAG=v0.1.4 \
   ./scripts/relocate_images.sh copy registry.customer.example/orchestra
 ```
 
 For disconnected transfer:
 
 ```bash
-ORCHESTRA_ENGINE_TAG=v0.1.3 ./scripts/relocate_images.sh save ./engine-images
+ORCHESTRA_ENGINE_TAG=v0.1.4 ./scripts/relocate_images.sh save ./engine-images
 # Move ./engine-images across the boundary.
-ORCHESTRA_ENGINE_TAG=v0.1.3 \
+ORCHESTRA_ENGINE_TAG=v0.1.4 \
   ./scripts/relocate_images.sh load registry.airgap.example/orchestra ./engine-images
 ```
 

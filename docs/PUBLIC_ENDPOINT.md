@@ -473,12 +473,23 @@ curl -s "$BASE/embeddings" \
 `input` accepts a single string or an array. Response: `data[].embedding`
 float vectors in input order.
 
+When signed model routing is active, the requested model may be a governed
+alias. The engine applies organization binding, conservative input and cost
+bounds, RPM, and the signed primary/fallback order before embedding work. The
+response `model` is the selected concrete model; optional `fallback_*` fields
+explain a signed fallback. Governed requests never consult the global
+OpenRouter fallback.
+
 ---
 
 ## 8. Rerank
 
 `POST /v1/rerank` — Cohere/Jina-shaped relevance ranking via embedding cosine
 similarity.
+
+Rerank remains fail-closed with `model_routing_workload_not_integrated` while
+signed model routing is active; use it only in an ungoverned compatibility
+profile until its request and cost semantics are integrated.
 
 ```bash
 curl -s "$BASE/rerank" \
