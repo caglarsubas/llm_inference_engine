@@ -1612,25 +1612,29 @@ runtime state only on success. Missing, malformed, or incomplete pricing leaves
 the previous in-memory policy and pricing state untouched. Artifact mounting
 and reload invocation remain tenant CI/CD responsibilities.
 
-The generation endpoints now enforce an active policy before model registry
-lookup:
+Chat, completion, and embedding endpoints now enforce an active policy before
+model registry lookup:
 
 1. Re-check policy validity, expiry, and offline lease at request time.
 2. Require the caller's `org_id` to match the signed policy organization.
 3. Resolve an exact requested-model alias or the final wildcard route.
 4. Reject caller input/output bounds, RPM, or worst-case fallback cost before
    loading a model or contacting an upstream.
-5. Try only the signed primary and ordered fallback set for timeout or backend
-   failures. Global OpenRouter fallback is not consulted in governed mode.
+5. Try only the signed primary and ordered fallback set for timeout, backend,
+   or embedding-capability failures. Global OpenRouter fallback is not
+   consulted in governed mode.
 6. Stamp policy ID, revision, digest, release, deployment, organization,
    environment, route, selected candidate, limits, and pricing digest on route
-   and generation spans.
+   and workload spans.
 
 `maxInputTokens` uses the UTF-8 byte count of model-bound request fields plus
 `MODEL_ROUTING_INPUT_TOKEN_RESERVE` as a conservative tokenizer-independent
 upper bound. Remote image URLs have no locally knowable image-token cost and
 fail closed when the selected route bounds input or cost; inline data URLs are
-counted. `maxCostMicrosPerRequest` reserves the worst case across the primary
+counted. Embedding requests use the canonical input array and an output-token
+budget of zero, so input bounds, pricing, RPM, organization binding, and signed
+fallback order apply without treating vector dimensions as generated tokens.
+`maxCostMicrosPerRequest` reserves the worst case across the primary
 and every possible fallback using `.model_routing_pricing.json`. A costed route
 cannot activate unless every signed candidate has pricing. The catalog is
 deployment metadata, not hidden policy: its digest is exposed in status and on
@@ -1649,12 +1653,13 @@ the local limiter and no call to the Orchestra control plane. The admin reload
 swaps policy and pricing as one immutable runtime snapshot, so requests cannot
 observe a mixed revision.
 
-Enforcement currently covers `/v1/chat/completions` and `/v1/completions`.
-While a policy is active, chat auto-eval plus `/v1/embeddings`, `/v1/rerank`,
+Enforcement currently covers `/v1/chat/completions`, `/v1/completions`, and
+`/v1/embeddings`. While a policy is active, chat auto-eval plus `/v1/rerank`
 and `/v1/evals/run` return a payload-free
 `model_routing_workload_not_integrated` denial instead of reaching
-`ModelManager` outside governance. Those workload integrations, tenant chart
-wiring, and multi-replica load/HA/SLO certification remain open Phase 1 work.
+`ModelManager` outside governance. Those remaining workload integrations,
+tenant chart wiring, and multi-replica load/HA/SLO certification remain open
+Phase 1 work.
 
 ### Asynchronous model-plane observations
 

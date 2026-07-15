@@ -409,6 +409,10 @@ class EmbeddingResponse(BaseModel):
     data: list[EmbeddingObject]
     model: str
     request_key_source: str = "local-inference"
+    fallback_from_model: str | None = None
+    fallback_from_backend: str | None = None
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None
     usage: Usage
 
 

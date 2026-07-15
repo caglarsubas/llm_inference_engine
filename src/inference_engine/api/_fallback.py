@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..adapters import GenerationTimeoutError, InferenceAdapter
+from ..adapters import EmbeddingsNotSupportedError, GenerationTimeoutError, InferenceAdapter
 from ..auth import Identity
 from ..config import settings
 from ..manager import ModelNotFoundError
@@ -54,6 +54,8 @@ def span_attrs(info: FallbackInfo | None) -> dict:
 def classify_error(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, GenerationTimeoutError):
         return "generation_timeout", exc.__class__.__name__
+    if isinstance(exc, EmbeddingsNotSupportedError):
+        return "capability_not_supported", exc.__class__.__name__
     return "backend_error", exc.__class__.__name__
 
 
