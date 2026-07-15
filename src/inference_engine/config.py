@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -280,6 +280,17 @@ class Settings(BaseSettings):
     # v1 remains the compatibility default. v2 adds payload-free aggregate
     # coverage between the active signed routes and the local model registry.
     model_plane_observation_version: Literal[1, 2] = Field(default=1)
+
+    @field_validator("model_plane_observation_version", mode="before")
+    @classmethod
+    def parse_model_plane_observation_version(cls, value: object) -> object:
+        # Environment variables are always strings, including in Kubernetes.
+        if value == "1":
+            return 1
+        if value == "2":
+            return 2
+        return value
+
     model_plane_observation_interval_seconds: float = Field(
         default=60.0,
         ge=10.0,
