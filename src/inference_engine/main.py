@@ -220,6 +220,7 @@ async def lifespan(app: FastAPI):
             observer_config,
             app_state,
             models.collect_model_list,
+            models.is_model_available,
         )
         if observer_config is not None
         else None

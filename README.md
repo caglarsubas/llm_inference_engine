@@ -516,6 +516,7 @@ All knobs live in `.env` (see `.env.example`):
 | `MODEL_PLANE_OBSERVATION_DEPLOYMENT_ID` | empty                                                                      | Deployment identity; must match an active signed routing policy              |
 | `MODEL_PLANE_OBSERVATION_TARGET_ENVIRONMENT` | empty                                                                 | One of `dev`, `test`, `staging`, or `prod`; must match active policy         |
 | `MODEL_PLANE_OBSERVATION_ENGINE_INSTANCE_ID` | empty                                                                    | Stable instance identity, normally the Kubernetes pod name                  |
+| `MODEL_PLANE_OBSERVATION_VERSION` | `1`                                                                            | `1` for compatibility; `2` adds payload-free signed-route registry coverage |
 | `MODEL_PLANE_OBSERVATION_INTERVAL_SECONDS` | `60`                                                                        | Report cadence, bounded to 10 seconds through 24 hours                       |
 | `MODEL_PLANE_OBSERVATION_TIMEOUT_SECONDS` | `5`                                                                          | Per-dispatch timeout, bounded to 100 ms through 30 seconds                   |
 | `MODEL_PLANE_OBSERVATION_JITTER_RATIO` | `0.1`                                                                          | Symmetric cadence jitter, from 0 through 0.5                                 |
@@ -1671,10 +1672,14 @@ accepted only for loopback integration tests.
 
 Each cycle computes the sorted, deduplicated `/v1/models` ID digest locally and
 sends only that digest, available/unavailable counts, readiness, engine
-version, and the exact payload-free routing-policy status. Model names, routes,
-prompts, responses, credentials, and inference payloads never leave through
-this path. An active policy must match the configured deployment and
-environment or the cycle fails closed locally.
+version, and the exact payload-free routing-policy status. Observation v1 is
+the compatibility default. Opt-in v2 also resolves each unique candidate from
+the active signed policy against the same probe-aware local registry used by
+requests. It reports only aggregate candidate and ready/unavailable route
+counts plus `ready`, `degraded`, or `unavailable`; it does not report candidate
+or route names. Model names, routes, prompts, responses, credentials, and
+inference payloads never leave through this path. An active policy must match
+the configured deployment and environment or the cycle fails closed locally.
 
 Use a platform API key scoped to `model-plane:observe`. A mounted key file is
 re-read before every request, which permits rotation without engine restart.

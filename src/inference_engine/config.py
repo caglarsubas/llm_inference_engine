@@ -277,6 +277,9 @@ class Settings(BaseSettings):
     model_plane_observation_deployment_id: str = Field(default="")
     model_plane_observation_target_environment: str = Field(default="")
     model_plane_observation_engine_instance_id: str = Field(default="")
+    # v1 remains the compatibility default. v2 adds payload-free aggregate
+    # coverage between the active signed routes and the local model registry.
+    model_plane_observation_version: Literal[1, 2] = Field(default=1)
     model_plane_observation_interval_seconds: float = Field(
         default=60.0,
         ge=10.0,
