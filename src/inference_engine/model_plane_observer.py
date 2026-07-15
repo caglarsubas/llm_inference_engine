@@ -36,7 +36,8 @@ from .observability import get_logger, span
 from .schemas import ModelList
 
 MODEL_PLANE_OBSERVATION_TYPE = "orchestra.model-plane-observation"
-MODEL_PLANE_OBSERVATION_VERSION = 1
+MODEL_PLANE_OBSERVATION_VERSION_V1 = 1
+MODEL_PLANE_OBSERVATION_VERSION_V2 = 2
 _OBSERVATION_PATH = "/api/model-routing-observations"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
 _TARGET_ENVIRONMENTS = frozenset({"dev", "test", "staging", "prod"})
@@ -70,6 +71,7 @@ class ModelPlaneObservationConfig:
     target_environment: str
     engine_instance_id: str
     auth_enabled: bool
+    observation_version: Literal[1, 2]
     interval_seconds: float
     timeout_seconds: float
     jitter_ratio: float
@@ -182,6 +184,15 @@ def load_model_plane_observation_config(settings) -> ModelPlaneObservationConfig
         settings.model_plane_observation_engine_instance_id.strip(),
         "engine instance id",
     )
+    observation_version = settings.model_plane_observation_version
+    if observation_version not in (
+        MODEL_PLANE_OBSERVATION_VERSION_V1,
+        MODEL_PLANE_OBSERVATION_VERSION_V2,
+    ):
+        _reject(
+            "invalid_observation_version",
+            "Observation version must be 1 or 2",
+        )
 
     direct_key = settings.model_plane_observation_api_key
     key_file_value = settings.model_plane_observation_api_key_file.strip()
@@ -205,6 +216,7 @@ def load_model_plane_observation_config(settings) -> ModelPlaneObservationConfig
         target_environment=target_environment,
         engine_instance_id=engine_instance_id,
         auth_enabled=settings.auth_enabled,
+        observation_version=observation_version,
         interval_seconds=settings.model_plane_observation_interval_seconds,
         timeout_seconds=settings.model_plane_observation_timeout_seconds,
         jitter_ratio=settings.model_plane_observation_jitter_ratio,
@@ -232,11 +244,64 @@ def model_inventory_summary(model_list: ModelList) -> tuple[str, int, int]:
     return digest, len(model_ids), len(model_list.unavailable)
 
 
+def model_routing_inventory_summary(
+    state: _ObservationState,
+    candidate_availability: Callable[[str], bool],
+) -> dict[str, str | int | None]:
+    """Summarize signed-route coverage without reporting model or route names."""
+    active = state.model_routing_runtime.policy
+    if active is None:
+        return {
+            "object": "model_routing_inventory.status",
+            "status": "not_applicable",
+            "policy_digest": None,
+            "candidate_count": 0,
+            "available_candidate_count": 0,
+            "unavailable_candidate_count": 0,
+            "ready_route_count": 0,
+            "unavailable_route_count": 0,
+        }
+
+    routes = active.verified.claims.routes
+    route_candidates = [
+        (route.primary_model, *route.fallback_models) for route in routes
+    ]
+    candidates = sorted(
+        {candidate for candidate_set in route_candidates for candidate in candidate_set}
+    )
+    available = {
+        candidate for candidate in candidates if candidate_availability(candidate)
+    }
+    ready_route_count = sum(
+        1
+        for candidate_set in route_candidates
+        if any(candidate in available for candidate in candidate_set)
+    )
+    unavailable_route_count = len(routes) - ready_route_count
+    if unavailable_route_count == 0:
+        status = "ready"
+    elif ready_route_count == 0:
+        status = "unavailable"
+    else:
+        status = "degraded"
+    return {
+        "object": "model_routing_inventory.status",
+        "status": status,
+        "policy_digest": active.digest,
+        "candidate_count": len(candidates),
+        "available_candidate_count": len(available),
+        "unavailable_candidate_count": len(candidates) - len(available),
+        "ready_route_count": ready_route_count,
+        "unavailable_route_count": unavailable_route_count,
+    }
+
+
 def build_model_plane_observation(
     config: ModelPlaneObservationConfig,
     state: _ObservationState,
     inventory_provider: Callable[[], ModelList],
     *,
+    candidate_availability: Callable[[str], bool] | None = None,
     observation_id: str | None = None,
     now: datetime | None = None,
 ) -> dict:
@@ -266,9 +331,9 @@ def build_model_plane_observation(
     else:
         health_status = "ready"
 
-    return {
+    payload = {
         "artifactType": MODEL_PLANE_OBSERVATION_TYPE,
-        "observationVersion": MODEL_PLANE_OBSERVATION_VERSION,
+        "observationVersion": config.observation_version,
         "observationId": _validate_identifier(
             observation_id or str(uuid4()),
             "observation id",
@@ -284,6 +349,17 @@ def build_model_plane_observation(
         "observedAt": _canonical_observed_at(now or datetime.now(UTC)),
         "routingPolicy": routing.model_dump(mode="json"),
     }
+    if config.observation_version == MODEL_PLANE_OBSERVATION_VERSION_V2:
+        if candidate_availability is None:
+            _reject(
+                "routing_inventory_resolver_missing",
+                "Observation v2 requires a local model-availability resolver",
+            )
+        payload["routingInventory"] = model_routing_inventory_summary(
+            state,
+            candidate_availability,
+        )
+    return payload
 
 
 def _iso_timestamp(value: float | None) -> str | None:
@@ -298,10 +374,12 @@ class ModelPlaneObservationReporter:
         config: ModelPlaneObservationConfig,
         state: _ObservationState,
         inventory_provider: Callable[[], ModelList],
+        candidate_availability: Callable[[str], bool] | None = None,
     ) -> None:
         self.config = config
         self._state = state
         self._inventory_provider = inventory_provider
+        self._candidate_availability = candidate_availability
         self._running = False
         self._attempts_total = 0
         self._successes_total = 0
@@ -377,6 +455,7 @@ class ModelPlaneObservationReporter:
                     self.config,
                     self._state,
                     self._inventory_provider,
+                    candidate_availability=self._candidate_availability,
                 )
             except ModelPlaneObservationConfigError as exc:
                 self._mark_failure(exc.code, retain_pending=False)

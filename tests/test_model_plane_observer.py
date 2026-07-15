@@ -20,16 +20,53 @@ from inference_engine.model_plane_observer import (
     build_model_plane_observation,
     load_model_plane_observation_config,
     model_inventory_summary,
+    model_routing_inventory_summary,
     read_model_plane_observation_api_key,
+)
+from inference_engine.model_routing import (
+    ActivatedModelRoutingPolicy,
+    ModelRoutingPolicyEnvelope,
+    ModelRoutingTrustStore,
+    verify_model_routing_policy,
 )
 from inference_engine.model_routing_runtime import ModelRoutingRateLimiter, ModelRoutingRuntimeState
 from inference_engine.model_routing_status import ModelRoutingPolicyStatus
 from inference_engine.schemas import ModelInfo, ModelList, UnavailableModel
 
 
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.json"
+
+
+def active_policy() -> ActivatedModelRoutingPolicy:
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    envelope = ModelRoutingPolicyEnvelope.model_validate(fixture["policy"], strict=True)
+    trust = ModelRoutingTrustStore.model_validate(
+        {
+            "trustVersion": 1,
+            "entries": [fixture["trust"]],
+            "revokedKeyIds": [],
+            "revokedJtis": [],
+        },
+        strict=True,
+    )
+    verified = verify_model_routing_policy(
+        envelope,
+        trust,
+        now=datetime(2026, 7, 13, 0, 10, tzinfo=UTC),
+        expected_environment="staging",
+        expected_org_id="org-golden",
+    )
+    return ActivatedModelRoutingPolicy(verified=verified, source="candidate")
+
+
 class FakeState:
-    def __init__(self, *, ready: bool = True) -> None:
-        self.model_routing_runtime = ModelRoutingRuntimeState()
+    def __init__(
+        self,
+        *,
+        ready: bool = True,
+        policy: ActivatedModelRoutingPolicy | None = None,
+    ) -> None:
+        self.model_routing_runtime = ModelRoutingRuntimeState(policy=policy)
         self.model_routing_rate_limiter = ModelRoutingRateLimiter()
         self._ready = ready
 
@@ -48,6 +85,7 @@ def settings_for(**overrides):
         "model_plane_observation_deployment_id": "model-plane-staging-a",
         "model_plane_observation_target_environment": "staging",
         "model_plane_observation_engine_instance_id": "engine-pod-0",
+        "model_plane_observation_version": 1,
         "model_plane_observation_interval_seconds": 60.0,
         "model_plane_observation_timeout_seconds": 5.0,
         "model_plane_observation_jitter_ratio": 0.1,
@@ -91,6 +129,7 @@ def test_disabled_observer_ignores_unconfigured_fields() -> None:
         ({"model_plane_observation_endpoint": "https://user:pass@orchestra.example/api/model-routing-observations"}, "invalid_endpoint"),
         ({"model_plane_observation_target_environment": "production"}, "invalid_environment"),
         ({"model_plane_observation_engine_instance_id": "bad instance"}, "invalid_identifier"),
+        ({"model_plane_observation_version": 3}, "invalid_observation_version"),
         ({"model_plane_observation_api_key": ""}, "ambiguous_api_key"),
         ({"model_plane_observation_api_key": "pk_non_ascii_\u00e9"}, "invalid_api_key"),
         ({"model_plane_observation_api_key_file": "/tmp/key"}, "ambiguous_api_key"),
@@ -201,6 +240,95 @@ def test_observation_matches_exact_platform_shape_without_inventory_names() -> N
     assert "zeta:model" not in serialized
     assert "offline:model" not in serialized
     assert "pk_model_plane_test" not in serialized
+
+
+def test_observation_v2_reports_inactive_routing_inventory_without_names() -> None:
+    payload = build_model_plane_observation(
+        config_for(model_plane_observation_version=2),
+        FakeState(),
+        inventory,
+        candidate_availability=lambda _candidate: False,
+        observation_id="observation-v2-inactive",
+    )
+
+    assert payload["observationVersion"] == 2
+    assert payload["routingInventory"] == {
+        "object": "model_routing_inventory.status",
+        "status": "not_applicable",
+        "policy_digest": None,
+        "candidate_count": 0,
+        "available_candidate_count": 0,
+        "unavailable_candidate_count": 0,
+        "ready_route_count": 0,
+        "unavailable_route_count": 0,
+    }
+    serialized = json.dumps(payload)
+    assert "alpha:model" not in serialized
+    assert "zeta:model" not in serialized
+
+
+def test_observation_v2_binds_payload_free_route_readiness_to_active_policy() -> None:
+    policy = active_policy()
+    available = {"qwen3:32b"}
+    payload = build_model_plane_observation(
+        config_for(
+            model_plane_observation_version=2,
+            model_plane_observation_deployment_id="model-plane-golden-v1",
+        ),
+        FakeState(policy=policy),
+        inventory,
+        candidate_availability=lambda candidate: candidate in available,
+        observation_id="observation-v2-active",
+    )
+
+    assert payload["routingInventory"] == {
+        "object": "model_routing_inventory.status",
+        "status": "degraded",
+        "policy_digest": policy.digest,
+        "candidate_count": 3,
+        "available_candidate_count": 1,
+        "unavailable_candidate_count": 2,
+        "ready_route_count": 1,
+        "unavailable_route_count": 1,
+    }
+    serialized = json.dumps(payload)
+    assert "qwen3:32b" not in serialized
+    assert "llama3.3:70b:openrouter" not in serialized
+    assert "llama3.2:3b" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("available", "status", "ready_routes", "unavailable_routes"),
+    [
+        ({"qwen3:32b", "llama3.2:3b"}, "ready", 2, 0),
+        ({"qwen3:32b"}, "degraded", 1, 1),
+        (set(), "unavailable", 0, 2),
+    ],
+)
+def test_routing_inventory_status_is_derived_from_route_coverage(
+    available: set[str],
+    status: str,
+    ready_routes: int,
+    unavailable_routes: int,
+) -> None:
+    summary = model_routing_inventory_summary(
+        FakeState(policy=active_policy()),
+        lambda candidate: candidate in available,
+    )
+
+    assert summary["status"] == status
+    assert summary["ready_route_count"] == ready_routes
+    assert summary["unavailable_route_count"] == unavailable_routes
+
+
+def test_observation_v2_requires_local_availability_resolver() -> None:
+    with pytest.raises(ModelPlaneObservationConfigError) as exc_info:
+        build_model_plane_observation(
+            config_for(model_plane_observation_version=2),
+            FakeState(),
+            inventory,
+        )
+    assert exc_info.value.code == "routing_inventory_resolver_missing"
 
 
 def test_not_ready_state_is_reported_without_raising() -> None:

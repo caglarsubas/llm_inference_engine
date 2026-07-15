@@ -309,6 +309,11 @@ def collect_model_list() -> ModelList:
     return ModelList(data=available, unavailable=unavailable)
 
 
+def is_model_available(model_id: str) -> bool:
+    """Return whether request-time registry resolution can reach a model."""
+    return app_state.registry.resolve(model_id, _accept_descriptor) is not None
+
+
 @router.get("/v1/models", response_model=ModelList)
 async def list_models(_=Depends(require_identity)) -> ModelList:
     """Return models that are actually reachable end-to-end.
