@@ -18,10 +18,22 @@ from types import MappingProxyType
 from typing import Literal, Mapping, Protocol
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 from redis import Redis
 from redis.exceptions import RedisError
+from redis.sentinel import Sentinel
 
 from .auth import Identity
 from .model_routing import (
@@ -37,10 +49,14 @@ MODEL_ROUTING_RATE_LIMIT_WINDOW_MILLISECONDS = 60_000
 MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS = "process-replica"
 MODEL_ROUTING_RATE_LIMIT_SCOPE_SHARED = "deployment-shared"
 MODEL_ROUTING_RATE_LIMIT_REDIS_URL_MAX_BYTES = 4_096
+MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_VERSION = 1
+MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_MAX_BYTES = 65_536
 
 ModelRoutingRateLimitScope = Literal["process-replica", "deployment-shared"]
 
 _RATE_LIMIT_KEY_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
+_RATE_LIMIT_SERVICE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _SHARED_RATE_LIMIT_SCRIPT = """
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
@@ -75,6 +91,82 @@ class _RuntimeConfigModel(BaseModel):
         extra="forbid",
         frozen=True,
     )
+
+
+def _valid_rate_limit_hostname(value: str) -> bool:
+    if not value or value != value.strip() or len(value) > 253:
+        return False
+    candidate = value[:-1] if value.endswith(".") else value
+    try:
+        ipaddress.ip_address(candidate)
+        return True
+    except ValueError:
+        return bool(candidate) and all(
+            _DNS_LABEL.fullmatch(label) for label in candidate.split(".")
+        )
+
+
+class ModelRoutingRateLimitSentinelEndpoint(_RuntimeConfigModel):
+    host: StrictStr
+    port: StrictInt = Field(ge=1, le=65_535)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        if not _valid_rate_limit_hostname(value):
+            raise ValueError("invalid Sentinel host")
+        return value
+
+
+class ModelRoutingRateLimitSentinelConfig(_RuntimeConfigModel):
+    config_version: Literal[MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_VERSION]
+    service_name: StrictStr
+    sentinels: tuple[ModelRoutingRateLimitSentinelEndpoint, ...] = Field(
+        min_length=3,
+        max_length=16,
+    )
+    min_other_sentinels: StrictInt = Field(default=1, ge=1, le=15)
+    database: StrictInt = Field(default=0, ge=0, le=65_535)
+    username: StrictStr | None = Field(default=None, min_length=1, max_length=256)
+    password: SecretStr = Field(min_length=1, max_length=4_096)
+    sentinel_username: StrictStr | None = Field(default=None, min_length=1, max_length=256)
+    sentinel_password: SecretStr = Field(min_length=1, max_length=4_096)
+    tls: StrictBool = True
+    ca_file: StrictStr | None = Field(default=None, min_length=1, max_length=4_096)
+    required_replica_acks: StrictInt = Field(default=1, ge=1, le=16)
+    replica_ack_timeout_milliseconds: StrictInt = Field(default=500, ge=1, le=30_000)
+
+    @field_validator("service_name")
+    @classmethod
+    def validate_service_name(cls, value: str) -> str:
+        if not _RATE_LIMIT_SERVICE_NAME.fullmatch(value):
+            raise ValueError("invalid Sentinel service name")
+        return value
+
+    @field_validator("username", "sentinel_username")
+    @classmethod
+    def validate_username(cls, value: str | None) -> str | None:
+        if value is not None and (value != value.strip() or any(char.isspace() for char in value)):
+            raise ValueError("invalid Redis username")
+        return value
+
+    @field_validator("ca_file")
+    @classmethod
+    def validate_ca_file(cls, value: str | None) -> str | None:
+        if value is not None and value != value.strip():
+            raise ValueError("invalid CA file")
+        return value
+
+    @model_validator(mode="after")
+    def validate_topology(self) -> ModelRoutingRateLimitSentinelConfig:
+        endpoints = {(endpoint.host.lower(), endpoint.port) for endpoint in self.sentinels}
+        if len(endpoints) != len(self.sentinels):
+            raise ValueError("duplicate Sentinel endpoint")
+        if self.min_other_sentinels >= len(self.sentinels):
+            raise ValueError("invalid Sentinel peer threshold")
+        if not self.tls and self.ca_file is not None:
+            raise ValueError("CA file requires TLS")
+        return self
 
 
 class ModelRoutingModelPrice(_RuntimeConfigModel):
@@ -344,11 +436,32 @@ class RedisModelRoutingRateLimiter:
 
     scope: ModelRoutingRateLimitScope = MODEL_ROUTING_RATE_LIMIT_SCOPE_SHARED
 
-    def __init__(self, client: Redis, *, key_prefix: str) -> None:
+    def __init__(
+        self,
+        client: Redis,
+        *,
+        key_prefix: str,
+        required_replica_acks: int = 0,
+        replica_ack_timeout_milliseconds: int = 0,
+        auxiliary_clients: tuple[Redis, ...] = (),
+    ) -> None:
         if not _RATE_LIMIT_KEY_PREFIX.fullmatch(key_prefix):
             raise ModelRoutingRuntimeConfigError("rate_limit_key_prefix_invalid")
+        if required_replica_acks < 0:
+            raise ValueError("required_replica_acks must not be negative")
+        if required_replica_acks > 0 and replica_ack_timeout_milliseconds < 1:
+            raise ValueError("replica_ack_timeout_milliseconds must be positive")
         self._client = client
         self._key_prefix = key_prefix
+        self._required_replica_acks = required_replica_acks
+        self._replica_ack_timeout_milliseconds = replica_ack_timeout_milliseconds
+        self._auxiliary_clients = auxiliary_clients
+
+    def _validate_replica_acknowledgements(self, acknowledged: object) -> None:
+        if isinstance(acknowledged, bool) or not isinstance(acknowledged, int):
+            raise ValueError("invalid replication acknowledgement response")
+        if acknowledged < self._required_replica_acks:
+            raise ValueError("insufficient replication acknowledgements")
 
     def _key(self, *, digest: str, route_id: str, org_id: str, tenant: str) -> str:
         canonical = json.dumps(
@@ -385,7 +498,7 @@ class RedisModelRoutingRateLimiter:
             tenant=tenant,
         )
         try:
-            result = self._client.eval(
+            arguments = (
                 _SHARED_RATE_LIMIT_SCRIPT,
                 1,
                 key,
@@ -393,11 +506,27 @@ class RedisModelRoutingRateLimiter:
                 MODEL_ROUTING_RATE_LIMIT_WINDOW_MILLISECONDS,
                 secrets.token_hex(16),
             )
+            acknowledged: object | None = None
+            if self._required_replica_acks > 0:
+                pipeline = self._client.pipeline(transaction=False)
+                pipeline.eval(*arguments)
+                pipeline.wait(
+                    self._required_replica_acks,
+                    self._replica_ack_timeout_milliseconds,
+                )
+                pipeline_result = pipeline.execute()
+                if not isinstance(pipeline_result, (list, tuple)) or len(pipeline_result) != 2:
+                    raise ValueError("invalid replicated rate-limit response")
+                result, acknowledged = pipeline_result
+            else:
+                result = self._client.eval(*arguments)
             if not isinstance(result, (list, tuple)) or len(result) != 3:
                 raise ValueError("invalid rate-limit response")
             accepted = int(result[0])
             retry_after_milliseconds = int(result[1])
             if accepted == 1:
+                if acknowledged is not None:
+                    self._validate_replica_acknowledgements(acknowledged)
                 return
             if accepted != 0:
                 raise ValueError("invalid rate-limit decision")
@@ -418,10 +547,11 @@ class RedisModelRoutingRateLimiter:
             ) from exc
 
     def close(self) -> None:
-        try:
-            self._client.close()
-        except (RedisError, OSError):
-            return None
+        for client in (self._client, *self._auxiliary_clients):
+            try:
+                client.close()
+            except (RedisError, OSError):
+                continue
 
 
 def _is_loopback(hostname: str) -> bool:
@@ -462,23 +592,115 @@ def _read_rate_limit_redis_url(path: Path) -> str:
         raise ModelRoutingRuntimeConfigError("rate_limit_backend_url_unavailable") from exc
 
 
+def _read_rate_limit_sentinel_config(path: Path) -> ModelRoutingRateLimitSentinelConfig:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_MAX_BYTES + 1)
+        if not raw or len(raw) > MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_MAX_BYTES:
+            raise ModelRoutingRuntimeConfigError("rate_limit_sentinel_config_invalid")
+        return ModelRoutingRateLimitSentinelConfig.model_validate_json(raw)
+    except ModelRoutingRuntimeConfigError:
+        raise
+    except (ValidationError, UnicodeError, ValueError) as exc:
+        raise ModelRoutingRuntimeConfigError("rate_limit_sentinel_config_invalid") from exc
+    except OSError as exc:
+        raise ModelRoutingRuntimeConfigError("rate_limit_sentinel_config_unavailable") from exc
+
+
+def _build_sentinel_rate_limit_client(
+    config: ModelRoutingRateLimitSentinelConfig,
+    *,
+    allow_insecure: bool,
+    connect_timeout_seconds: float,
+    operation_timeout_seconds: float,
+) -> tuple[Redis, tuple[Redis, ...]]:
+    if not config.tls and not allow_insecure:
+        if any(not _is_loopback(endpoint.host) for endpoint in config.sentinels):
+            raise ModelRoutingRuntimeConfigError("rate_limit_backend_tls_required")
+    if config.replica_ack_timeout_milliseconds >= operation_timeout_seconds * 1_000:
+        raise ModelRoutingRuntimeConfigError("rate_limit_sentinel_config_invalid")
+
+    common: dict[str, object] = {
+        "decode_responses": False,
+        "health_check_interval": 30,
+        "retry_on_timeout": False,
+        "socket_connect_timeout": connect_timeout_seconds,
+        "socket_keepalive": True,
+        "socket_timeout": operation_timeout_seconds,
+    }
+    if config.tls:
+        common.update(
+            {
+                "ssl": True,
+                "ssl_cert_reqs": "required",
+                "ssl_check_hostname": True,
+            }
+        )
+        if config.ca_file is not None:
+            common["ssl_ca_certs"] = config.ca_file
+
+    data_connection = dict(common)
+    data_connection["db"] = config.database
+    data_connection["password"] = config.password.get_secret_value()
+    if config.username is not None:
+        data_connection["username"] = config.username
+
+    sentinel_connection = dict(common)
+    sentinel_connection["password"] = config.sentinel_password.get_secret_value()
+    if config.sentinel_username is not None:
+        sentinel_connection["username"] = config.sentinel_username
+
+    try:
+        manager = Sentinel(
+            [(endpoint.host, endpoint.port) for endpoint in config.sentinels],
+            min_other_sentinels=config.min_other_sentinels,
+            sentinel_kwargs=sentinel_connection,
+            **data_connection,
+        )
+        client = manager.master_for(config.service_name, check_connection=True)
+    except (RedisError, OSError, ValueError, TypeError) as exc:
+        raise ModelRoutingRuntimeConfigError("rate_limit_sentinel_config_invalid") from exc
+    return client, tuple(manager.sentinels)
+
+
 def build_model_routing_rate_limiter(settings) -> ModelRoutingRateLimiterProtocol:
     """Build a strict local or tenant-owned shared limiter without connecting yet."""
 
     scope = settings.model_routing_rate_limit_scope
     direct_url = settings.model_routing_rate_limit_redis_url.strip()
     url_file_value = settings.model_routing_rate_limit_redis_url_file.strip()
+    sentinel_file_value = settings.model_routing_rate_limit_sentinel_config_file.strip()
 
     if scope == MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS:
-        if direct_url or url_file_value:
+        if direct_url or url_file_value or sentinel_file_value:
             raise ModelRoutingRuntimeConfigError("rate_limit_backend_config_unused")
         return ModelRoutingRateLimiter(
             max_buckets=settings.model_routing_rate_limit_max_buckets,
         )
     if scope != MODEL_ROUTING_RATE_LIMIT_SCOPE_SHARED:
         raise ModelRoutingRuntimeConfigError("rate_limit_scope_invalid")
-    if bool(direct_url) == bool(url_file_value):
+    if sum(bool(value) for value in (direct_url, url_file_value, sentinel_file_value)) != 1:
         raise ModelRoutingRuntimeConfigError("rate_limit_backend_source_invalid")
+
+    key_prefix = settings.model_routing_rate_limit_key_prefix.strip()
+    if not _RATE_LIMIT_KEY_PREFIX.fullmatch(key_prefix):
+        raise ModelRoutingRuntimeConfigError("rate_limit_key_prefix_invalid")
+
+    if sentinel_file_value:
+        sentinel_config = _read_rate_limit_sentinel_config(Path(sentinel_file_value).expanduser())
+        client, sentinel_clients = _build_sentinel_rate_limit_client(
+            sentinel_config,
+            allow_insecure=settings.model_routing_rate_limit_allow_insecure_redis,
+            connect_timeout_seconds=(settings.model_routing_rate_limit_connect_timeout_seconds),
+            operation_timeout_seconds=(settings.model_routing_rate_limit_operation_timeout_seconds),
+        )
+        return RedisModelRoutingRateLimiter(
+            client,
+            key_prefix=key_prefix,
+            required_replica_acks=sentinel_config.required_replica_acks,
+            replica_ack_timeout_milliseconds=(sentinel_config.replica_ack_timeout_milliseconds),
+            auxiliary_clients=sentinel_clients,
+        )
 
     redis_url = (
         _read_rate_limit_redis_url(Path(url_file_value).expanduser())
@@ -489,10 +711,6 @@ def build_model_routing_rate_limiter(settings) -> ModelRoutingRateLimiterProtoco
         redis_url,
         allow_insecure=settings.model_routing_rate_limit_allow_insecure_redis,
     )
-    key_prefix = settings.model_routing_rate_limit_key_prefix.strip()
-    if not _RATE_LIMIT_KEY_PREFIX.fullmatch(key_prefix):
-        raise ModelRoutingRuntimeConfigError("rate_limit_key_prefix_invalid")
-
     try:
         client = Redis.from_url(
             redis_url,

@@ -254,6 +254,7 @@ class Settings(BaseSettings):
     )
     model_routing_rate_limit_redis_url: str = Field(default="")
     model_routing_rate_limit_redis_url_file: str = Field(default="")
+    model_routing_rate_limit_sentinel_config_file: str = Field(default="")
     model_routing_rate_limit_allow_insecure_redis: bool = Field(default=False)
     model_routing_rate_limit_key_prefix: str = Field(default="orchestra:model-routing")
     model_routing_rate_limit_connect_timeout_seconds: float = Field(

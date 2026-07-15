@@ -1,0 +1,26 @@
+{
+  "configVersion": 1,
+  "serviceName": "orchestra-model-routing",
+  "sentinels": [
+    {
+      "host": "sentinel-0.tenant.svc.cluster.local",
+      "port": 26379
+    },
+    {
+      "host": "sentinel-1.tenant.svc.cluster.local",
+      "port": 26379
+    },
+    {
+      "host": "sentinel-2.tenant.svc.cluster.local",
+      "port": 26379
+    }
+  ],
+  "minOtherSentinels": 1,
+  "database": 0,
+  "password": "replace-with-mounted-data-password",
+  "sentinelPassword": "replace-with-mounted-sentinel-password",
+  "tls": true,
+  "caFile": "/etc/orchestra/ca/ca-bundle.crt",
+  "requiredReplicaAcks": 1,
+  "replicaAckTimeoutMilliseconds": 500
+}
