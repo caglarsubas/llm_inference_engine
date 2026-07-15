@@ -505,6 +505,7 @@ All knobs live in `.env` (see `.env.example`):
 | `MODEL_ROUTING_RATE_LIMIT_SCOPE` | `process-replica`                                                                  | `process-replica` or exact `deployment-shared` policy RPM enforcement       |
 | `MODEL_ROUTING_RATE_LIMIT_REDIS_URL` | empty                                                                         | Direct Redis-compatible URL for shared scope; prefer the mounted file source |
 | `MODEL_ROUTING_RATE_LIMIT_REDIS_URL_FILE` | empty                                                                    | Mounted Redis-compatible URL used by the shared limiter                     |
+| `MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE` | empty                                                              | Mounted strict JSON config for TLS/auth Sentinel discovery and replica acknowledgement |
 | `MODEL_ROUTING_RATE_LIMIT_ALLOW_INSECURE_REDIS` | `false`                                                            | Permit non-TLS remote Redis only for explicitly isolated test environments  |
 | `MODEL_ROUTING_RATE_LIMIT_KEY_PREFIX` | `orchestra:model-routing`                                                   | Bounded, non-secret namespace for hashed shared RPM keys                    |
 | `MODEL_ROUTING_RATE_LIMIT_CONNECT_TIMEOUT_SECONDS` | `1`                                                               | Shared-store connection timeout; an unavailable store fails startup         |
@@ -1645,14 +1646,56 @@ every governed decision span.
 organization, and tenant. The dependency-free default remains
 `process-replica`. Setting `MODEL_ROUTING_RATE_LIMIT_SCOPE=deployment-shared`
 uses a tenant-owned Redis-compatible service and one atomic server-time script
-for exact aggregate enforcement across replicas. Store keys contain only a
+for exact aggregate enforcement across replicas. Exactly one direct URL, URL
+file, or Sentinel config file must be selected. Store keys contain only a
 SHA-256 identity digest; request, route, tenant, and organization values are not
-stored in clear text. Remote connections require `rediss://` unless the
-operator explicitly enables insecure transport for an isolated test profile.
-Startup and request-time store failures are fail-closed, with no downgrade to
-the local limiter and no call to the Orchestra control plane. The admin reload
-swaps policy and pricing as one immutable runtime snapshot, so requests cannot
+stored in clear text. Remote connections require TLS unless the operator
+explicitly enables insecure transport for an isolated test profile. Startup
+and request-time store failures are fail-closed, with no downgrade to the local
+limiter and no call to the Orchestra control plane. The admin reload swaps
+policy and pricing as one immutable runtime snapshot, so requests cannot
 observe a mixed revision.
+
+For a replicated deployment, point
+`MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE` at a Secret-mounted document:
+
+```json
+{
+  "configVersion": 1,
+  "serviceName": "orchestra-model-routing",
+  "sentinels": [
+    {"host": "sentinel-0.tenant.svc.cluster.local", "port": 26379},
+    {"host": "sentinel-1.tenant.svc.cluster.local", "port": 26379},
+    {"host": "sentinel-2.tenant.svc.cluster.local", "port": 26379}
+  ],
+  "minOtherSentinels": 1,
+  "database": 0,
+  "password": "replace-with-mounted-data-password",
+  "sentinelPassword": "replace-with-mounted-sentinel-password",
+  "tls": true,
+  "caFile": "/etc/orchestra/ca/ca-bundle.crt",
+  "requiredReplicaAcks": 1,
+  "replicaAckTimeoutMilliseconds": 500
+}
+```
+
+The schema rejects unknown fields, duplicate discovery endpoints, fewer than
+three Sentinels, and a peer threshold that cannot be satisfied. Optional
+`username` and `sentinelUsername` fields support ACL deployments. TLS verifies
+both discovery and data-node hostnames; `caFile` may be omitted to use the
+container trust store. Sentinel credentials and data credentials may differ.
+
+An accepted bucket mutation must receive the configured number of Redis
+`WAIT` acknowledgements before inference can proceed. Missing acknowledgements
+deny the request as `rate_limit_backend_unavailable`; because the primary may
+already contain the mutation, that failure can conservatively consume budget.
+The acknowledgement timeout must be strictly lower than
+`MODEL_ROUTING_RATE_LIMIT_OPERATION_TIMEOUT_SECONDS` so the socket remains
+available for the bounded `WAIT` response.
+Sentinel rediscovery reconnects later requests to the promoted primary. The
+engine does not retry an indeterminate mutation, choose a replica to promote,
+provision quorum, or rotate this Secret in place. Those remain tenant topology
+and rollout responsibilities.
 
 Enforcement currently covers `/v1/chat/completions`, `/v1/completions`, and
 `/v1/embeddings`. While a policy is active, chat auto-eval plus `/v1/rerank`
