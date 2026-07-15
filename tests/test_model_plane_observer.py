@@ -9,9 +9,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from inference_engine.api.state import app_state
-from inference_engine.config import settings
+from inference_engine.config import Settings, settings
 from inference_engine.main import _run_observer_after_startup, app
 from inference_engine.model_plane_observer import (
     ModelPlaneObservationConfig,
@@ -99,6 +100,28 @@ def config_for(**overrides) -> ModelPlaneObservationConfig:
     loaded = load_model_plane_observation_config(settings_for(**overrides))
     assert loaded is not None
     return loaded
+
+
+@pytest.mark.parametrize(("value", "expected"), [("1", 1), ("2", 2)])
+def test_settings_parses_observation_version_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    expected: int,
+) -> None:
+    monkeypatch.setenv("MODEL_PLANE_OBSERVATION_VERSION", value)
+
+    loaded = Settings(_env_file=None)
+
+    assert loaded.model_plane_observation_version == expected
+
+
+def test_settings_rejects_unknown_observation_version_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODEL_PLANE_OBSERVATION_VERSION", "3")
+
+    with pytest.raises(ValidationError, match="model_plane_observation_version"):
+        Settings(_env_file=None)
 
 
 def inventory() -> ModelList:
