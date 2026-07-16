@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     )
     default_model: str = Field(default="llama3.2:3b")
 
+    # /v1/models is served from a background-refreshed snapshot so metadata
+    # discovery never blocks on per-request GGUF probe-loads (issue #69). This
+    # is the rebuild cadence for that snapshot; the request path always returns
+    # the last good snapshot instantly, so callers see a payload in well under a
+    # second regardless of inference load. Lower it for fresher discovery,
+    # raise it to spend less on background probing. 0 disables the background
+    # refresh — the endpoint then computes each response off the event loop
+    # (non-blocking, but pays the probe cost per call under a cold cache).
+    models_snapshot_refresh_seconds: float = Field(default=15.0, ge=0.0, le=3600.0)
+
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8080)
     log_level: str = Field(default="INFO")
