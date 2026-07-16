@@ -16,6 +16,7 @@ from ..model_routing_runtime import (
     ModelRoutingDecision,
     ModelRoutingEnforcementError,
     enforce_model_routing_request,
+    model_routing_policy_identity_attrs,
     model_routing_span_attrs,
 )
 from ..observability import span
@@ -145,18 +146,7 @@ def _emit_denial_span(
         **_identity_attrs(identity),
     }
     if active is not None:
-        claims = active.verified.claims
-        attrs.update(
-            {
-                "model_routing.policy.id": claims.policy_id,
-                "model_routing.policy.revision": claims.revision,
-                "model_routing.policy.digest": active.digest,
-                "model_routing.policy.release_id": claims.release_id,
-                "model_routing.policy.deployment_id": claims.deployment_id,
-                "model_routing.policy.org_id": claims.org_id,
-                "model_routing.policy.environment": claims.target_environment,
-            }
-        )
+        attrs.update(model_routing_policy_identity_attrs(active))
     if route_id is not None:
         attrs["model_routing.route.id"] = route_id
     if workload is not None:

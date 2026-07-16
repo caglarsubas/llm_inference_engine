@@ -323,6 +323,12 @@ def test_policy_evidence_attributes_are_complete_and_payload_free() -> None:
     assert attrs["model_routing.policy.deployment_id"] == "model-plane-golden-v1"
     assert attrs["model_routing.policy.org_id"] == "org-golden"
     assert attrs["model_routing.policy.environment"] == "staging"
+    assert attrs["prometa.artifact.type"] == "model-routing-policy"
+    assert attrs["prometa.artifact.digest"] == attrs["model_routing.policy.digest"]
+    assert attrs["prometa.policy.digest"] == attrs["model_routing.policy.digest"]
+    assert attrs["prometa.release.id"] == "release-golden-model-v1"
+    assert attrs["prometa.deployment.id"] == "model-plane-golden-v1"
+    assert attrs["prometa.environment"] == "staging"
     assert attrs["model_routing.route.id"] == "reasoning"
     assert attrs["model_routing.route.selected_model"] == "qwen3:32b"
     assert attrs["model_routing.pricing.digest"] == "sha256:pricing"

@@ -900,6 +900,29 @@ def enforce_model_routing_request(
     )
 
 
+def model_routing_policy_identity_attrs(
+    active: ActivatedModelRoutingPolicy,
+) -> dict:
+    """Return legacy and canonical payload-free routing-policy identity."""
+
+    claims = active.verified.claims
+    return {
+        "model_routing.policy.id": claims.policy_id,
+        "model_routing.policy.revision": claims.revision,
+        "model_routing.policy.digest": active.digest,
+        "model_routing.policy.release_id": claims.release_id,
+        "model_routing.policy.deployment_id": claims.deployment_id,
+        "model_routing.policy.org_id": claims.org_id,
+        "model_routing.policy.environment": claims.target_environment,
+        "prometa.artifact.type": "model-routing-policy",
+        "prometa.artifact.digest": active.digest,
+        "prometa.policy.digest": active.digest,
+        "prometa.release.id": claims.release_id,
+        "prometa.deployment.id": claims.deployment_id,
+        "prometa.environment": claims.target_environment,
+    }
+
+
 def model_routing_span_attrs(
     decision: ModelRoutingDecision | None,
     *,
@@ -909,17 +932,10 @@ def model_routing_span_attrs(
     if decision is None:
         return {"model_routing.enforced": False}
 
-    claims = decision.active.verified.claims
     limits = decision.route.limits
     attrs: dict = {
         "model_routing.enforced": True,
-        "model_routing.policy.id": claims.policy_id,
-        "model_routing.policy.revision": claims.revision,
-        "model_routing.policy.digest": decision.active.digest,
-        "model_routing.policy.release_id": claims.release_id,
-        "model_routing.policy.deployment_id": claims.deployment_id,
-        "model_routing.policy.org_id": claims.org_id,
-        "model_routing.policy.environment": claims.target_environment,
+        **model_routing_policy_identity_attrs(decision.active),
         "model_routing.route.id": decision.route.route_id,
         "model_routing.route.requested_model": decision.requested_model,
         "model_routing.route.candidate_count": len(decision.candidate_models),

@@ -292,6 +292,15 @@ def test_chat_alias_routes_to_signed_primary_and_stamps_evidence(
     assert generation.attributes["model_routing.route.id"] == "reasoning"
     assert generation.attributes["model_routing.route.selected_model"] == "qwen3:32b"
     assert generation.attributes["model_routing.policy.release_id"] == ("release-golden-model-v1")
+    assert generation.attributes["prometa.artifact.type"] == "model-routing-policy"
+    assert generation.attributes["prometa.artifact.digest"] == (
+        generation.attributes["model_routing.policy.digest"]
+    )
+    assert generation.attributes["prometa.policy.digest"] == (
+        generation.attributes["model_routing.policy.digest"]
+    )
+    assert generation.attributes["prometa.release.id"] == "release-golden-model-v1"
+    assert generation.attributes["prometa.deployment.id"] == "model-plane-golden-v1"
 
 
 def test_blocking_chat_uses_ordered_signed_fallback(monkeypatch) -> None:
@@ -674,6 +683,12 @@ def test_denial_span_carries_policy_identity_without_request_payload(
     assert denial.attributes["model_routing.decision"] == "deny"
     assert denial.attributes["model_routing.denial.code"] == "output_token_limit_exceeded"
     assert denial.attributes["model_routing.policy.id"] == "routing-golden-v1"
+    assert denial.attributes["prometa.artifact.type"] == "model-routing-policy"
+    assert denial.attributes["prometa.artifact.digest"] == (
+        denial.attributes["model_routing.policy.digest"]
+    )
+    assert denial.attributes["prometa.release.id"] == "release-golden-model-v1"
+    assert denial.attributes["prometa.deployment.id"] == "model-plane-golden-v1"
     assert "private payload" not in json.dumps(dict(denial.attributes))
     assert calls == []
 
