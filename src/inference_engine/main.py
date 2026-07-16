@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .api import admin, chat, completions, embeddings, evals, health, metrics, models, rerank
+from .api._models_snapshot import run_models_snapshot_refresher
 from .api.state import app_state
 from .auth import load_keys
 from .config import settings
@@ -248,9 +249,32 @@ async def lifespan(app: FastAPI):
         if observer is not None
         else None
     )
+    # Background-refresh the /v1/models snapshot so metadata discovery never
+    # probe-loads on the request path (issue #69). Waits for the startup probe
+    # pass so its first build reuses the warm probe cache. 0 disables it and
+    # routes fall back to an off-thread fresh compute per request.
+    snapshot_task = (
+        asyncio.create_task(
+            run_models_snapshot_refresher(
+                models.snapshot_cache,
+                models.build_model_views,
+                interval_seconds=settings.models_snapshot_refresh_seconds,
+                wait_for=startup_task,
+            ),
+            name="inference-engine-models-snapshot-refresher",
+        )
+        if settings.models_snapshot_refresh_seconds > 0
+        else None
+    )
     try:
         yield
     finally:
+        if snapshot_task is not None:
+            if not snapshot_task.done():
+                snapshot_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await snapshot_task
+        models.snapshot_cache.clear()
         if observer_task is not None:
             if not observer_task.done():
                 observer_task.cancel()

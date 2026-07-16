@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import require_identity
@@ -9,9 +11,17 @@ from ..registry import (
 )
 from ..response_normalize import infer_model_capabilities
 from ..schemas import ModelCatalog, ModelCatalogEntry, ModelInfo, ModelList, UnavailableModel
+from ._models_snapshot import ModelsSnapshotCache
 from .state import app_state
 
 router = APIRouter()
+
+# Latest background-refreshed view of the reachable model surface. The refresher
+# task (started in the app lifespan) is the sole writer; the routes below read
+# it so /v1/models never probe-loads on the request path (issue #69). Empty
+# until the refresher's first build lands — routes fall back to an off-thread
+# fresh compute in that window (and in lifespan-less TestClients).
+snapshot_cache = ModelsSnapshotCache()
 
 
 _BACKEND_FOR_FORMAT = {
@@ -298,15 +308,51 @@ def _collect_registry_skips() -> list[UnavailableModel]:
     return out
 
 
+def _unavailable_view(loadable, rejected) -> list[UnavailableModel]:
+    """Rejected probes + registry-level skips, sorted — shared by both views.
+
+    ``loadable``/``rejected`` come from a single ``_partition_models()`` pass so
+    callers that need both the OpenAI list and the operator catalog probe every
+    descriptor once rather than twice.
+    """
+    unavailable = _unavailable_from_rejected(rejected)
+    _append_registry_skips(unavailable, available_ids={d.qualified_name for d in loadable})
+    return unavailable
+
+
 def collect_model_list() -> ModelList:
     """Build the same payload returned by the authenticated models route."""
     loadable, rejected = _partition_models()
+    return ModelList(
+        data=[_to_info(d) for d in loadable],
+        unavailable=_unavailable_view(loadable, rejected),
+    )
 
-    available: list[ModelInfo] = [_to_info(d) for d in loadable]
-    unavailable = _unavailable_from_rejected(rejected)
-    _append_registry_skips(unavailable, available_ids={m.id for m in available})
 
-    return ModelList(data=available, unavailable=unavailable)
+def collect_model_catalog() -> ModelCatalog:
+    """Build the same payload returned by the ``/v1/models.data`` route."""
+    loadable, rejected = _partition_models()
+    return ModelCatalog(
+        data=[_catalog_entry(d) for d in loadable],
+        unavailable=_unavailable_view(loadable, rejected),
+    )
+
+
+def build_model_views() -> tuple[ModelList, ModelCatalog]:
+    """Compute both response views from one probe-aware partition pass.
+
+    Used by the background snapshot refresher: probing every GGUF twice (once
+    per endpoint) would double the most expensive part of the build, so we run
+    the pass once and derive both the OpenAI ``ModelList`` and the operator
+    ``ModelCatalog`` from the same ``(loadable, rejected)`` result. The two
+    views therefore always agree on availability.
+    """
+    loadable, rejected = _partition_models()
+    unavailable = _unavailable_view(loadable, rejected)
+    return (
+        ModelList(data=[_to_info(d) for d in loadable], unavailable=unavailable),
+        ModelCatalog(data=[_catalog_entry(d) for d in loadable], unavailable=unavailable),
+    )
 
 
 def is_model_available(model_id: str) -> bool:
@@ -318,13 +364,22 @@ def is_model_available(model_id: str) -> bool:
 async def list_models(_=Depends(require_identity)) -> ModelList:
     """Return models that are actually reachable end-to-end.
 
-    Uses the composite registry's probe-aware ``list_loadable()`` so a
-    GGUF that llama-cpp-python can't open silently falls through to the
-    Ollama-HTTP source and lands in ``data`` (not ``unavailable``).
-    Anything every source rejects shows up in ``unavailable`` with the
-    first-source reason — typically the llama.cpp probe failure.
+    Served from a background-refreshed snapshot so the response never
+    probe-loads on the request path — a metadata call returns in well under a
+    second regardless of inference load (issue #69). Until the refresher's
+    first build lands (or in lifespan-less test clients) it falls back to
+    computing the view off the event loop so the loop is never blocked.
+
+    The snapshot is built via the composite registry's probe-aware
+    ``list_loadable()`` so a GGUF that llama-cpp-python can't open silently
+    falls through to the Ollama-HTTP source and lands in ``data`` (not
+    ``unavailable``). Anything every source rejects shows up in ``unavailable``
+    with the first-source reason — typically the llama.cpp probe failure.
     """
-    return collect_model_list()
+    snapshot = snapshot_cache.get()
+    if snapshot is not None:
+        return snapshot.model_list
+    return await asyncio.to_thread(collect_model_list)
 
 
 @router.get("/v1/models.data", response_model=ModelCatalog)
@@ -335,12 +390,14 @@ async def list_model_catalog(_=Depends(require_identity)) -> ModelCatalog:
     internal UIs. It uses the same probe-aware availability check as
     ``/v1/models`` but includes non-standard metadata such as upstream provider,
     modality, context limits, image sizing hints, and JSON-mode support.
+
+    Shares the same background snapshot as ``/v1/models`` (both views come from
+    one probe pass), with the same off-thread fallback before the first refresh.
     """
-    loadable, rejected = _partition_models()
-    data = [_catalog_entry(d) for d in loadable]
-    unavailable = _unavailable_from_rejected(rejected)
-    _append_registry_skips(unavailable, available_ids={m.id for m in data})
-    return ModelCatalog(data=data, unavailable=unavailable)
+    snapshot = snapshot_cache.get()
+    if snapshot is not None:
+        return snapshot.catalog
+    return await asyncio.to_thread(collect_model_catalog)
 
 
 @router.get("/v1/models/{model_id:path}", response_model=ModelInfo)
