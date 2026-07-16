@@ -1627,7 +1627,9 @@ model registry lookup:
    consulted in governed mode.
 6. Stamp policy ID, revision, digest, release, deployment, organization,
    environment, route, selected candidate, limits, and pricing digest on route
-   and workload spans.
+   and workload spans. Canonical `prometa.*` aliases identify the signed
+   artifact as `model-routing-policy`; existing `model_routing.*` attributes
+   remain the compatibility contract.
 
 `maxInputTokens` uses the UTF-8 byte count of model-bound request fields plus
 `MODEL_ROUTING_INPUT_TOKEN_RESERVE` as a conservative tokenizer-independent
@@ -1723,6 +1725,8 @@ counts plus `ready`, `degraded`, or `unavailable`; it does not report candidate
 or route names. Model names, routes, prompts, responses, credentials, and
 inference payloads never leave through this path. An active policy must match
 the configured deployment and environment or the cycle fails closed locally.
+Observation-report spans carry the same typed artifact, policy, release,
+deployment, and environment aliases without changing either wire version.
 
 Use a platform API key scoped to `model-plane:observe`. A mounted key file is
 re-read before every request, which permits rotation without engine restart.

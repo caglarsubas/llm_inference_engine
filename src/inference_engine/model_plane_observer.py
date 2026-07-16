@@ -15,7 +15,7 @@ import json
 import random
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -362,6 +362,34 @@ def build_model_plane_observation(
     return payload
 
 
+def model_plane_observation_span_attrs(
+    observation: Mapping[str, object],
+) -> dict[str, object]:
+    """Project canonical release identity without changing the wire payload."""
+
+    attrs: dict[str, object] = {
+        "model_plane.observation_id": observation["observationId"],
+        "model_plane.deployment_id": observation["deploymentId"],
+        "model_plane.environment": observation["targetEnvironment"],
+        "prometa.deployment.id": observation["deploymentId"],
+        "prometa.environment": observation["targetEnvironment"],
+    }
+    routing = observation.get("routingPolicy")
+    if isinstance(routing, Mapping) and routing.get("active") is True:
+        digest = routing.get("digest")
+        release_id = routing.get("release_id")
+        if isinstance(digest, str) and isinstance(release_id, str):
+            attrs.update(
+                {
+                    "prometa.artifact.type": "model-routing-policy",
+                    "prometa.artifact.digest": digest,
+                    "prometa.policy.digest": digest,
+                    "prometa.release.id": release_id,
+                }
+            )
+    return attrs
+
+
 def _iso_timestamp(value: float | None) -> str | None:
     if value is None:
         return None
@@ -470,15 +498,10 @@ class ModelPlaneObservationReporter:
             self._mark_failure(exc.code, retain_pending=True)
             return False
 
-        observation_id = str(self._pending["observationId"])
         try:
             with span(
                 "model_plane.observation.report",
-                **{
-                    "model_plane.observation_id": observation_id,
-                    "model_plane.deployment_id": self.config.deployment_id,
-                    "model_plane.environment": self.config.target_environment,
-                },
+                **model_plane_observation_span_attrs(self._pending),
             ) as report_span:
                 response = await client.post(
                     self.config.endpoint,
