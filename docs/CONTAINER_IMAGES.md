@@ -1,7 +1,7 @@
-# Container images and supply-chain contract
+# Release artifacts and supply-chain contract
 
 The inference engine is a tenant-deployed model-plane component. Publishing an
-image does not place the Orchestra control plane in the synchronous inference
+artifact does not place the Orchestra control plane in the synchronous inference
 path, and the platform does not gain rollout authority.
 
 ## Published variants
@@ -12,10 +12,18 @@ path, and the platform does not gain rollout authority.
 | UBI9 | `ghcr.io/caglarsubas/llm_inference_engine/inference-engine-ubi` | `Dockerfile.ubi` | Red Hat UBI/OpenShift estates |
 
 The gated `.github/workflows/publish-images.yml` workflow publishes only on a
-`v*` tag or a manual dispatch. A merge by itself does not publish an image.
+`v*` tag or a manual dispatch. A merge by itself does not publish an artifact.
 Each run creates the requested tag and `sha-<12-character-commit>` tag, but the
 workflow summary's `repository@sha256:<digest>` reference is the production
 deployment identity.
+
+Version tags also package and publish the chart at
+`oci://ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine`.
+Manual dispatches remain image-only so a branch ref cannot replace a chart
+version. The chart has its own version because deployment contract changes and
+engine application releases do not have the same cadence. The workflow rejects
+a release tag that does not exactly match `v<Chart.appVersion>` and records both
+versions plus the immutable chart digest.
 
 Canonical workflow artifacts are currently `linux/amd64`. Both pinned base
 image indexes also contain `linux/arm64`; operators may build a native ARM
@@ -110,6 +118,32 @@ references. Registry authentication and runtime credentials are separate:
 image pull credentials never belong in the image, and engine/platform API keys
 remain mounted runtime Secrets.
 
+Verify the chart before rendering it. Replace the sample versions and digest
+with the values printed by the release workflow:
+
+```bash
+CHART_REPOSITORY=ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine
+CHART_VERSION=0.1.0
+CHART_DIGEST=sha256:<digest-from-publish-workflow>
+CHART_REF="${CHART_REPOSITORY}@${CHART_DIGEST}"
+
+cosign verify "${CHART_REF}" \
+  --certificate-identity-regexp "${IDENTITY}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+cosign verify-attestation "${CHART_REF}" \
+  --type cyclonedx \
+  --certificate-identity-regexp "${IDENTITY}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+helm pull "oci://${CHART_REPOSITORY}" --version "${CHART_VERSION}"
+```
+
+The workflow's downloadable chart tarball also receives a GitHub build-
+provenance attestation. The OCI signature proves the registry object; the
+GitHub attestation proves the exact packaged file. Neither certifies a rendered
+customer overlay or a running OpenShift cluster.
+
 ## Mirror or move into an air gap
 
 The manual publish workflow accepts a registry namespace and uses
@@ -121,17 +155,24 @@ signatures and attestations:
 cosign login ghcr.io -u <source-user> -p <source-token>
 cosign login registry.customer.example -u <destination-user> -p <destination-token>
 
-ORCHESTRA_ENGINE_TAG=v0.1.4 \
+ORCHESTRA_ENGINE_TAG=v0.1.8 \
+ORCHESTRA_INCLUDE_CHART=true \
+ORCHESTRA_CHART_VERSION=0.1.0 \
   ./scripts/relocate_images.sh copy registry.customer.example/orchestra
 ```
 
 For disconnected transfer:
 
 ```bash
-ORCHESTRA_ENGINE_TAG=v0.1.4 ./scripts/relocate_images.sh save ./engine-images
-# Move ./engine-images across the boundary.
-ORCHESTRA_ENGINE_TAG=v0.1.4 \
-  ./scripts/relocate_images.sh load registry.airgap.example/orchestra ./engine-images
+ORCHESTRA_ENGINE_TAG=v0.1.8 \
+ORCHESTRA_INCLUDE_CHART=true \
+ORCHESTRA_CHART_VERSION=0.1.0 \
+  ./scripts/relocate_images.sh save ./engine-release
+# Move ./engine-release across the boundary.
+ORCHESTRA_ENGINE_TAG=v0.1.8 \
+ORCHESTRA_INCLUDE_CHART=true \
+ORCHESTRA_CHART_VERSION=0.1.0 \
+  ./scripts/relocate_images.sh load registry.airgap.example/orchestra ./engine-release
 ```
 
 Verify the destination digest and signature after relocation. If the air-gap

@@ -60,6 +60,27 @@ OpenShift CNI/CSI behavior, Secret-operator convergence, pod/node loss,
 Sentinel failover, backup/restore, load, RPO/RTO, or soak. Until those drills run
 on the pinned cluster profile, the status remains `declared-not-certified`.
 
+## Published chart
+
+Engine version tags publish this chart as a signed OCI artifact:
+
+```text
+oci://ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine
+```
+
+Chart and engine application versions are independent. `Chart.version` names
+the deployment contract; `Chart.appVersion` must match the Python/runtime
+version and the release tag. CI runs `scripts/verify_release_contract.sh` to
+enforce that relationship. The release workflow publishes the chart only after
+both canonical engine image variants pass preflight and publication.
+
+Use the chart version and immutable digest printed in the release summary. Pull
+by version only after verifying that digest and its keyless signature and
+CycloneDX attestation as described in
+[`docs/CONTAINER_IMAGES.md`](../../../docs/CONTAINER_IMAGES.md). The packaged
+chart, SPDX/CycloneDX SBOMs, and GitHub build-provenance attestation are retained
+as release-workflow evidence.
+
 ## Required objects
 
 The chart reads values from existing objects and never accepts their contents

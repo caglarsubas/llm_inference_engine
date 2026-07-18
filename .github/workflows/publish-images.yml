@@ -1,10 +1,12 @@
-# Publish canonical engine images to an OCI registry.
+# Publish canonical engine release artifacts to an OCI registry.
 #
 # This workflow is gated: merging a branch publishes nothing. A version tag or
-# an explicit manual dispatch builds the Debian and UBI variants, pushes an
+# an explicit manual dispatch builds the Debian and UBI variants, pushes a
 # commit-derived SHA tag plus the requested release tag, generates SBOMs, and
 # adds keyless cosign signatures and CycloneDX attestations to image digests.
-name: publish-images
+# Version tags also publish the independently versioned Helm chart. Manual
+# dispatches remain image-only so a branch ref cannot replace a chart version.
+name: publish-release-artifacts
 
 on:
   push:
@@ -21,9 +23,13 @@ on:
         default: ""
 
 permissions:
+  attestations: write
   contents: read
   packages: write
   id-token: write
+
+env:
+  SYFT_VERSION: v1.48.0
 
 jobs:
   verify:
@@ -41,6 +47,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify release version contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF}" in
+            refs/tags/*) scripts/verify_release_contract.sh "${GITHUB_REF#refs/tags/}" ;;
+            *) scripts/verify_release_contract.sh ;;
+          esac
 
       - uses: docker/setup-buildx-action@v3
 
@@ -158,8 +173,9 @@ jobs:
       - name: Install syft
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b "$RUNNER_TEMP/bin"
+          curl -sSfL \
+            "https://raw.githubusercontent.com/anchore/syft/${SYFT_VERSION}/install.sh" \
+            | sh -s -- -b "$RUNNER_TEMP/bin" "${SYFT_VERSION}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Generate release SBOMs
@@ -169,6 +185,13 @@ jobs:
           syft "${ref}" \
             -o "spdx-json=sbom-${{ matrix.image }}.spdx.json" \
             -o "cyclonedx-json=sbom-${{ matrix.image }}.cdx.json"
+          jq -n \
+            --arg image "${{ steps.meta.outputs.image }}" \
+            --arg digest "${{ steps.build.outputs.digest }}" \
+            --arg tag "${{ steps.meta.outputs.tag }}" \
+            --arg revision "${GITHUB_SHA}" \
+            '{schemaVersion: 1, image: $image, digest: $digest, tag: $tag, revision: $revision}' \
+            > "release-${{ matrix.image }}.json"
 
       - name: Sign digest and attest CycloneDX SBOM
         env:
@@ -186,7 +209,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ matrix.image }}-${{ steps.meta.outputs.sha_tag }}
-          path: sbom-${{ matrix.image }}.*.json
+          path: |
+            sbom-${{ matrix.image }}.*.json
+            release-${{ matrix.image }}.json
           if-no-files-found: error
 
       - name: Record immutable digest
@@ -196,4 +221,206 @@ jobs:
             echo '```text'
             echo "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-chart:
+    name: publish Helm chart
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve immutable chart coordinates
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace="${{ inputs.registry }}"
+          namespace="${namespace:-ghcr.io/${GITHUB_REPOSITORY}}"
+          namespace="${namespace%/}"
+          namespace="$(printf '%s' "${namespace}" | tr '[:upper:]' '[:lower:]')"
+          case "${namespace}" in
+            *[[:space:]]*|*@*) echo "invalid registry namespace: ${namespace}" >&2; exit 1 ;;
+          esac
+
+          release_tag="${GITHUB_REF#refs/tags/}"
+
+          contract="$(scripts/verify_release_contract.sh "${release_tag}")"
+          release_version="$(printf '%s\n' "${contract}" | sed -n 's/^release_version=//p')"
+          chart_version="$(printf '%s\n' "${contract}" | sed -n 's/^chart_version=//p')"
+          chart_name="$(sed -n 's/^name: *//p' deploy/helm/inference-engine/Chart.yaml | head -n 1)"
+          host="${namespace%%/*}"
+          repository="${namespace}/charts/${chart_name}"
+          {
+            echo "host=${host}"
+            echo "namespace=${namespace}"
+            echo "repository=${repository}"
+            echo "chart_name=${chart_name}"
+            echo "chart_version=${chart_version}"
+            echo "release_version=${release_version}"
+            if [ "${host}" = "ghcr.io" ]; then
+              echo "is_ghcr=true"
+            else
+              echo "is_ghcr=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.meta.outputs.host }}
+          username: ${{ steps.meta.outputs.is_ghcr == 'true' && github.actor || secrets.REGISTRY_USER }}
+          password: ${{ steps.meta.outputs.is_ghcr == 'true' && secrets.GITHUB_TOKEN || secrets.REGISTRY_TOKEN }}
+
+      - name: Package chart
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/chart-release"
+          helm lint deploy/helm/inference-engine
+          helm package deploy/helm/inference-engine \
+            --destination "$RUNNER_TEMP/chart-release"
+          package="$RUNNER_TEMP/chart-release/${{ steps.meta.outputs.chart_name }}-${{ steps.meta.outputs.chart_version }}.tgz"
+          test -s "${package}"
+          helm show chart "${package}" > "$RUNNER_TEMP/chart-release/chart-metadata.yaml"
+          {
+            echo "package=${package}"
+            echo "metadata=$RUNNER_TEMP/chart-release/chart-metadata.yaml"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://raw.githubusercontent.com/anchore/syft/${SYFT_VERSION}/install.sh" \
+            | sh -s -- -b "$RUNNER_TEMP/bin" "${SYFT_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Download exact image release metadata
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-inference-engine-*
+          path: ${{ runner.temp }}/image-release-metadata
+          merge-multiple: true
+
+      - name: Generate chart SBOMs
+        run: |
+          set -euo pipefail
+          syft "${{ steps.package.outputs.package }}" \
+            -o "spdx-json=$RUNNER_TEMP/chart-release/chart.spdx.json" \
+            -o "cyclonedx-json=$RUNNER_TEMP/chart-release/chart.cdx.json"
+
+          chart_sha="$(sha256sum "${{ steps.package.outputs.package }}" | awk '{print $1}')"
+          debian_meta="$RUNNER_TEMP/image-release-metadata/release-inference-engine.json"
+          ubi_meta="$RUNNER_TEMP/image-release-metadata/release-inference-engine-ubi.json"
+          jq -e \
+            --arg image "${{ steps.meta.outputs.namespace }}/inference-engine" \
+            --arg tag "v${{ steps.meta.outputs.release_version }}" \
+            --arg revision "${GITHUB_SHA}" \
+            '.schemaVersion == 1 and .image == $image and .tag == $tag and
+             .revision == $revision and (.digest | test("^sha256:[a-f0-9]{64}$"))' \
+            "${debian_meta}" >/dev/null
+          jq -e \
+            --arg image "${{ steps.meta.outputs.namespace }}/inference-engine-ubi" \
+            --arg tag "v${{ steps.meta.outputs.release_version }}" \
+            --arg revision "${GITHUB_SHA}" \
+            '.schemaVersion == 1 and .image == $image and .tag == $tag and
+             .revision == $revision and (.digest | test("^sha256:[a-f0-9]{64}$"))' \
+            "${ubi_meta}" >/dev/null
+          jq -e \
+            --arg chart_name "${{ steps.meta.outputs.chart_name }}" \
+            --arg chart_version "${{ steps.meta.outputs.chart_version }}" \
+            --arg chart_sha "${chart_sha}" \
+            --slurpfile debian "${debian_meta}" \
+            --slurpfile ubi "${ubi_meta}" \
+            '
+              .metadata.component = {
+                type: "application",
+                name: $chart_name,
+                version: $chart_version,
+                hashes: [{alg: "SHA-256", content: $chart_sha}]
+              }
+              | .components = ((.components // []) + [
+                  {
+                    type: "container",
+                    name: $debian[0].image,
+                    version: $debian[0].tag,
+                    "bom-ref": ($debian[0].image + "@" + $debian[0].digest),
+                    hashes: [{alg: "SHA-256", content: ($debian[0].digest | sub("^sha256:"; ""))}],
+                    properties: [{name: "org.opencontainers.image.revision", value: $debian[0].revision}]
+                  },
+                  {
+                    type: "container",
+                    name: $ubi[0].image,
+                    version: $ubi[0].tag,
+                    "bom-ref": ($ubi[0].image + "@" + $ubi[0].digest),
+                    hashes: [{alg: "SHA-256", content: ($ubi[0].digest | sub("^sha256:"; ""))}],
+                    properties: [{name: "org.opencontainers.image.revision", value: $ubi[0].revision}]
+                  }
+                ] | unique_by(."bom-ref" // (.name + "@" + (.version // ""))))
+            ' "$RUNNER_TEMP/chart-release/chart.cdx.json" \
+            > "$RUNNER_TEMP/chart-release/chart.cdx.tmp.json"
+          mv "$RUNNER_TEMP/chart-release/chart.cdx.tmp.json" \
+            "$RUNNER_TEMP/chart-release/chart.cdx.json"
+
+      - name: Push, sign, and attest chart digest
+        id: push
+        env:
+          COSIGN_YES: "true"
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(helm push "${{ steps.package.outputs.package }}" \
+            "oci://${{ steps.meta.outputs.namespace }}/charts" 2>&1)"
+          printf '%s\n' "${output}"
+          digest="$(printf '%s\n' "${output}" | sed -n 's/^Digest: *//p' | tail -n 1)"
+          if ! printf '%s' "${digest}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "could not resolve pushed chart digest" >&2
+            exit 1
+          fi
+          ref="${{ steps.meta.outputs.repository }}@${digest}"
+          cosign sign "${ref}"
+          cosign attest \
+            --predicate "$RUNNER_TEMP/chart-release/chart.cdx.json" \
+            --type cyclonedx \
+            "${ref}"
+          {
+            echo "digest=${digest}"
+            echo "ref=${ref}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest packaged chart provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.package.outputs.package }}
+
+      - name: Upload chart and SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-${{ steps.meta.outputs.chart_name }}-${{ steps.meta.outputs.chart_version }}
+          path: ${{ runner.temp }}/chart-release/*
+          if-no-files-found: error
+
+      - name: Record immutable chart digest
+        run: |
+          {
+            echo "### ${{ steps.meta.outputs.chart_name }} chart"
+            echo '```text'
+            echo "${{ steps.push.outputs.ref }}"
+            echo '```'
+            echo "Application version: ${{ steps.meta.outputs.release_version }}"
+            echo "Chart version: ${{ steps.meta.outputs.chart_version }}"
           } >> "$GITHUB_STEP_SUMMARY"
