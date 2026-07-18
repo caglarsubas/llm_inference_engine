@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SYFT_VERSION: v1.48.0
+
 jobs:
   test:
     name: lint + tests (Python ${{ matrix.python-version }})
@@ -98,8 +101,9 @@ jobs:
       - name: Generate SBOM
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b "$RUNNER_TEMP/bin"
+          curl -sSfL \
+            "https://raw.githubusercontent.com/anchore/syft/${SYFT_VERSION}/install.sh" \
+            | sh -s -- -b "$RUNNER_TEMP/bin" "${SYFT_VERSION}"
           "$RUNNER_TEMP/bin/syft" "inference-engine:ci-${{ matrix.variant }}" \
             -o "spdx-json=sbom-${{ matrix.variant }}.spdx.json" \
             -o "cyclonedx-json=sbom-${{ matrix.variant }}.cdx.json"
@@ -126,7 +130,24 @@ jobs:
       - name: Validate shell contract
         run: |
           bash -n deploy/helm/inference-engine/ci/render-production-profile.sh
+          bash -n scripts/relocate_images.sh
+          bash -n scripts/test_relocate_images.sh
+          bash -n scripts/verify_release_contract.sh
           shellcheck deploy/helm/inference-engine/ci/render-production-profile.sh
+          shellcheck scripts/relocate_images.sh
+          shellcheck scripts/test_relocate_images.sh
+          shellcheck scripts/verify_release_contract.sh
+
+      - name: Verify release version contract
+        run: |
+          scripts/verify_release_contract.sh
+          if scripts/verify_release_contract.sh v0.0.0; then
+            echo "mismatched release tag was accepted" >&2
+            exit 1
+          fi
+
+      - name: Verify release artifact relocation contract
+        run: scripts/test_relocate_images.sh
 
       - name: Prove fail-closed OpenShift render
         run: |

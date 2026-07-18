@@ -29,10 +29,10 @@ curl http://127.0.0.1:8080/v1/health
 curl http://127.0.0.1:8080/v1/models | jq '.data[0]'
 ```
 
-### Canonical release images
+### Canonical release artifacts
 
-Release tags and explicit `publish-images` workflow dispatches produce two
-digest-addressable images:
+Release tags and explicit `publish-release-artifacts` workflow dispatches
+produce two digest-addressable images:
 
 | Image | Deployment profile |
 |---|---|
@@ -50,6 +50,13 @@ not a mutable tag:
 docker pull \
   ghcr.io/caglarsubas/llm_inference_engine/inference-engine@sha256:<digest>
 ```
+
+Version tags also publish the independently versioned standalone Helm chart at
+`oci://ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine`.
+The chart digest is keylessly signed and carries a CycloneDX attestation; its
+packaged tarball, SPDX/CycloneDX SBOMs, and GitHub build-provenance attestation
+are retained by the same workflow. Chart version and engine application version
+are intentionally separate and are both printed in the release summary.
 
 Image verification, registry relocation, air-gap transfer, supported
 architecture, and the precise UBI/FIPS boundary are documented in
