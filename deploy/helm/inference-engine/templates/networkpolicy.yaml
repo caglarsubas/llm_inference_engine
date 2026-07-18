@@ -1,0 +1,75 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orchestra-inference-engine.fullname" . }}
+  labels:
+    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orchestra-inference-engine.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- if or .Values.networkPolicy.runtimeIngressFrom .Values.networkPolicy.monitoringIngressFrom .Values.networkPolicy.extraIngressFrom }}
+  ingress:
+    {{- with .Values.networkPolicy.runtimeIngressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.monitoringIngressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.port }}
+    {{- end }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ ternary "openshift-dns" "kube-system" (eq .Values.networkPolicy.dns.provider "openshift") }}
+          podSelector:
+            matchLabels:
+              {{- if eq .Values.networkPolicy.dns.provider "openshift" }}
+              dns.operator.openshift.io/daemonset-dns: default
+              {{- else }}
+              k8s-app: kube-dns
+              {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if eq (default "process-replica" .Values.routing.rateLimitScope) "deployment-shared" }}
+    {{- with .Values.routing.sharedRateLimit.networkPolicyEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.modelBackends.networkPolicyEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.observationEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.otelEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

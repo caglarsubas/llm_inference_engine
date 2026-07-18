@@ -1,0 +1,368 @@
+{{- $name := include "orchestra-inference-engine.fullname" . -}}
+{{- $image := include "orchestra-inference-engine.image" . -}}
+{{- $rateLimitScope := default "process-replica" .Values.routing.rateLimitScope -}}
+{{- $shared := .Values.routing.sharedRateLimit -}}
+{{- $sharedBackend := default "direct" $shared.backend -}}
+{{- $observationVersion := int (default 2 .Values.observation.version) -}}
+{{- $podSecurityContext := .Values.podSecurityContext -}}
+{{- $containerSecurityContext := .Values.containerSecurityContext -}}
+{{- if eq .Values.securityContextMode "openshift" -}}
+{{- $podSecurityContext = omit $podSecurityContext "runAsUser" "runAsGroup" "fsGroup" "fsGroupChangePolicy" "supplementalGroups" -}}
+{{- $containerSecurityContext = omit $containerSecurityContext "runAsUser" "runAsGroup" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+    {{- if .Values.productionProfile.enabled }}
+    prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+    {{- end }}
+spec:
+  serviceName: {{ $name }}-headless
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  minReadySeconds: 10
+  revisionHistoryLimit: 5
+  updateStrategy:
+    type: RollingUpdate
+  {{- if .Values.persistence.enabled }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "orchestra-inference-engine.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        orchestra.prometa.ai/rollout-id: {{ .Values.rolloutId | quote }}
+        orchestra.prometa.ai/deployment-id: {{ .Values.deploymentId | quote }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "orchestra-inference-engine.selectorLabels" . | nindent 8 }}
+        {{- if .Values.productionProfile.enabled }}
+        prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+        {{- end }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "orchestra-inference-engine.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: model-plane
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+              protocol: TCP
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: {{ .Values.port | quote }}
+            - name: AUTH_ENABLED
+              value: {{ ternary "true" "false" .Values.auth.enabled | quote }}
+            - name: AUTH_KEYS_FILE
+              value: /auth/auth_keys.json
+            - name: MODEL_ROUTING_POLICY_REQUIRED
+              value: {{ ternary "true" "false" (and .Values.routing.enabled .Values.routing.policyRequired) | quote }}
+            - name: MODEL_ROUTING_POLICY_FILE
+              value: /config/model_routing_policy.json
+            - name: MODEL_ROUTING_LAST_KNOWN_GOOD_FILE
+              value: /state/model_routing_policy.lkg.json
+            - name: MODEL_ROUTING_TRUST_STORE_FILE
+              value: /config/model_routing_trust.json
+            - name: MODEL_ROUTING_PRICING_FILE
+              value: /config/model_routing_pricing.json
+            - name: MODEL_ROUTING_EXPECTED_AUDIENCE
+              value: {{ .Values.routing.expectedAudience | quote }}
+            - name: MODEL_ROUTING_EXPECTED_ENVIRONMENT
+              value: {{ .Values.targetEnvironment | quote }}
+            - name: MODEL_ROUTING_EXPECTED_ORG_ID
+              value: {{ .Values.routing.expectedOrgId | quote }}
+            - name: MODEL_ROUTING_CLOCK_SKEW_SECONDS
+              value: {{ .Values.routing.clockSkewSeconds | quote }}
+            - name: MODEL_ROUTING_INPUT_TOKEN_RESERVE
+              value: {{ .Values.routing.inputTokenReserve | quote }}
+            - name: MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS
+              value: {{ .Values.routing.rateLimitMaxBuckets | quote }}
+            - name: MODEL_ROUTING_RATE_LIMIT_SCOPE
+              value: {{ $rateLimitScope | quote }}
+            {{- if eq $rateLimitScope "deployment-shared" }}
+            {{- if eq $sharedBackend "sentinel" }}
+            - name: MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE
+              value: /rate-limit/sentinel-config.json
+            {{- else }}
+            - name: MODEL_ROUTING_RATE_LIMIT_REDIS_URL_FILE
+              value: /rate-limit/redis-url
+            {{- end }}
+            - name: MODEL_ROUTING_RATE_LIMIT_ALLOW_INSECURE_REDIS
+              value: {{ ternary "true" "false" $shared.allowInsecureRedis | quote }}
+            - name: MODEL_ROUTING_RATE_LIMIT_KEY_PREFIX
+              value: {{ $shared.keyPrefix | quote }}
+            - name: MODEL_ROUTING_RATE_LIMIT_CONNECT_TIMEOUT_SECONDS
+              value: {{ $shared.connectTimeoutSeconds | quote }}
+            - name: MODEL_ROUTING_RATE_LIMIT_OPERATION_TIMEOUT_SECONDS
+              value: {{ $shared.operationTimeoutSeconds | quote }}
+            {{- end }}
+            - name: MODEL_PLANE_OBSERVATION_ENABLED
+              value: {{ ternary "true" "false" .Values.observation.enabled | quote }}
+            - name: MODEL_PLANE_OBSERVATION_ENDPOINT
+              value: {{ .Values.observation.endpoint | quote }}
+            - name: MODEL_PLANE_OBSERVATION_API_KEY_FILE
+              value: /observation/api-key
+            - name: MODEL_PLANE_OBSERVATION_DEPLOYMENT_ID
+              value: {{ .Values.deploymentId | quote }}
+            - name: MODEL_PLANE_OBSERVATION_TARGET_ENVIRONMENT
+              value: {{ .Values.targetEnvironment | quote }}
+            - name: MODEL_PLANE_OBSERVATION_ENGINE_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MODEL_PLANE_OBSERVATION_VERSION
+              value: {{ $observationVersion | quote }}
+            - name: MODEL_PLANE_OBSERVATION_INTERVAL_SECONDS
+              value: {{ .Values.observation.intervalSeconds | quote }}
+            - name: MODEL_PLANE_OBSERVATION_TIMEOUT_SECONDS
+              value: {{ .Values.observation.timeoutSeconds | quote }}
+            - name: MODEL_PLANE_OBSERVATION_JITTER_RATIO
+              value: {{ .Values.observation.jitterRatio | quote }}
+            - name: OTEL_ENABLED
+              value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.otel.serviceName | quote }}
+            - name: OLLAMA_MODELS_DIR
+              value: /models/ollama
+            - name: MLX_MODELS_DIR
+              value: /models/mlx
+            - name: HF_VLM_MODELS_DIR
+              value: /models/hf-vlm
+            {{- if .Values.trustedCA.enabled }}
+            - name: SSL_CERT_FILE
+              value: /etc/orchestra/ca/{{ .Values.trustedCA.key }}
+            {{- end }}
+            {{- range $key, $value := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- if gt (int .Values.gracefulShutdown.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep {{ .Values.gracefulShutdown.preStopSleepSeconds }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /v1/ready
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /v1/ready
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: model-routing-state
+              mountPath: /state
+            {{- if .Values.routing.enabled }}
+            - name: routing-artifacts
+              mountPath: /config
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auth.enabled }}
+            - name: auth-keys
+              mountPath: /auth
+              readOnly: true
+            {{- end }}
+            {{- if .Values.observation.enabled }}
+            - name: observation-api-key
+              mountPath: /observation
+              readOnly: true
+            {{- end }}
+            {{- if eq $rateLimitScope "deployment-shared" }}
+            - name: shared-rate-limit
+              mountPath: /rate-limit
+              readOnly: true
+            {{- end }}
+            {{- if .Values.modelStorage.ollamaExistingClaim }}
+            - name: ollama-models
+              mountPath: /models/ollama
+              readOnly: true
+            {{- end }}
+            {{- if .Values.modelStorage.mlxExistingClaim }}
+            - name: mlx-models
+              mountPath: /models/mlx
+              readOnly: true
+            {{- end }}
+            {{- if .Values.modelStorage.hfVlmExistingClaim }}
+            - name: hf-vlm-models
+              mountPath: /models/hf-vlm
+              readOnly: true
+            {{- end }}
+            {{- if .Values.trustedCA.enabled }}
+            - name: trusted-ca
+              mountPath: /etc/orchestra/ca
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if not .Values.persistence.enabled }}
+        - name: model-routing-state
+          emptyDir: {}
+        {{- end }}
+        {{- if .Values.routing.enabled }}
+        - name: routing-artifacts
+          secret:
+            secretName: {{ .Values.routing.artifactsSecretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.routing.policyKey }}
+                path: model_routing_policy.json
+              - key: {{ .Values.routing.trustStoreKey }}
+                path: model_routing_trust.json
+              - key: {{ .Values.routing.pricingKey }}
+                path: model_routing_pricing.json
+        {{- end }}
+        {{- if .Values.auth.enabled }}
+        - name: auth-keys
+          secret:
+            secretName: {{ .Values.auth.existingSecretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.auth.keysKey }}
+                path: auth_keys.json
+        {{- end }}
+        {{- if .Values.observation.enabled }}
+        - name: observation-api-key
+          secret:
+            secretName: {{ .Values.observation.apiKeySecretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.observation.apiKeySecretKey }}
+                path: api-key
+        {{- end }}
+        {{- if eq $rateLimitScope "deployment-shared" }}
+        - name: shared-rate-limit
+          secret:
+            secretName: {{ $shared.existingSecretName }}
+            defaultMode: 0440
+            items:
+              {{- if eq $sharedBackend "sentinel" }}
+              - key: {{ $shared.sentinelConfigKey }}
+                path: sentinel-config.json
+              {{- else }}
+              - key: {{ $shared.redisUrlKey }}
+                path: redis-url
+              {{- end }}
+        {{- end }}
+        {{- if .Values.modelStorage.ollamaExistingClaim }}
+        - name: ollama-models
+          persistentVolumeClaim:
+            claimName: {{ .Values.modelStorage.ollamaExistingClaim }}
+        {{- end }}
+        {{- if .Values.modelStorage.mlxExistingClaim }}
+        - name: mlx-models
+          persistentVolumeClaim:
+            claimName: {{ .Values.modelStorage.mlxExistingClaim }}
+        {{- end }}
+        {{- if .Values.modelStorage.hfVlmExistingClaim }}
+        - name: hf-vlm-models
+          persistentVolumeClaim:
+            claimName: {{ .Values.modelStorage.hfVlmExistingClaim }}
+        {{- end }}
+        {{- if .Values.trustedCA.enabled }}
+        - name: trusted-ca
+          configMap:
+            name: {{ .Values.trustedCA.configMapName }}
+            items:
+              - key: {{ .Values.trustedCA.key }}
+                path: {{ .Values.trustedCA.key }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "orchestra-inference-engine.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: model-routing-state
+        labels:
+          {{- include "orchestra-inference-engine.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- with .Values.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.storage }}
+  {{- end }}

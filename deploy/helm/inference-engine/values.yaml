@@ -1,0 +1,196 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/caglarsubas/llm_inference_engine/inference-engine
+  # Defaults to Chart.appVersion outside the production profile.
+  tag: ""
+  # Immutable digest wins over tag and is mandatory in the production profile.
+  digest: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+replicaCount: 2
+port: 8080
+deploymentId: ""
+targetEnvironment: "" # dev | test | staging | prod
+rolloutId: ""
+
+# This declaration is disabled for ordinary development installs. The dedicated
+# OpenShift values file enables it and intentionally fails until customer-owned
+# references and network destinations are supplied.
+productionProfile:
+  enabled: false
+  profileId: ""
+  imageFlavor: ""
+  namespaceDefaultDenyAcknowledged: false
+
+auth:
+  enabled: true
+  existingSecretName: ""
+  keysKey: auth_keys.json
+
+routing:
+  enabled: true
+  policyRequired: true
+  artifactsSecretName: ""
+  policyKey: model_routing_policy.json
+  trustStoreKey: model_routing_trust.json
+  pricingKey: model_routing_pricing.json
+  expectedAudience: orchestra-model-plane
+  expectedOrgId: ""
+  clockSkewSeconds: 30
+  inputTokenReserve: 1024
+  rateLimitMaxBuckets: 10000
+  rateLimitScope: process-replica # process-replica | deployment-shared
+  sharedRateLimit:
+    backend: direct # direct | sentinel
+    existingSecretName: ""
+    redisUrlKey: redis-url
+    sentinelConfigKey: sentinel-config.json
+    allowInsecureRedis: false
+    keyPrefix: orchestra:model-routing
+    connectTimeoutSeconds: 1
+    operationTimeoutSeconds: 1
+    # Full NetworkPolicy egress rules, kept separate from model/backend egress.
+    networkPolicyEgress: []
+
+# Payload-free asynchronous control-plane evidence. This does not put Orchestra
+# in the synchronous inference path.
+observation:
+  enabled: true
+  version: 2
+  endpoint: ""
+  apiKeySecretName: ""
+  apiKeySecretKey: api-key
+  intervalSeconds: 60
+  timeoutSeconds: 5
+  jitterRatio: 0.1
+
+otel:
+  enabled: false
+  endpoint: ""
+  serviceName: orchestra-model-plane
+
+# One LKG volume per StatefulSet replica. The customer storage operator owns
+# backup, restore, snapshots, and disaster-recovery verification.
+persistence:
+  enabled: true
+  storage: 1Gi
+  storageClassName: ""
+  accessModes: [ReadWriteOnce]
+  externalBackupAcknowledged: false
+
+# Optional tenant-owned read-only model stores. Leave empty for remote adapters.
+modelStorage:
+  ollamaExistingClaim: ""
+  mlxExistingClaim: ""
+  hfVlmExistingClaim: ""
+
+modelBackends:
+  mode: remote # remote | mounted | hybrid
+  # Required for remote/hybrid production profiles; omitted for mounted-only.
+  networkPolicyEgress: []
+
+trustedCA:
+  enabled: false
+  configMapName: ""
+  key: ca-bundle.crt
+
+service:
+  type: ClusterIP
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# fixed pins the image identity on vanilla Kubernetes. openshift removes all
+# UID/GID fields and delegates identity assignment to restricted-v2.
+securityContextMode: fixed # fixed | openshift
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 4Gi
+  limits:
+    cpu: "4"
+    memory: 16Gi
+
+terminationGracePeriodSeconds: 60
+gracefulShutdown:
+  preStopSleepSeconds: 5
+
+probes:
+  startup:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  dns:
+    provider: kubernetes # kubernetes | openshift
+  # Required independently in the production profile so a valid ServiceMonitor
+  # cannot be rendered behind an unreachable policy.
+  runtimeIngressFrom: []
+  monitoringIngressFrom: []
+  observationEgress: []
+  otelEgress: []
+  extraIngressFrom: []
+  extraEgress: []
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: DoNotSchedule
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# extraEnv is non-secret configuration only. Mount backend credentials through
+# extraEnvFrom.secretRef or extraVolumes; never place values in Helm history.
+extraEnv: {}
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []

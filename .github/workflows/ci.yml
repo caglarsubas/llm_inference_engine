@@ -110,3 +110,32 @@ jobs:
           name: sbom-inference-engine-${{ matrix.variant }}
           path: sbom-${{ matrix.variant }}.*.json
           if-no-files-found: error
+
+  helm:
+    name: standalone OpenShift model-plane chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Validate shell contract
+        run: |
+          bash -n deploy/helm/inference-engine/ci/render-production-profile.sh
+          shellcheck deploy/helm/inference-engine/ci/render-production-profile.sh
+
+      - name: Prove fail-closed OpenShift render
+        run: |
+          deploy/helm/inference-engine/ci/render-production-profile.sh \
+            "$RUNNER_TEMP/orchestra-model-plane-profile.yaml"
+
+      - name: Retain synthetic render evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchestra-model-plane-openshift-render
+          path: ${{ runner.temp }}/orchestra-model-plane-profile.yaml
+          if-no-files-found: error
