@@ -55,6 +55,20 @@ Image verification, registry relocation, air-gap transfer, supported
 architecture, and the precise UBI/FIPS boundary are documented in
 [`docs/CONTAINER_IMAGES.md`](docs/CONTAINER_IMAGES.md).
 
+### Standalone tenant model plane
+
+[`deploy/helm/inference-engine`](deploy/helm/inference-engine/README.md) deploys
+the engine as its own tenant-plane StatefulSet release. Its fail-closed
+OpenShift overlay requires the pinned `orchestra-ocp-4.20-amd64-v1` profile,
+immutable UBI digest, mounted signed artifacts and purpose-scoped credentials,
+external Sentinel state, persistent per-replica LKG storage, explicit network
+peers, and asynchronous evidence export. It creates no credentials, public
+Route, runtime host, or Orchestra control-plane workload.
+
+This makes the deployment topology honest: the tenant runtime calls the model
+plane directly while Orchestra receives observations out of band. A successful
+chart render is contract evidence, not OpenShift production certification.
+
 ### Topology
 
 ```
@@ -1703,9 +1717,9 @@ Enforcement currently covers `/v1/chat/completions`, `/v1/completions`, and
 `/v1/embeddings`. While a policy is active, chat auto-eval plus `/v1/rerank`
 and `/v1/evals/run` return a payload-free
 `model_routing_workload_not_integrated` denial instead of reaching
-`ModelManager` outside governance. Those remaining workload integrations,
-tenant chart wiring, and multi-replica load/HA/SLO certification remain open
-Phase 1 work.
+`ModelManager` outside governance. Standalone tenant chart wiring now ships;
+those remaining workload integrations plus OpenShift lifecycle,
+backup/recovery, multi-replica load, and SLO certification remain open.
 
 ### Asynchronous model-plane observations
 

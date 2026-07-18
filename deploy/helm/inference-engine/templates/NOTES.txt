@@ -1,0 +1,9 @@
+The Orchestra inference engine is internal to the tenant runtime plane.
+
+Service:
+  {{ include "orchestra-inference-engine.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.port }}
+
+This chart creates no credentials and no public Route or Ingress. The tenant
+operator owns Secret population, network policy destinations, artifact reload,
+rollout, backup, restore, and rollback. A successful production-profile render
+is deployment-contract evidence, not OpenShift production certification.

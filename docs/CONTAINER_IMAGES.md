@@ -39,7 +39,9 @@ filesystem read-only, mounts only `/tmp` and `/state` as writable tmpfs paths,
 then proves process identity, state persistence, root immutability, and health.
 This matches the identity shape imposed by OpenShift `restricted-v2`. A real
 cluster must still provide writable storage and the security context expected
-by the deployment chart.
+by the deployment chart. The standalone chart and its strict OpenShift values
+contract live at
+[`deploy/helm/inference-engine`](../deploy/helm/inference-engine/README.md).
 
 The UBI image is a supported UBI-based build. It is not, by that fact alone, a
 Red Hat-certified image, and it does not assert that every Python dependency or

@@ -1,0 +1,120 @@
+# Declared model-plane values for orchestra-ocp-4.20-amd64-v1.
+#
+# This file is intentionally not installable unchanged. Supply immutable image
+# identity, organization/deployment bindings, customer Secret and ConfigMap
+# names, a StorageClass, and namespace-specific NetworkPolicy destinations.
+# A successful render proves contract completeness, not production certification.
+
+productionProfile:
+  enabled: true
+  profileId: orchestra-ocp-4.20-amd64-v1
+  imageFlavor: ubi9
+  namespaceDefaultDenyAcknowledged: false
+
+fullnameOverride: orchestra-model-plane
+
+image:
+  repository: registry.example.com/orchestra/inference-engine-ubi
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+  pullSecrets:
+    - name: orchestra-registry
+
+replicaCount: 2
+deploymentId: ""
+targetEnvironment: prod
+rolloutId: ""
+
+auth:
+  enabled: true
+  existingSecretName: ""
+  keysKey: auth_keys.json
+
+routing:
+  enabled: true
+  policyRequired: true
+  artifactsSecretName: ""
+  expectedAudience: orchestra-model-plane
+  expectedOrgId: ""
+  rateLimitScope: deployment-shared
+  sharedRateLimit:
+    backend: sentinel
+    existingSecretName: ""
+    sentinelConfigKey: sentinel-config.json
+    allowInsecureRedis: false
+    networkPolicyEgress: []
+
+modelBackends:
+  # Set remote, mounted, or hybrid. Mounted/hybrid requires at least one
+  # tenant-owned modelStorage PVC; remote/hybrid requires explicit egress.
+  mode: ""
+  networkPolicyEgress: []
+
+observation:
+  enabled: true
+  version: 2
+  endpoint: ""
+  apiKeySecretName: ""
+
+otel:
+  enabled: true
+  endpoint: ""
+  serviceName: orchestra-model-plane
+
+persistence:
+  enabled: true
+  storage: 1Gi
+  storageClassName: ""
+  accessModes: [ReadWriteOnce]
+  externalBackupAcknowledged: false
+
+trustedCA:
+  enabled: true
+  configMapName: ""
+  key: ca-bundle.crt
+
+service:
+  type: ClusterIP
+
+serviceAccount:
+  create: true
+  name: orchestra-model-plane
+  automountServiceAccountToken: false
+
+securityContextMode: openshift
+containerSecurityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  dns:
+    provider: openshift
+  runtimeIngressFrom: []
+  monitoringIngressFrom: []
+  observationEgress: []
+  otelEgress: []
+  extraIngressFrom: []
+  extraEgress: []
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: DoNotSchedule
