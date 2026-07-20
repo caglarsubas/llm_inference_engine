@@ -139,7 +139,10 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if not (has .Values.modelBackends.mode (list "remote" "mounted" "hybrid")) -}}
 {{- fail "modelBackends.mode must be remote, mounted, or hybrid" -}}
 {{- end -}}
-{{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" -}}
+{{- if not (has .Values.workloadSurface.profileId (list "unrestricted" "orchestra-model-plane-workload-v1")) -}}
+{{- fail "workloadSurface.profileId must be unrestricted or orchestra-model-plane-workload-v1" -}}
+{{- end -}}
+{{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" "MODEL_PLANE_WORKLOAD_SURFACE" -}}
 {{- range $key, $_ := .Values.extraEnv -}}
 {{- if or (has $key $managedEnv) (hasPrefix "MODEL_ROUTING_" $key) (hasPrefix "MODEL_PLANE_OBSERVATION_" $key) -}}
 {{- fail (printf "extraEnv cannot override chart-managed variable %s" $key) -}}
@@ -191,6 +194,9 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 {{- if ne .Values.productionProfile.imageFlavor "ubi9" -}}
 {{- fail "the OpenShift production profile requires imageFlavor=ubi9" -}}
+{{- end -}}
+{{- if ne .Values.workloadSurface.profileId "orchestra-model-plane-workload-v1" -}}
+{{- fail "the OpenShift production profile requires workloadSurface.profileId=orchestra-model-plane-workload-v1" -}}
 {{- end -}}
 {{- if not .Values.productionProfile.namespaceDefaultDenyAcknowledged -}}
 {{- fail "the OpenShift production profile requires a pre-created namespace-wide default deny" -}}

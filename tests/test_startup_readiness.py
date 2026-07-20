@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from inference_engine.api.state import app_state
+from inference_engine.config import CERTIFIED_MODEL_WORKLOAD_SURFACE, settings
 from inference_engine.main import app
 
 
@@ -24,6 +25,7 @@ def test_health_stays_reachable_while_starting() -> None:
     assert body["status"] == "starting"
     assert body["ready"] is False
     assert body["readiness"]["status"] == "starting"
+    assert body["workload_surface"] == settings.model_plane_workload_surface
 
 
 def test_ready_endpoint_returns_retryable_503_while_starting() -> None:
@@ -36,6 +38,19 @@ def test_ready_endpoint_returns_retryable_503_while_starting() -> None:
     body = response.json()
     assert body["status"] == "starting"
     assert body["ready"] is False
+
+
+def test_health_exposes_certified_workload_surface(monkeypatch) -> None:
+    monkeypatch.setattr(
+        settings,
+        "model_plane_workload_surface",
+        CERTIFIED_MODEL_WORKLOAD_SURFACE,
+    )
+
+    response = TestClient(app).get("/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["workload_surface"] == CERTIFIED_MODEL_WORKLOAD_SURFACE
 
 
 def test_openai_routes_return_typed_503_while_starting() -> None:

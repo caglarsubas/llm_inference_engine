@@ -25,6 +25,13 @@ productionProfile:
   imageFlavor: ""
   namespaceDefaultDenyAcknowledged: false
 
+# Development installs expose the engine's complete API. The pinned production
+# profile requires the named core surface: chat, legacy completions, and
+# embeddings are governed; rerank, standalone eval, and chat auto-eval fail
+# closed until a later signed-routing contract integrates them.
+workloadSurface:
+  profileId: unrestricted
+
 auth:
   enabled: true
   existingSecretName: ""

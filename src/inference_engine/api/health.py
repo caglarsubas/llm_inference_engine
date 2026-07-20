@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Response, status
 
 from .. import __version__
+from ..config import settings
 from .state import app_state
 
 router = APIRouter()
@@ -14,6 +15,7 @@ async def health() -> dict:
         "ready": readiness["ready"],
         "readiness": readiness,
         "version": __version__,
+        "workload_surface": settings.model_plane_workload_surface,
         "backend": app_state.backend_name,
         "loaded_models": app_state.manager.loaded_summary(),
         "loaded_bytes": app_state.manager.loaded_bytes,
@@ -32,5 +34,6 @@ async def ready(response: Response) -> dict:
         "ready": readiness["ready"],
         "readiness": readiness,
         "version": __version__,
+        "workload_surface": settings.model_plane_workload_surface,
         "backend": app_state.backend_name,
     }

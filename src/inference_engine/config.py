@@ -5,6 +5,9 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+CERTIFIED_MODEL_WORKLOAD_SURFACE = "orchestra-model-plane-workload-v1"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -277,6 +280,14 @@ class Settings(BaseSettings):
         gt=0.0,
         le=30.0,
     )
+
+    # Named execution surface used by the pinned Orchestra production profile.
+    # Development remains unrestricted. The certified surface deliberately
+    # excludes rerank, standalone eval, and chat-attached auto-eval until their
+    # signed routing and evidence semantics are part of a later contract.
+    model_plane_workload_surface: Literal[
+        "unrestricted", "orchestra-model-plane-workload-v1"
+    ] = Field(default="unrestricted")
 
     # Asynchronous observed-state reporting to the Orchestra control plane.
     # Off by default: standalone/observe-only deployments never make this
