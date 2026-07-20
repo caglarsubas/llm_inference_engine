@@ -100,6 +100,8 @@ grep -qF 'readOnlyRootFilesystem: true' "$manifest"
 grep -qF 'allowPrivilegeEscalation: false' "$manifest"
 grep -qF 'type: RuntimeDefault' "$manifest"
 grep -qF 'MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE' "$manifest"
+grep -qF 'name: MODEL_PLANE_WORKLOAD_SURFACE' "$manifest"
+grep -qF 'value: "orchestra-model-plane-workload-v1"' "$manifest"
 grep -qF 'MODEL_PLANE_OBSERVATION_VERSION' "$manifest"
 grep -qF 'OTEL_EXPORTER_OTLP_ENDPOINT' "$manifest"
 grep -qF 'secretName: engine-auth' "$manifest"
@@ -137,6 +139,8 @@ expect_profile_failure "one replica" --set replicaCount=1
 expect_profile_failure "the direct shared-state backend" --set routing.sharedRateLimit.backend=direct
 expect_profile_failure "insecure shared state" --set routing.sharedRateLimit.allowInsecureRedis=true
 expect_profile_failure "disabled OTLP evidence" --set otel.enabled=false
+expect_profile_failure "an unrestricted workload surface" \
+  --set workloadSurface.profileId=unrestricted
 expect_profile_failure "fixed UID mode" --set securityContextMode=fixed
 expect_profile_failure "observation contract v1" --set observation.version=1
 expect_profile_failure "a mismatched routing audience" \

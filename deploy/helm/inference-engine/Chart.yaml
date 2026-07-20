@@ -2,8 +2,8 @@ apiVersion: v2
 name: orchestra-inference-engine
 description: Standalone tenant-deployed Orchestra model plane
 type: application
-version: 0.1.0
-appVersion: "0.1.8"
+version: 0.1.1
+appVersion: "0.1.9"
 home: https://github.com/caglarsubas/llm_inference_engine
 sources:
   - https://github.com/caglarsubas/llm_inference_engine

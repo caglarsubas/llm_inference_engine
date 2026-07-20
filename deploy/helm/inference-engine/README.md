@@ -53,7 +53,16 @@ The profile also requires two or more replicas, `restricted-v2` identity
 delegation, a read-only root filesystem, dropped capabilities,
 `RuntimeDefault` seccomp, persistent LKG state, signed policy enforcement,
 deployment-shared Sentinel limits, HTTPS observation/OTLP, a PDB, topology
-spread, resource bounds, and a ServiceMonitor.
+spread, resource bounds, a ServiceMonitor, and the exact
+`orchestra-model-plane-workload-v1` execution surface.
+
+That surface admits governed `POST /v1/chat/completions`,
+`POST /v1/completions`, and `POST /v1/embeddings`. It deliberately denies
+chat-attached auto-evaluation, `POST /v1/rerank`, and `POST /v1/evals/run`
+with the typed `model_plane_workload_not_certified` response. Health,
+readiness, model inventory, metrics, and authenticated administration remain
+available as operating surfaces, but they are not counted as certified model
+workloads. Development installs retain `workloadSurface.profileId=unrestricted`.
 
 A successful render means those declared inputs are complete. It does not prove
 OpenShift CNI/CSI behavior, Secret-operator convergence, pod/node loss,
@@ -96,7 +105,8 @@ in `values.yaml`.
 
 Backend credentials belong in `extraEnvFrom.secretRef` or a customer-defined
 Secret volume. `extraEnv` is for non-secret configuration and cannot override
-chart-managed auth, routing, observation, OTLP, model-store, or trust variables.
+chart-managed auth, routing, workload-surface, observation, OTLP, model-store,
+or trust variables.
 
 Set `modelBackends.mode` to `remote`, `mounted`, or `hybrid`. Remote and hybrid
 profiles require a dedicated model-backend egress lane. Mounted and hybrid

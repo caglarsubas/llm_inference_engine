@@ -110,6 +110,8 @@ spec:
               value: {{ .Values.routing.rateLimitMaxBuckets | quote }}
             - name: MODEL_ROUTING_RATE_LIMIT_SCOPE
               value: {{ $rateLimitScope | quote }}
+            - name: MODEL_PLANE_WORKLOAD_SURFACE
+              value: {{ .Values.workloadSurface.profileId | quote }}
             {{- if eq $rateLimitScope "deployment-shared" }}
             {{- if eq $sharedBackend "sentinel" }}
             - name: MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE

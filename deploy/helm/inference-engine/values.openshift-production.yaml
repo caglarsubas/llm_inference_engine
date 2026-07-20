@@ -11,6 +11,9 @@ productionProfile:
   imageFlavor: ubi9
   namespaceDefaultDenyAcknowledged: false
 
+workloadSurface:
+  profileId: orchestra-model-plane-workload-v1
+
 fullnameOverride: orchestra-model-plane
 
 image:

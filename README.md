@@ -1728,6 +1728,13 @@ and `/v1/evals/run` return a payload-free
 those remaining workload integrations plus OpenShift lifecycle,
 backup/recovery, multi-replica load, and SLO certification remain open.
 
+The pinned OpenShift profile additionally sets
+`MODEL_PLANE_WORKLOAD_SURFACE=orchestra-model-plane-workload-v1`. Under that
+named contract, the same excluded workloads fail closed with
+`model_plane_workload_not_certified` even before a policy can be activated.
+`/v1/health` and `/v1/ready` expose the configured surface identity so a
+deployment observer can bind the running process to the release contract.
+
 ### Asynchronous model-plane observations
 
 The engine can continuously report observed state to Orchestra without making

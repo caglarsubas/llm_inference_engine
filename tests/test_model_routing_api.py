@@ -24,7 +24,7 @@ from inference_engine.api.chat import _stream_response
 from inference_engine.api.state import app_state
 from inference_engine.auth import Identity
 from inference_engine.cancellation import Cancellation
-from inference_engine.config import settings
+from inference_engine.config import CERTIFIED_MODEL_WORKLOAD_SURFACE, settings
 from inference_engine.evals import PolicyRegistry
 from inference_engine.main import app
 from inference_engine.manager import ModelNotFoundError
@@ -741,6 +741,31 @@ def test_unintegrated_model_workloads_fail_closed_without_lookup(
     assert response.status_code == 503
     assert response.json()["detail"]["type"] == ("model_routing_workload_not_integrated")
     assert response.json()["detail"]["workload"] == workload
+    assert calls == []
+
+
+def test_certified_surface_denies_unintegrated_workload_without_active_policy(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = ModelRoutingRuntimeState()
+    monkeypatch.setattr(
+        settings,
+        "model_plane_workload_surface",
+        CERTIFIED_MODEL_WORKLOAD_SURFACE,
+    )
+    calls = _install_models(monkeypatch, {"reasoning": _RoutingAdapter("unused")})
+
+    response = TestClient(app).post(
+        "/v1/rerank",
+        json={"model": "reasoning", "query": "q", "documents": ["d"]},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["type"] == "model_plane_workload_not_certified"
+    assert detail["workload"] == "rerank.run"
+    assert detail["workload_surface"] == CERTIFIED_MODEL_WORKLOAD_SURFACE
+    assert "policy_id" not in detail
     assert calls == []
 
 

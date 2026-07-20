@@ -10,7 +10,7 @@ from fastapi import HTTPException
 
 from ..adapters import InferenceAdapter
 from ..auth import Identity
-from ..config import settings
+from ..config import CERTIFIED_MODEL_WORKLOAD_SURFACE, settings
 from ..manager import ModelNotFoundError
 from ..model_routing_runtime import (
     ModelRoutingDecision,
@@ -188,19 +188,34 @@ def reject_unsupported_governed_workload(
     workload: str,
 ) -> None:
     active = app_state.model_routing_runtime.policy
-    if active is None:
+    certified_surface = (
+        settings.model_plane_workload_surface == CERTIFIED_MODEL_WORKLOAD_SURFACE
+    )
+    if active is None and not certified_surface:
         return
-    code = "model_routing_workload_not_integrated"
+    code = (
+        "model_plane_workload_not_certified"
+        if certified_surface
+        else "model_routing_workload_not_integrated"
+    )
     _emit_denial_span(identity=identity, code=code, workload=workload)
+    detail = {
+        "message": (
+            "workload is outside the configured model-plane workload surface"
+            if certified_surface
+            else "workload is not integrated with governed model routing"
+        ),
+        "type": code,
+        "code": code,
+        "workload": workload,
+    }
+    if active is not None:
+        detail["policy_id"] = active.policy_id
+    if certified_surface:
+        detail["workload_surface"] = CERTIFIED_MODEL_WORKLOAD_SURFACE
     raise HTTPException(
         status_code=503,
-        detail={
-            "message": "workload is not integrated with governed model routing",
-            "type": code,
-            "code": code,
-            "policy_id": active.policy_id,
-            "workload": workload,
-        },
+        detail=detail,
     )
 
 
