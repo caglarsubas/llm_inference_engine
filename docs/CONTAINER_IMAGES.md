@@ -123,7 +123,7 @@ with the values printed by the release workflow:
 
 ```bash
 CHART_REPOSITORY=ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine
-CHART_VERSION=0.1.1
+CHART_VERSION=0.1.2
 CHART_DIGEST=sha256:<digest-from-publish-workflow>
 CHART_REF="${CHART_REPOSITORY}@${CHART_DIGEST}"
 
@@ -155,23 +155,23 @@ signatures and attestations:
 cosign login ghcr.io -u <source-user> -p <source-token>
 cosign login registry.customer.example -u <destination-user> -p <destination-token>
 
-ORCHESTRA_ENGINE_TAG=v0.1.9 \
+ORCHESTRA_ENGINE_TAG=v0.1.10 \
 ORCHESTRA_INCLUDE_CHART=true \
-ORCHESTRA_CHART_VERSION=0.1.1 \
+ORCHESTRA_CHART_VERSION=0.1.2 \
   ./scripts/relocate_images.sh copy registry.customer.example/orchestra
 ```
 
 For disconnected transfer:
 
 ```bash
-ORCHESTRA_ENGINE_TAG=v0.1.9 \
+ORCHESTRA_ENGINE_TAG=v0.1.10 \
 ORCHESTRA_INCLUDE_CHART=true \
-ORCHESTRA_CHART_VERSION=0.1.1 \
+ORCHESTRA_CHART_VERSION=0.1.2 \
   ./scripts/relocate_images.sh save ./engine-release
 # Move ./engine-release across the boundary.
-ORCHESTRA_ENGINE_TAG=v0.1.9 \
+ORCHESTRA_ENGINE_TAG=v0.1.10 \
 ORCHESTRA_INCLUDE_CHART=true \
-ORCHESTRA_CHART_VERSION=0.1.1 \
+ORCHESTRA_CHART_VERSION=0.1.2 \
   ./scripts/relocate_images.sh load registry.airgap.example/orchestra ./engine-release
 ```
 
