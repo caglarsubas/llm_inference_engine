@@ -29,6 +29,20 @@ deploymentId: ""
 targetEnvironment: prod
 rolloutId: ""
 
+serverTls:
+  enabled: true
+  existingSecret: ""
+  certificateKey: tls.crt
+  privateKeyKey: tls.key
+  clientCaKey: ca.crt
+  requireClientCertificate: false
+  rolloutId: ""
+  probeClient:
+    existingSecret: ""
+    certificateKey: tls.crt
+    privateKeyKey: tls.key
+    caKey: ca.crt
+
 auth:
   enabled: true
   existingSecretName: ""
@@ -115,6 +129,13 @@ metrics:
     enabled: true
     interval: 30s
     scrapeTimeout: 10s
+    tls:
+      serverName: ""
+      caSecretName: ""
+      caKey: ca.crt
+      clientCertificateSecretName: ""
+      clientCertificateKey: tls.crt
+      clientPrivateKeyKey: tls.key
 
 topologySpread:
   enabled: true

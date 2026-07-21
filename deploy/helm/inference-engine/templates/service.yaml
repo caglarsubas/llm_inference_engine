@@ -7,9 +7,9 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
-    - name: http
+    - name: {{ ternary "https" "http" .Values.serverTls.enabled }}
       port: {{ .Values.port }}
-      targetPort: http
+      targetPort: {{ ternary "https" "http" .Values.serverTls.enabled }}
       protocol: TCP
   selector:
     {{- include "orchestra-inference-engine.selectorLabels" . | nindent 4 }}
@@ -24,9 +24,9 @@ spec:
   clusterIP: None
   publishNotReadyAddresses: true
   ports:
-    - name: http
+    - name: {{ ternary "https" "http" .Values.serverTls.enabled }}
       port: {{ .Values.port }}
-      targetPort: http
+      targetPort: {{ ternary "https" "http" .Values.serverTls.enabled }}
       protocol: TCP
   selector:
     {{- include "orchestra-inference-engine.selectorLabels" . | nindent 4 }}

@@ -16,6 +16,22 @@ deploymentId: ""
 targetEnvironment: "" # dev | test | staging | prod
 rolloutId: ""
 
+# Optional tenant-owned listener TLS. Secrets are referenced, never created.
+# Change rolloutId whenever projected certificate material changes.
+serverTls:
+  enabled: false
+  existingSecret: ""
+  certificateKey: tls.crt
+  privateKeyKey: tls.key
+  clientCaKey: ca.crt
+  requireClientCertificate: false
+  rolloutId: ""
+  probeClient:
+    existingSecret: ""
+    certificateKey: tls.crt
+    privateKeyKey: tls.key
+    caKey: ca.crt
+
 # This declaration is disabled for ordinary development installs. The dedicated
 # OpenShift values file enables it and intentionally fails until customer-owned
 # references and network destinations are supplied.
@@ -184,6 +200,13 @@ metrics:
     namespace: ""
     interval: 30s
     scrapeTimeout: 10s
+    tls:
+      serverName: ""
+      caSecretName: ""
+      caKey: ca.crt
+      clientCertificateSecretName: ""
+      clientCertificateKey: tls.crt
+      clientPrivateKeyKey: tls.key
 
 topologySpread:
   enabled: true

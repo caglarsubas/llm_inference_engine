@@ -38,6 +38,8 @@ required=(
   --set image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   --set deploymentId=tenant-model-plane
   --set rolloutId=release-2026-07
+  --set serverTls.existingSecret=engine-server-tls
+  --set serverTls.rolloutId=engine-cert-v1
   --set auth.existingSecretName=engine-auth
   --set routing.artifactsSecretName=engine-routing
   --set routing.expectedOrgId=org-tenant
@@ -67,6 +69,8 @@ required=(
   --set 'networkPolicy.otelEgress[0].to[0].ipBlock.cidr=10.70.0.0/16'
   --set 'networkPolicy.otelEgress[0].ports[0].protocol=TCP'
   --set 'networkPolicy.otelEgress[0].ports[0].port=4317'
+  --set metrics.serviceMonitor.tls.serverName=orchestra-model-plane.orchestra-model-plane.svc
+  --set metrics.serviceMonitor.tls.caSecretName=engine-monitoring-ca
 )
 
 render_profile() {
@@ -95,6 +99,12 @@ grep -qF 'replicas: 2' "$manifest"
 grep -qF 'prometa.io/production-profile-id: "orchestra-ocp-4.20-amd64-v1"' "$manifest"
 grep -qF 'image: registry.example.test/orchestra/inference-engine-ubi@sha256:aaaaaaaa' "$manifest"
 grep -qF 'orchestra.prometa.ai/rollout-id: "release-2026-07"' "$manifest"
+grep -qF 'orchestra.prometa.ai/server-tls-rollout-id: "engine-cert-v1"' "$manifest"
+grep -qF 'name: INFERENCE_ENGINE_SERVER_TLS_CERT_FILE' "$manifest"
+grep -qF 'secretName: "engine-server-tls"' "$manifest"
+grep -qF 'scheme: HTTPS' "$manifest"
+grep -qF 'serverName: "orchestra-model-plane.orchestra-model-plane.svc"' "$manifest"
+grep -qF 'name: "engine-monitoring-ca"' "$manifest"
 grep -qF 'automountServiceAccountToken: false' "$manifest"
 grep -qF 'readOnlyRootFilesystem: true' "$manifest"
 grep -qF 'allowPrivilegeEscalation: false' "$manifest"
@@ -156,5 +166,31 @@ expect_profile_failure "unacknowledged namespace default deny" \
 expect_profile_failure "unowned backup responsibility" \
   --set persistence.externalBackupAcknowledged=false
 expect_profile_failure "disabled NetworkPolicy" --set networkPolicy.enabled=false
+expect_profile_failure "plaintext serving" --set serverTls.enabled=false \
+  --set-string serverTls.existingSecret= --set-string serverTls.rolloutId=
+expect_profile_failure "missing certificate rotation identity" \
+  --set-string serverTls.rolloutId=
+expect_profile_failure "unverified monitoring TLS" \
+  --set-string metrics.serviceMonitor.tls.caSecretName=
+
+if render_profile \
+  --set serverTls.requireClientCertificate=true \
+  --set serverTls.probeClient.existingSecret=engine-probe-client \
+  --set metrics.serviceMonitor.tls.clientCertificateSecretName=engine-monitoring-client \
+  >"$workdir/openshift-model-plane-mtls.yaml"; then
+  grep -qF 'name: INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE' \
+    "$workdir/openshift-model-plane-mtls.yaml"
+  grep -qF 'secretName: "engine-probe-client"' \
+    "$workdir/openshift-model-plane-mtls.yaml"
+  grep -qF 'name: "engine-monitoring-client"' \
+    "$workdir/openshift-model-plane-mtls.yaml"
+  grep -qF 'http.client.HTTPSConnection' \
+    "$workdir/openshift-model-plane-mtls.yaml"
+else
+  echo "OpenShift production profile rejected complete mTLS identities" >&2
+  exit 1
+fi
+expect_profile_failure "mTLS without a probe identity" \
+  --set serverTls.requireClientCertificate=true
 
 echo "Standalone OpenShift model-plane profile render passed: $manifest"
