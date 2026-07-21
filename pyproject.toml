@@ -1,6 +1,6 @@
 [project]
 name = "inference-engine"
-version = "0.1.9"
+version = "0.1.10"
 description = "Local LLM inference engine — backend-agnostic, OpenAI-compatible, OTel-ready"
 requires-python = ">=3.11"
 readme = "README.md"
