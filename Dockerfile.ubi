@@ -94,6 +94,6 @@ USER 1001
 EXPOSE 8080
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import os,urllib.request; raise SystemExit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/v1/health', timeout=3).status == 200 else 1)"
+  CMD python -c "import os,ssl,urllib.request;t=os.environ.get('INFERENCE_ENGINE_SERVER_TLS_CERT_FILE');c=ssl.create_default_context(cafile=os.environ.get('INFERENCE_ENGINE_PROBE_TLS_CA_FILE') or t) if t else None;t and setattr(c,'check_hostname',False);p=os.environ.get('INFERENCE_ENGINE_PROBE_TLS_CERT_FILE');p and c.load_cert_chain(p,os.environ['INFERENCE_ENGINE_PROBE_TLS_KEY_FILE']);raise SystemExit(0 if urllib.request.urlopen(('%s://127.0.0.1:%s/v1/health' % ('https' if t else 'http',os.environ.get('PORT','8080'))),timeout=3,context=c).status == 200 else 1)"
 
-CMD ["sh", "-c", "exec uvicorn inference_engine.main:app --host \"$HOST\" --port \"$PORT\""]
+CMD ["python", "-m", "inference_engine.server"]

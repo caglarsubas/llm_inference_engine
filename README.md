@@ -512,6 +512,10 @@ All knobs live in `.env` (see `.env.example`):
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
 | `AUTH_ENABLED`           | `false`                                                                                  | Bearer-token gate on `/v1/models` and `/v1/chat/completions` |
 | `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON key records; optional `key_id`, `not_before`, and `expires_at` enable managed rotation |
+| `INFERENCE_ENGINE_SERVER_TLS_CERT_FILE` | empty                                                                    | Server certificate PEM; must be paired with the private key |
+| `INFERENCE_ENGINE_SERVER_TLS_KEY_FILE` | empty                                                                     | Server private-key PEM; never place the value in environment variables |
+| `INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE` | empty                                                               | Optional client CA PEM used when mTLS is required |
+| `INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE` | `false`                                                   | Require a verified client certificate; incomplete settings fail startup |
 | `MODEL_ROUTING_POLICY_REQUIRED` | `false`                                                                         | Fail startup when no signed candidate or valid LKG can activate            |
 | `MODEL_ROUTING_POLICY_FILE` | `.model_routing_policy.json`                                                         | Operator-mounted signed desired-state candidate                            |
 | `MODEL_ROUTING_LAST_KNOWN_GOOD_FILE` | `.model_routing_policy.lkg.json`                                           | Atomic exact-envelope LKG persisted after successful verification          |

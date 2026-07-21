@@ -42,6 +42,8 @@ renderable unchanged. A customer overlay must provide:
 - a mirrored UBI9 image by exact digest and its pull Secret;
 - release, deployment, organization, and environment bindings;
 - separate auth, signed-routing, observation, and Sentinel Secret references;
+- a server-certificate Secret, certificate rollout ID, and monitoring CA/server
+  name for verified HTTPS scraping;
 - an existing trusted-CA ConfigMap;
 - a StorageClass plus explicit acknowledgement that the external storage
   operator owns backup and restore;
@@ -55,6 +57,12 @@ delegation, a read-only root filesystem, dropped capabilities,
 deployment-shared Sentinel limits, HTTPS observation/OTLP, a PDB, topology
 spread, resource bounds, a ServiceMonitor, and the exact
 `orchestra-model-plane-workload-v1` execution surface.
+
+Server TLS is mandatory in this profile and optional elsewhere. Enabling
+`serverTls.requireClientCertificate` also requires a separate in-pod probe
+client Secret and a monitoring client Secret in the ServiceMonitor namespace.
+The chart uses client-authenticated exec probes because kubelet HTTP probes
+cannot present a certificate. It never renders any of those Secrets.
 
 That surface admits governed `POST /v1/chat/completions`,
 `POST /v1/completions`, and `POST /v1/embeddings`. It deliberately denies
@@ -101,6 +109,9 @@ in `values.yaml`.
 | `routing.artifactsSecretName` | `model_routing_policy.json`, `model_routing_trust.json`, `model_routing_pricing.json` | Signed desired state, purpose-specific trust, and cost catalog |
 | `observation.apiKeySecretName` | `api-key` | Deployment-bound `model-plane:observe` credential |
 | `routing.sharedRateLimit.existingSecretName` | `sentinel-config.json` | Strict Sentinel discovery, TLS, credentials, and replica-ack contract |
+| `serverTls.existingSecret` | `tls.crt`, `tls.key`, plus `ca.crt` for mTLS | Model-plane listener identity and optional client trust |
+| `serverTls.probeClient.existingSecret` | `tls.crt`, `tls.key`, `ca.crt` | In-pod health identity when listener mTLS is enabled |
+| `metrics.serviceMonitor.tls.*SecretName` | CA and optional client certificate keys | Prometheus server verification and optional client identity |
 | `trustedCA.configMapName` | `ca-bundle.crt` | Customer and internal trust roots |
 
 Backend credentials belong in `extraEnvFrom.secretRef` or a customer-defined
@@ -159,7 +170,8 @@ that weakening core controls fails. It is a chart test, not a cluster test.
 ## Rotation and rollback
 
 Prefer immutable, revisioned Secret names. When the customer Secret operator
-updates an existing object, change `rolloutId` so every pod receives a new pod
+updates listener material, change `serverTls.rolloutId`; for other runtime
+material, change `rolloutId` so every pod receives a new pod
 template and the StatefulSet drains predecessors. Keep old/new identities and
 trust in overlap until all replicas use the replacement, then retire the old
 material and run negative probes.

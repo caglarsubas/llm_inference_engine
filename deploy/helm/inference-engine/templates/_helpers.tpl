@@ -124,6 +124,27 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if and .Values.trustedCA.enabled (not .Values.trustedCA.key) -}}
 {{- fail "trustedCA.key is required when trustedCA.enabled=true" -}}
 {{- end -}}
+{{- if .Values.serverTls.enabled -}}
+{{- if or (not .Values.serverTls.existingSecret) (not .Values.serverTls.certificateKey) (not .Values.serverTls.privateKeyKey) -}}
+{{- fail "enabled serverTls requires an existing Secret and certificate/private-key keys" -}}
+{{- end -}}
+{{- if and .Values.serverTls.rolloutId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$" .Values.serverTls.rolloutId)) -}}
+{{- fail "serverTls.rolloutId must be a bounded certificate deployment identifier" -}}
+{{- end -}}
+{{- if and .Values.serverTls.requireClientCertificate (or (not .Values.serverTls.clientCaKey) (not .Values.serverTls.probeClient.existingSecret) (not .Values.serverTls.probeClient.certificateKey) (not .Values.serverTls.probeClient.privateKeyKey) (not .Values.serverTls.probeClient.caKey)) -}}
+{{- fail "server mTLS requires a client CA and a complete probe-client Secret reference" -}}
+{{- end -}}
+{{- else if or .Values.serverTls.existingSecret .Values.serverTls.requireClientCertificate .Values.serverTls.rolloutId .Values.serverTls.probeClient.existingSecret -}}
+{{- fail "serverTls Secret, client authentication, rollout, and probe settings require serverTls.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.metrics.serviceMonitor.enabled .Values.serverTls.enabled -}}
+{{- if or (not .Values.metrics.serviceMonitor.tls.serverName) (not .Values.metrics.serviceMonitor.tls.caSecretName) (not .Values.metrics.serviceMonitor.tls.caKey) -}}
+{{- fail "TLS ServiceMonitor scraping requires an exact serverName and CA Secret reference" -}}
+{{- end -}}
+{{- if and .Values.serverTls.requireClientCertificate (or (not .Values.metrics.serviceMonitor.tls.clientCertificateSecretName) (not .Values.metrics.serviceMonitor.tls.clientCertificateKey) (not .Values.metrics.serviceMonitor.tls.clientPrivateKeyKey)) -}}
+{{- fail "mTLS ServiceMonitor scraping requires a complete monitoring client Secret reference" -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.accessModes) -}}
 {{- fail "persistence.accessModes is required when persistence.enabled=true" -}}
 {{- end -}}
@@ -142,7 +163,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if not (has .Values.workloadSurface.profileId (list "unrestricted" "orchestra-model-plane-workload-v1")) -}}
 {{- fail "workloadSurface.profileId must be unrestricted or orchestra-model-plane-workload-v1" -}}
 {{- end -}}
-{{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" "MODEL_PLANE_WORKLOAD_SURFACE" -}}
+{{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" "MODEL_PLANE_WORKLOAD_SURFACE" "INFERENCE_ENGINE_SERVER_TLS_CERT_FILE" "INFERENCE_ENGINE_SERVER_TLS_KEY_FILE" "INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE" "INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE" "INFERENCE_ENGINE_PROBE_TLS_CERT_FILE" "INFERENCE_ENGINE_PROBE_TLS_KEY_FILE" "INFERENCE_ENGINE_PROBE_TLS_CA_FILE" -}}
 {{- range $key, $_ := .Values.extraEnv -}}
 {{- if or (has $key $managedEnv) (hasPrefix "MODEL_ROUTING_" $key) (hasPrefix "MODEL_PLANE_OBSERVATION_" $key) -}}
 {{- fail (printf "extraEnv cannot override chart-managed variable %s" $key) -}}
@@ -154,8 +175,8 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- fail (printf "podLabels cannot override chart-managed label %s" $key) -}}
 {{- end -}}
 {{- end -}}
-{{- if or (hasKey .Values.podAnnotations "orchestra.prometa.ai/rollout-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/deployment-id") -}}
-{{- fail "podAnnotations cannot override rollout or deployment identity" -}}
+{{- if or (hasKey .Values.podAnnotations "orchestra.prometa.ai/rollout-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/deployment-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/server-tls-rollout-id") -}}
+{{- fail "podAnnotations cannot override rollout, deployment, or server TLS identity" -}}
 {{- end -}}
 
 {{- if eq $environment "prod" -}}
@@ -294,6 +315,9 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 {{- if not .Values.metrics.serviceMonitor.enabled -}}
 {{- fail "the OpenShift production profile requires a ServiceMonitor" -}}
+{{- end -}}
+{{- if or (not .Values.serverTls.enabled) (not .Values.serverTls.rolloutId) -}}
+{{- fail "the OpenShift production profile requires server TLS and an explicit certificate rolloutId" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

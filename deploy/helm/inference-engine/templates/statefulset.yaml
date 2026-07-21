@@ -40,6 +40,9 @@ spec:
       annotations:
         orchestra.prometa.ai/rollout-id: {{ .Values.rolloutId | quote }}
         orchestra.prometa.ai/deployment-id: {{ .Values.deploymentId | quote }}
+        {{- with .Values.serverTls.rolloutId }}
+        orchestra.prometa.ai/server-tls-rollout-id: {{ . | quote }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -70,7 +73,7 @@ spec:
           securityContext:
             {{- toYaml $containerSecurityContext | nindent 12 }}
           ports:
-            - name: http
+            - name: {{ ternary "https" "http" .Values.serverTls.enabled }}
               containerPort: {{ .Values.port }}
               protocol: TCP
           {{- with .Values.extraEnvFrom }}
@@ -82,6 +85,24 @@ spec:
               value: "0.0.0.0"
             - name: PORT
               value: {{ .Values.port | quote }}
+            {{- if .Values.serverTls.enabled }}
+            - name: INFERENCE_ENGINE_SERVER_TLS_CERT_FILE
+              value: /etc/orchestra/server-tls/tls.crt
+            - name: INFERENCE_ENGINE_SERVER_TLS_KEY_FILE
+              value: /etc/orchestra/server-tls/tls.key
+            - name: INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE
+              value: {{ .Values.serverTls.requireClientCertificate | quote }}
+            {{- if .Values.serverTls.requireClientCertificate }}
+            - name: INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE
+              value: /etc/orchestra/server-tls/client-ca.crt
+            - name: INFERENCE_ENGINE_PROBE_TLS_CERT_FILE
+              value: /etc/orchestra/probe-tls/tls.crt
+            - name: INFERENCE_ENGINE_PROBE_TLS_KEY_FILE
+              value: /etc/orchestra/probe-tls/tls.key
+            - name: INFERENCE_ENGINE_PROBE_TLS_CA_FILE
+              value: /etc/orchestra/probe-tls/ca.crt
+            {{- end }}
+            {{- end }}
             - name: AUTH_ENABLED
               value: {{ ternary "true" "false" .Values.auth.enabled | quote }}
             - name: AUTH_KEYS_FILE
@@ -181,24 +202,57 @@ spec:
                   - sleep {{ .Values.gracefulShutdown.preStopSleepSeconds }}
           {{- end }}
           startupProbe:
+            {{- if and .Values.serverTls.enabled .Values.serverTls.requireClientCertificate }}
+            exec:
+              command:
+                - python
+                - -c
+                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/orchestra/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/orchestra/probe-tls/tls.crt','/etc/orchestra/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/ready');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.startup.timeoutSeconds) | quote }}
+            {{- else }}
             httpGet:
               path: /v1/ready
-              port: http
+              port: {{ ternary "https" "http" .Values.serverTls.enabled }}
+              {{- if .Values.serverTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            {{- end }}
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
           livenessProbe:
+            {{- if and .Values.serverTls.enabled .Values.serverTls.requireClientCertificate }}
+            exec:
+              command:
+                - python
+                - -c
+                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/orchestra/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/orchestra/probe-tls/tls.crt','/etc/orchestra/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/health');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.liveness.timeoutSeconds) | quote }}
+            {{- else }}
             httpGet:
               path: /v1/health
-              port: http
+              port: {{ ternary "https" "http" .Values.serverTls.enabled }}
+              {{- if .Values.serverTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            {{- end }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           readinessProbe:
+            {{- if and .Values.serverTls.enabled .Values.serverTls.requireClientCertificate }}
+            exec:
+              command:
+                - python
+                - -c
+                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/orchestra/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/orchestra/probe-tls/tls.crt','/etc/orchestra/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/ready');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.readiness.timeoutSeconds) | quote }}
+            {{- else }}
             httpGet:
               path: /v1/ready
-              port: http
+              port: {{ ternary "https" "http" .Values.serverTls.enabled }}
+              {{- if .Values.serverTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            {{- end }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
@@ -209,6 +263,16 @@ spec:
               mountPath: /tmp
             - name: model-routing-state
               mountPath: /state
+            {{- if .Values.serverTls.enabled }}
+            - name: server-tls
+              mountPath: /etc/orchestra/server-tls
+              readOnly: true
+            {{- if .Values.serverTls.requireClientCertificate }}
+            - name: probe-client-tls
+              mountPath: /etc/orchestra/probe-tls
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- if .Values.routing.enabled }}
             - name: routing-artifacts
               mountPath: /config
@@ -259,6 +323,34 @@ spec:
         {{- if not .Values.persistence.enabled }}
         - name: model-routing-state
           emptyDir: {}
+        {{- end }}
+        {{- if .Values.serverTls.enabled }}
+        - name: server-tls
+          secret:
+            secretName: {{ .Values.serverTls.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.serverTls.certificateKey | quote }}
+                path: tls.crt
+              - key: {{ .Values.serverTls.privateKeyKey | quote }}
+                path: tls.key
+              {{- if .Values.serverTls.requireClientCertificate }}
+              - key: {{ .Values.serverTls.clientCaKey | quote }}
+                path: client-ca.crt
+              {{- end }}
+        {{- if .Values.serverTls.requireClientCertificate }}
+        - name: probe-client-tls
+          secret:
+            secretName: {{ .Values.serverTls.probeClient.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.serverTls.probeClient.certificateKey | quote }}
+                path: tls.crt
+              - key: {{ .Values.serverTls.probeClient.privateKeyKey | quote }}
+                path: tls.key
+              - key: {{ .Values.serverTls.probeClient.caKey | quote }}
+                path: ca.crt
+        {{- end }}
         {{- end }}
         {{- if .Values.routing.enabled }}
         - name: routing-artifacts

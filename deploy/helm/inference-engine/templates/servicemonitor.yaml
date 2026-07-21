@@ -18,8 +18,26 @@ spec:
     matchLabels:
       {{- include "orchestra-inference-engine.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    - port: {{ ternary "https" "http" .Values.serverTls.enabled }}
       path: /v1/metrics
+      {{- if .Values.serverTls.enabled }}
+      scheme: https
+      tlsConfig:
+        serverName: {{ .Values.metrics.serviceMonitor.tls.serverName | quote }}
+        ca:
+          secret:
+            name: {{ .Values.metrics.serviceMonitor.tls.caSecretName | quote }}
+            key: {{ .Values.metrics.serviceMonitor.tls.caKey | quote }}
+        {{- if .Values.serverTls.requireClientCertificate }}
+        cert:
+          secret:
+            name: {{ .Values.metrics.serviceMonitor.tls.clientCertificateSecretName | quote }}
+            key: {{ .Values.metrics.serviceMonitor.tls.clientCertificateKey | quote }}
+        keySecret:
+          name: {{ .Values.metrics.serviceMonitor.tls.clientCertificateSecretName | quote }}
+          key: {{ .Values.metrics.serviceMonitor.tls.clientPrivateKeyKey | quote }}
+        {{- end }}
+      {{- end }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
 {{- end }}
