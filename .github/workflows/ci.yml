@@ -130,10 +130,12 @@ jobs:
       - name: Validate shell contract
         run: |
           bash -n deploy/helm/inference-engine/ci/render-production-profile.sh
+          bash -n deploy/helm/inference-engine/ci/render-sno-trial-profile.sh
           bash -n scripts/relocate_images.sh
           bash -n scripts/test_relocate_images.sh
           bash -n scripts/verify_release_contract.sh
           shellcheck deploy/helm/inference-engine/ci/render-production-profile.sh
+          shellcheck deploy/helm/inference-engine/ci/render-sno-trial-profile.sh
           shellcheck scripts/relocate_images.sh
           shellcheck scripts/test_relocate_images.sh
           shellcheck scripts/verify_release_contract.sh
@@ -154,9 +156,16 @@ jobs:
           deploy/helm/inference-engine/ci/render-production-profile.sh \
             "$RUNNER_TEMP/orchestra-model-plane-profile.yaml"
 
+      - name: Prove source-only OpenShift SNO trial render
+        run: |
+          deploy/helm/inference-engine/ci/render-sno-trial-profile.sh \
+            "$RUNNER_TEMP/orchestra-model-plane-sno-trial.yaml"
+
       - name: Retain synthetic render evidence
         uses: actions/upload-artifact@v4
         with:
           name: orchestra-model-plane-openshift-render
-          path: ${{ runner.temp }}/orchestra-model-plane-profile.yaml
+          path: |
+            ${{ runner.temp }}/orchestra-model-plane-profile.yaml
+            ${{ runner.temp }}/orchestra-model-plane-sno-trial.yaml
           if-no-files-found: error

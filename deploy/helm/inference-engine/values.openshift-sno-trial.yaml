@@ -1,0 +1,169 @@
+# Source-only model-plane profile for orchestra-ocp-sno-trial-amd64-v1.
+#
+# This is a non-production, non-certifying single-node render contract. It
+# references operator-created Secrets, ConfigMaps, Valkey, model-backend, and
+# platform Services but creates none of them. Rendering never authorizes an
+# install or proves that any referenced object or image is available.
+
+engineeringTrialProfile:
+  enabled: true
+  profileId: orchestra-ocp-sno-trial-amd64-v1
+  sourceOnlyAcknowledged: true
+
+productionProfile:
+  enabled: false
+
+workloadSurface:
+  profileId: orchestra-model-plane-workload-v1
+
+fullnameOverride: orchestra-model-plane
+
+image:
+  repository: ghcr.io/caglarsubas/llm_inference_engine/inference-engine-ubi
+  tag: ""
+  # Populate only with a published release that contains this profile and the
+  # secure OTLP/HTTP transport contract. The previously released image predates
+  # both and is not eligible for this render.
+  digest: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+replicaCount: 1
+deploymentId: orchestra-sno-model-plane
+targetEnvironment: test
+rolloutId: orchestra-sno-trial-workload-candidate-2026-07-25.1
+
+serverTls:
+  enabled: true
+  existingSecret: orchestra-model-plane-trial-tls
+  rolloutId: trial-tls-v1
+
+auth:
+  enabled: true
+  existingSecretName: orchestra-model-plane-trial-auth
+
+routing:
+  enabled: true
+  policyRequired: true
+  artifactsSecretName: orchestra-model-plane-trial-routing
+  expectedAudience: orchestra-model-plane
+  expectedOrgId: tenant-alpha
+  rateLimitScope: deployment-shared
+  sharedRateLimit:
+    backend: direct
+    existingSecretName: orchestra-model-plane-trial-valkey
+    allowInsecureRedis: false
+    networkPolicyEgress:
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: orchestra-trial-valkey
+        ports:
+          - protocol: TCP
+            port: 6379
+
+modelBackends:
+  mode: remote
+  networkPolicyEgress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orchestra-trial-model-backend
+      ports:
+        - protocol: TCP
+          port: 8080
+
+observation:
+  enabled: true
+  version: 2
+  endpoint: https://orchestra-platform.orchestra-platform.svc:443/api/model-routing-observations
+  apiKeySecretName: orchestra-model-plane-trial-observation
+
+otel:
+  enabled: true
+  protocol: http/protobuf
+  endpoint: https://orchestra-platform.orchestra-platform.svc:443/api/v2/otlp/v1/traces
+  headersSecretName: orchestra-model-plane-trial-otlp
+  headersSecretKey: headers
+  serviceName: orchestra-model-plane
+
+persistence:
+  enabled: true
+  storage: 1Gi
+  storageClassName: ""
+  accessModes: [ReadWriteOnce]
+  externalBackupAcknowledged: false
+
+trustedCA:
+  enabled: true
+  configMapName: orchestra-model-plane-trial-ca
+
+service:
+  type: ClusterIP
+
+serviceAccount:
+  create: true
+  name: orchestra-model-plane
+  automountServiceAccountToken: false
+
+securityContextMode: openshift
+containerSecurityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 4096Mi
+  limits:
+    cpu: 1500m
+    memory: 8192Mi
+
+podDisruptionBudget:
+  enabled: false
+
+topologySpread:
+  enabled: false
+
+networkPolicy:
+  enabled: true
+  dns:
+    provider: openshift
+  runtimeIngressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: orchestra-runtime
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometa-runtime
+  observationEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: orchestra-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: 3443
+  otelEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: orchestra-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: 3443
+
+metrics:
+  serviceMonitor:
+    enabled: false

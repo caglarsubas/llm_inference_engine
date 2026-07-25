@@ -507,8 +507,10 @@ All knobs live in `.env` (see `.env.example`):
 | `SCHEDULER_RETRY_AFTER_SECONDS` | `2`                                                                              | `Retry-After` header on scheduler admission failures                                       |
 | `SCHEDULER_WAIT_AGING_PRIORITY_PER_SECOND` | `0.5`                                                                    | Wait-time aging added to dispatch priority                                                 |
 | `SCHEDULER_TENANT_FAIRNESS_WEIGHT` | `2.0`                                                                         | Boost for tenants that have not recently received a dispatch                               |
-| `OTEL_ENABLED`           | `false`                                                                                  | Master switch — when true, sets up OTLP/gRPC exporter    |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`                                                              | Any OTLP/gRPC collector (Jaeger, otel-collector, …)      |
+| `OTEL_ENABLED`           | `false`                                                                                  | Master switch for OTLP export |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`                                                              | OTLP/gRPC collector or OTLP/HTTP traces endpoint |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc`                                                                                | `grpc` or `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | empty                                                                                  | URL-encoded comma-separated headers; keep API keys in a Secret |
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
 | `AUTH_ENABLED`           | `false`                                                                                  | Bearer-token gate on `/v1/models` and `/v1/chat/completions` |
 | `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON key records; optional `key_id`, `not_before`, and `expires_at` enable managed rotation |
@@ -626,7 +628,13 @@ For preclassified frontend prompts, set `metadata.intent.preclassified=true`; th
 
 ### Plugging into Prometa
 
-Point any OTLP/gRPC collector at `OTEL_EXPORTER_OTLP_ENDPOINT` instead of Jaeger. Standard OTel env vars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`, …) are honored by the SDK directly. Service identity is pre-set to `service.name=inference-engine`, `service.version=<package version>`.
+Set `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` for an OTLP/gRPC collector or
+`http/protobuf` for a direct HTTP traces endpoint. The exporter derives
+transport security from the endpoint scheme, rejects credentials in the URL,
+and parses purpose-scoped headers without logging their values. Standard OTel
+resource and sampler environment variables are honored by the SDK. Service
+identity is pre-set to `service.name=inference-engine`,
+`service.version=<package version>`.
 
 To wire the engine into the [Prometa platform](https://github.com/caglarsubas/agent-hook-v2) for cross-service tracing, set the resource attributes so the platform's correlation-id resolver finds the engine's role in the canonical chain. Two patterns:
 

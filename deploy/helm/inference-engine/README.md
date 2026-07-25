@@ -23,7 +23,7 @@ The chart creates only:
 - a ServiceAccount with token automount disabled;
 - an internal ClusterIP Service plus a headless Service;
 - a StatefulSet with one retained last-known-good policy PVC per replica;
-- a PodDisruptionBudget;
+- an optional PodDisruptionBudget;
 - a default-deny workload NetworkPolicy with explicit DNS, caller, Sentinel,
   model/backend, observation, and OTLP destinations; and
 - an optional ServiceMonitor.
@@ -77,6 +77,38 @@ OpenShift CNI/CSI behavior, Secret-operator convergence, pod/node loss,
 Sentinel failover, backup/restore, load, RPO/RTO, or soak. Until those drills run
 on the pinned cluster profile, the status remains `declared-not-certified`.
 
+## OpenShift SNO engineering-trial contract
+
+[`values.openshift-sno-trial.yaml`](values.openshift-sno-trial.yaml) is a
+separate source-only render contract for
+`orchestra-ocp-sno-trial-amd64-v1`. It is intentionally incompatible with the
+production profile and fixes one replica, the OpenShift-assigned UID model,
+the bounded workload surface, signed routing, TLS, authenticated OTLP/HTTP,
+and the resource envelope from the reference-lab capacity candidate.
+
+The file contains only a public image repository and names of objects that an
+operator would have to create. Its image digest is deliberately empty until a
+release containing this profile and the secure OTLP/HTTP transport is
+published; the previously released image is not substituted. It does not
+contain credentials or model artifacts, install anything, authorize cloud
+mutation, or support a production/certification claim. Its image, Valkey,
+model-backend, platform, Secret, and trusted-CA references are unresolved until
+separately admitted in the reference lab. PDB, topology spread, backup claims,
+and ServiceMonitor are disabled because this lane has one node and is
+deliberately non-HA.
+
+Run its adversarial render proof with:
+
+```bash
+./deploy/helm/inference-engine/ci/render-sno-trial-profile.sh \
+  /tmp/orchestra-model-plane-sno-trial.yaml
+```
+
+The script injects a synthetic digest after first proving the values file fails
+unchanged. A successful render proves only that the chart honors the source
+contract. It is not artifact publication, installation readiness, live
+evidence, or a campaign slot.
+
 ## Published chart
 
 Engine version tags publish this chart as a signed OCI artifact:
@@ -108,6 +140,7 @@ in `values.yaml`.
 | `auth.existingSecretName` | `auth_keys.json` | Engine bearer/admin keys and rotation metadata |
 | `routing.artifactsSecretName` | `model_routing_policy.json`, `model_routing_trust.json`, `model_routing_pricing.json` | Signed desired state, purpose-specific trust, and cost catalog |
 | `observation.apiKeySecretName` | `api-key` | Deployment-bound `model-plane:observe` credential |
+| `otel.headersSecretName` | configured `headersSecretKey` | Purpose-scoped OTLP headers such as the Orchestra ingest API key |
 | `routing.sharedRateLimit.existingSecretName` | `sentinel-config.json` | Strict Sentinel discovery, TLS, credentials, and replica-ack contract |
 | `serverTls.existingSecret` | `tls.crt`, `tls.key`, plus `ca.crt` for mTLS | Model-plane listener identity and optional client trust |
 | `serverTls.probeClient.existingSecret` | `tls.crt`, `tls.key`, `ca.crt` | In-pod health identity when listener mTLS is enabled |

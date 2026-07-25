@@ -13,15 +13,17 @@ Wired in two places:
 * ``observability.span()`` — wraps every emitted structlog span with a real
   OTel span when configured, propagating attribute updates from ``Span.bind()``.
 
-Trace destination: any OTLP/gRPC collector. Default endpoint is
-``http://localhost:4317`` which matches the Jaeger all-in-one container in
-``docker-compose.otel.yml``.
+Trace destination: an OTLP/gRPC collector or an OTLP/HTTP traces endpoint.
+The default remains ``http://localhost:4317`` with protocol ``grpc``, matching
+the Jaeger all-in-one container in ``docker-compose.otel.yml``.
 """
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Iterator
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from .config import settings
 
@@ -51,6 +53,7 @@ class _NoOpSpan:
 
 _tracer: Tracer | None = None
 _initialized = False
+_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 def is_enabled() -> bool:
@@ -64,6 +67,74 @@ def _coerce_attribute(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_coerce_attribute(v) for v in value]
     return str(value)
+
+
+def _validated_endpoint(protocol: str, endpoint: str) -> tuple[str, bool]:
+    value = endpoint.strip()
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("otel_exporter_endpoint_invalid")
+    if parsed.fragment or parsed.query or parsed.username or parsed.password:
+        raise ValueError("otel_exporter_endpoint_invalid")
+    if protocol == "grpc":
+        if parsed.path not in {"", "/"}:
+            raise ValueError("otel_grpc_endpoint_path_forbidden")
+        return value, parsed.scheme == "http"
+    if protocol != "http/protobuf":
+        raise ValueError("otel_exporter_protocol_invalid")
+    if parsed.path in {"", "/"}:
+        parsed = parsed._replace(path="/v1/traces")
+        value = urlunsplit(parsed)
+    return value, False
+
+
+def _parse_headers(value: str) -> dict[str, str] | None:
+    if not value:
+        return None
+    headers: dict[str, str] = {}
+    for encoded_item in value.split(","):
+        if "=" not in encoded_item:
+            raise ValueError("otel_exporter_headers_invalid")
+        encoded_name, encoded_value = encoded_item.split("=", 1)
+        name = unquote(encoded_name).strip()
+        header_value = unquote(encoded_value).strip()
+        if (
+            not name
+            or not header_value
+            or not _HEADER_NAME.fullmatch(name)
+            or any(ord(character) < 32 or ord(character) == 127 for character in header_value)
+            or name.lower() in headers
+        ):
+            raise ValueError("otel_exporter_headers_invalid")
+        headers[name.lower()] = header_value
+    return headers
+
+
+def _build_otlp_exporter(config: Any) -> Any:
+    protocol = config.otel_exporter_otlp_protocol
+    endpoint, insecure = _validated_endpoint(
+        protocol,
+        config.otel_exporter_otlp_endpoint,
+    )
+    headers_value = config.otel_exporter_otlp_headers.strip()
+    headers = _parse_headers(headers_value)
+
+    if protocol == "http/protobuf":
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+            OTLPSpanExporter,
+        )
+
+        return OTLPSpanExporter(endpoint=endpoint, headers=headers)
+
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # noqa: PLC0415
+        OTLPSpanExporter,
+    )
+
+    return OTLPSpanExporter(
+        endpoint=endpoint,
+        insecure=insecure,
+        headers=headers,
+    )
 
 
 def configure_tracing() -> None:
@@ -89,9 +160,6 @@ def configure_tracing() -> None:
 
     try:
         from opentelemetry import trace  # noqa: PLC0415
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # noqa: PLC0415
-            OTLPSpanExporter,
-        )
         from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
         from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
         from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
@@ -113,10 +181,18 @@ def configure_tracing() -> None:
     )
 
     provider = TracerProvider(resource=resource)
-    exporter = OTLPSpanExporter(
-        endpoint=settings.otel_exporter_otlp_endpoint,
-        insecure=True,
-    )
+    try:
+        exporter = _build_otlp_exporter(settings)
+    except ImportError as exc:
+        log.error(
+            "otel.import_failed",
+            error=str(exc),
+            hint="install the OpenTelemetry exporter extra and restart the engine",
+        )
+        return
+    except ValueError as exc:
+        log.error("otel.configuration_invalid", error=str(exc))
+        return
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
@@ -124,6 +200,7 @@ def configure_tracing() -> None:
     log.info(
         "otel.configured",
         endpoint=settings.otel_exporter_otlp_endpoint,
+        protocol=settings.otel_exporter_otlp_protocol,
         service_name=settings.otel_service_name,
     )
 
@@ -183,6 +260,7 @@ def shutdown_tracing() -> None:
 # ---------------------------------------------------------------------------
 # Test helper — install an in-memory exporter for assertions.
 # ---------------------------------------------------------------------------
+
 
 def _install_in_memory_exporter() -> Any:
     """Reset + install an InMemorySpanExporter. Returns the exporter for assertions.

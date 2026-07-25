@@ -19,6 +19,9 @@ metadata:
     {{- if .Values.productionProfile.enabled }}
     prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
     {{- end }}
+    {{- if .Values.engineeringTrialProfile.enabled }}
+    prometa.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
+    {{- end }}
 spec:
   serviceName: {{ $name }}-headless
   replicas: {{ .Values.replicaCount }}
@@ -50,6 +53,9 @@ spec:
         {{- include "orchestra-inference-engine.selectorLabels" . | nindent 8 }}
         {{- if .Values.productionProfile.enabled }}
         prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+        {{- end }}
+        {{- if .Values.engineeringTrialProfile.enabled }}
+        prometa.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
         {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
@@ -176,6 +182,15 @@ spec:
               value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.otel.protocol | quote }}
+            {{- if .Values.otel.headersSecretName }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.headersSecretName | quote }}
+                  key: {{ .Values.otel.headersSecretKey | quote }}
+            {{- end }}
             - name: OTEL_SERVICE_NAME
               value: {{ .Values.otel.serviceName | quote }}
             - name: OLLAMA_MODELS_DIR
