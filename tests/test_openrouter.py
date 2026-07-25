@@ -260,6 +260,146 @@ def test_openrouter_probe_sends_authorization(monkeypatch: pytest.MonkeyPatch) -
     assert seen_headers == ["Bearer sk-or-test"]
 
 
+class _CatalogStub:
+    """Client factory whose ``/v1/models`` behaviour can be flipped mid-test,
+    counting how many times the upstream is actually hit."""
+
+    def __init__(self, ids: list[str], *, fail: bool = False) -> None:
+        self.ids = list(ids)
+        self.fail = fail
+        self.calls = 0
+
+    def factory(
+        self,
+        base_url: str,
+        timeout: httpx.Timeout,
+        headers: dict[str, str],
+    ) -> httpx.Client:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.calls += 1
+            if self.fail:
+                raise httpx.ReadTimeout("catalog timed out", request=request)
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": [{"id": i} for i in self.ids]},
+            )
+
+        return httpx.Client(
+            base_url=base_url,
+            timeout=timeout,
+            headers=headers,
+            transport=httpx.MockTransport(handler),
+        )
+
+
+def test_openrouter_probe_fetches_catalog_once_per_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #36: N configured descriptors sharing an endpoint must not fan out
+    # into N identical /v1/models calls.
+    monkeypatch.setattr(settings, "openrouter_api_key", "sk-or-test")
+    stub = _CatalogStub(
+        ["meta-llama/llama-3.1-70b-instruct", "qwen/qwen3.5-122b-a10b"]
+    )
+    probe = OpenRouterProbe(
+        timeout_seconds=0.1,
+        ttl_seconds=60.0,
+        last_known_good_seconds=900.0,
+        client_factory=stub.factory,
+    )
+
+    r1 = probe.probe(_descriptor(model_id="meta-llama/llama-3.1-70b-instruct"))
+    r2 = probe.probe(_descriptor(model_id="qwen/qwen3.5-122b-a10b"))
+
+    assert r1.loadable is True
+    assert r2.loadable is True
+    assert stub.calls == 1  # one shared catalog fetch, not one per descriptor
+
+
+def test_openrouter_probe_serves_last_known_good_on_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #37: a transient timeout during a long benchmark must not prune a
+    # configured, previously-reachable model to model_not_found.
+    monkeypatch.setattr(settings, "openrouter_api_key", "sk-or-test")
+    stub = _CatalogStub(["meta-llama/llama-3.1-70b-instruct"])
+    probe = OpenRouterProbe(
+        timeout_seconds=0.1,
+        ttl_seconds=0.0,  # force a refetch on every probe
+        last_known_good_seconds=900.0,
+        client_factory=stub.factory,
+    )
+
+    first = probe.probe(_descriptor())
+    assert first.loadable is True
+    assert first.stale is False
+
+    stub.fail = True  # upstream now times out
+    second = probe.probe(_descriptor())
+
+    assert second.loadable is True  # kept available from last-known-good
+    assert second.stale is True
+
+
+def test_openrouter_probe_prunes_when_no_last_known_good(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openrouter_api_key", "sk-or-test")
+    stub = _CatalogStub([], fail=True)
+    probe = OpenRouterProbe(
+        timeout_seconds=0.1,
+        ttl_seconds=0.0,
+        last_known_good_seconds=900.0,
+        client_factory=stub.factory,
+    )
+
+    result = probe.probe(_descriptor())
+
+    assert result.loadable is False
+    assert result.reason == "upstream_timeout"
+    assert result.stale is False
+
+
+def test_openrouter_probe_last_known_good_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openrouter_api_key", "sk-or-test")
+    stub = _CatalogStub(["meta-llama/llama-3.1-70b-instruct"])
+    probe = OpenRouterProbe(
+        timeout_seconds=0.1,
+        ttl_seconds=0.0,
+        last_known_good_seconds=0.0,  # no grace window
+        client_factory=stub.factory,
+    )
+
+    assert probe.probe(_descriptor()).loadable is True
+    stub.fail = True
+    expired = probe.probe(_descriptor())
+
+    assert expired.loadable is False
+    assert expired.reason == "upstream_timeout"
+
+
+def test_openrouter_probe_trusts_authoritative_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A 200 catalog that simply doesn't list the model is authoritative — it is
+    # not masked by last-known-good.
+    monkeypatch.setattr(settings, "openrouter_api_key", "sk-or-test")
+    stub = _CatalogStub(["some/other-model"])
+    probe = OpenRouterProbe(
+        timeout_seconds=0.1,
+        ttl_seconds=0.0,
+        last_known_good_seconds=900.0,
+        client_factory=stub.factory,
+    )
+
+    result = probe.probe(_descriptor())
+
+    assert result.loadable is False
+    assert result.reason == "upstream_model_missing"
+
+
 @pytest.mark.asyncio
 async def test_openrouter_adapter_posts_with_key_source_and_bearer(
     monkeypatch: pytest.MonkeyPatch,

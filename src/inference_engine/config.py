@@ -112,6 +112,37 @@ class Settings(BaseSettings):
             "probe on every /v1/models or cold model resolution."
         ),
     )
+    openrouter_upstream_probe_timeout_seconds: float = Field(
+        default=8.0,
+        ge=0.05,
+        description=(
+            "Timeout for the OpenRouter /v1/models catalog probe. Kept separate "
+            "from VLLM_UPSTREAM_PROBE_TIMEOUT_SECONDS because OpenRouter's shared "
+            "catalog is a public network hop with second-scale latency, so the "
+            "tight local-vLLM timeout flapped availability (issue #36)."
+        ),
+    )
+    openrouter_upstream_probe_ttl_seconds: float = Field(
+        default=60.0,
+        ge=0.0,
+        description=(
+            "How long a fetched OpenRouter catalog is reused before the next "
+            "refresh. One catalog fetch answers every configured OpenRouter "
+            "descriptor for this window instead of one fetch per model. Set to 0 "
+            "to refetch on every /v1/models or cold model resolution."
+        ),
+    )
+    openrouter_last_known_good_seconds: float = Field(
+        default=900.0,
+        ge=0.0,
+        description=(
+            "Grace window during which a transient OpenRouter catalog failure "
+            "(timeout, connection error, 5xx) keeps serving the last successful "
+            "catalog instead of pruning every configured model to "
+            "model_not_found. Protects long benchmark runs from catalog churn "
+            "(issues #36, #37). Set to 0 to prune on the first failure."
+        ),
+    )
     ollama_http_endpoint: str = Field(
         default="",
         description=(
