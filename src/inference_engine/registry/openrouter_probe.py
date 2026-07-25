@@ -1,4 +1,30 @@
-"""Reachability probe for configured OpenRouter models."""
+"""Reachability probe for configured OpenRouter models.
+
+Design
+------
+
+OpenRouter exposes a *single* ``/v1/models`` catalog that lists every model id
+reachable for a given key. All configured OpenRouter descriptors share that one
+upstream, so the original design — probe each descriptor with its own catalog
+fetch — fanned N configured models into N identical ``GET /v1/models`` calls and
+made availability flap whenever any one of them timed out (issues #36, #37).
+
+This probe fetches the catalog **once per (endpoint, key)** and answers every
+descriptor's ``loadable`` from that shared, cached id set. Two windows sit in
+front of the upstream:
+
+* a short **TTL** (``ttl_seconds``) so a burst of ``/v1/models`` calls / cold
+  model resolutions reuses one fetch instead of one-per-descriptor;
+* a longer **last-known-good** window (``last_known_good_seconds``) so a
+  *transient* upstream failure (timeout, connection error, 5xx) keeps serving
+  the previous successful catalog instead of pruning every configured model to
+  ``model_not_found`` mid-benchmark (issue #37).
+
+An *authoritative* upstream response is never masked by last-known-good: a 200
+catalog that simply doesn't list a model yields ``upstream_model_missing``, and
+a 4xx / bad-payload error surfaces as-is — the upstream answered, so we trust
+it.
+"""
 
 from __future__ import annotations
 
@@ -22,31 +48,70 @@ class OpenRouterProbeResult:
     reason: str = ""
     detail: str = ""
     duration_ms: float = 0.0
+    # True when the answer came from a last-known-good catalog after a transient
+    # upstream failure rather than a fresh fetch. Purely observational — callers
+    # treat ``loadable`` the same either way.
+    stale: bool = False
 
 
 ClientFactory = Callable[[str, httpx.Timeout, dict[str, str]], httpx.Client]
 
 
+@dataclass(frozen=True)
+class _CatalogFetch:
+    """Outcome of one attempt to fetch an endpoint's ``/v1/models`` catalog."""
+
+    ok: bool
+    model_ids: frozenset[str]  # ids from this fetch (empty on failure)
+    reason: str  # "" on success, else the failure reason
+    detail: str
+    duration_ms: float
+    # Whether a failure is worth masking with last-known-good. Timeouts,
+    # connection errors and 5xx are transient; 4xx / bad payloads are the
+    # upstream authoritatively saying "no", so they are not.
+    transient: bool = False
+
+
+@dataclass
+class _CatalogState:
+    """Per-(endpoint, key) cache: the most recent attempt plus the last
+    *successful* catalog, so a transient failure can fall back to it."""
+
+    attempted_at: float  # monotonic time of the most recent fetch attempt
+    last: _CatalogFetch  # the most recent attempt (ok or not)
+    good_ids: frozenset[str] | None  # ids from the last successful fetch
+    good_at: float | None  # monotonic time of that successful fetch
+
+
 class OpenRouterProbe:
-    """Cached `/v1/models` probe for OpenRouter-backed descriptors."""
+    """Cached, endpoint-deduped ``/v1/models`` probe for OpenRouter descriptors."""
 
     def __init__(
         self,
         *,
         timeout_seconds: float | None = None,
         ttl_seconds: float | None = None,
+        last_known_good_seconds: float | None = None,
         client_factory: ClientFactory | None = None,
     ) -> None:
         self.timeout_seconds = (
-            settings.vllm_upstream_probe_timeout_seconds
+            settings.openrouter_upstream_probe_timeout_seconds
             if timeout_seconds is None
             else timeout_seconds
         )
         self.ttl_seconds = (
-            settings.vllm_upstream_probe_ttl_seconds if ttl_seconds is None else ttl_seconds
+            settings.openrouter_upstream_probe_ttl_seconds
+            if ttl_seconds is None
+            else ttl_seconds
+        )
+        self.last_known_good_seconds = (
+            settings.openrouter_last_known_good_seconds
+            if last_known_good_seconds is None
+            else last_known_good_seconds
         )
         self._client_factory = client_factory or self._default_client_factory
-        self._cache: dict[tuple[str, str, bool, int], tuple[float, OpenRouterProbeResult]] = {}
+        # One entry per (endpoint, key-length) — the shared catalog cache.
+        self._catalog: dict[tuple[str, int], _CatalogState] = {}
 
     @staticmethod
     def _default_client_factory(
@@ -57,7 +122,7 @@ class OpenRouterProbe:
         return httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
 
     def invalidate(self) -> None:
-        self._cache.clear()
+        self._catalog.clear()
 
     def probe(self, descriptor: ModelDescriptor) -> OpenRouterProbeResult:
         if descriptor.format != "openrouter":
@@ -79,41 +144,129 @@ class OpenRouterProbe:
                 detail="OpenRouter descriptor must include endpoint and params['model_id']",
             )
 
-        key = (endpoint, model_id, bool(api_key), len(api_key))
+        state = self._catalog_for(endpoint, api_key)
+        return self._result_for(model_id, state)
+
+    # ------------------------------------------------------------------
+    # catalog cache — one fetch per (endpoint, key), TTL + last-known-good
+    # ------------------------------------------------------------------
+
+    def _catalog_for(self, endpoint: str, api_key: str) -> _CatalogState:
+        # ``len(api_key)`` stands in for "the key changed" without holding the
+        # secret in a cache key.
+        cache_key = (endpoint, len(api_key))
         now = time.monotonic()
-        cached = self._cache.get(key)
-        if cached is not None:
-            created_at, result = cached
-            if now - created_at < self.ttl_seconds:
-                return result
 
-        result = self._probe_upstream(endpoint, model_id, api_key)
-        self._cache[key] = (now, result)
+        state = self._catalog.get(cache_key)
+        if state is not None and (now - state.attempted_at) < self.ttl_seconds:
+            return state  # still fresh — reuse without touching the upstream
 
-        log_kwargs = {
-            "model": descriptor.qualified_name,
+        fetch = self._fetch_catalog(endpoint, api_key)
+        if state is None:
+            state = _CatalogState(
+                attempted_at=now,
+                last=fetch,
+                good_ids=fetch.model_ids if fetch.ok else None,
+                good_at=now if fetch.ok else None,
+            )
+        else:
+            state.attempted_at = now
+            state.last = fetch
+            if fetch.ok:
+                state.good_ids = fetch.model_ids
+                state.good_at = now
+        self._catalog[cache_key] = state
+
+        self._log_fetch(endpoint, state, now)
+        return state
+
+    def _log_fetch(self, endpoint: str, state: _CatalogState, now: float) -> None:
+        fetch = state.last
+        base = {
             "endpoint": endpoint,
-            "model_id": model_id,
-            "duration_ms": round(result.duration_ms, 2),
+            "duration_ms": round(fetch.duration_ms, 2),
             "key_source": "openrouter-api-key",
         }
-        if result.loadable:
-            log.info("openrouter_probe.ok", **log_kwargs)
+        if fetch.ok:
+            log.info("openrouter_catalog.ok", n_models=len(fetch.model_ids), **base)
+            return
+
+        retained = (
+            state.good_ids is not None
+            and state.good_at is not None
+            and fetch.transient
+            and (now - state.good_at) < self.last_known_good_seconds
+        )
+        if retained:
+            log.warning(
+                "openrouter_catalog.stale_retained",
+                reason=fetch.reason,
+                detail=fetch.detail,
+                age_s=round(now - (state.good_at or now), 1),
+                **base,
+            )
         else:
             log.warning(
-                "openrouter_probe.fail",
-                reason=result.reason,
-                detail=result.detail,
-                **log_kwargs,
+                "openrouter_catalog.fail",
+                reason=fetch.reason,
+                detail=fetch.detail,
+                **base,
             )
-        return result
 
-    def _probe_upstream(
-        self,
-        endpoint: str,
+    def _result_for(self, model_id: str, state: _CatalogState) -> OpenRouterProbeResult:
+        fetch = state.last
+        duration = fetch.duration_ms
+
+        if fetch.ok:
+            return self._membership_result(model_id, fetch.model_ids, duration, stale=False)
+
+        # Fetch failed. Fall back to the last successful catalog when the
+        # failure is transient and still inside the grace window.
+        now = time.monotonic()
+        can_serve_lkg = (
+            fetch.transient
+            and state.good_ids is not None
+            and state.good_at is not None
+            and (now - state.good_at) < self.last_known_good_seconds
+        )
+        if can_serve_lkg:
+            assert state.good_ids is not None
+            return self._membership_result(model_id, state.good_ids, duration, stale=True)
+
+        return OpenRouterProbeResult(
+            loadable=False,
+            reason=fetch.reason,
+            detail=fetch.detail,
+            duration_ms=duration,
+        )
+
+    @staticmethod
+    def _membership_result(
         model_id: str,
-        api_key: str,
+        ids: frozenset[str],
+        duration_ms: float,
+        *,
+        stale: bool,
     ) -> OpenRouterProbeResult:
+        if model_id in ids:
+            return OpenRouterProbeResult(
+                loadable=True,
+                detail="served from last-known-good catalog" if stale else "",
+                duration_ms=duration_ms,
+                stale=stale,
+            )
+        listed = ", ".join(sorted(ids)[:8]) if ids else "none"
+        if len(ids) > 8:
+            listed += ", ..."
+        return OpenRouterProbeResult(
+            loadable=False,
+            reason="upstream_model_missing",
+            detail=f"upstream did not list {model_id!r}; listed: {listed}",
+            duration_ms=duration_ms,
+            stale=stale,
+        )
+
+    def _fetch_catalog(self, endpoint: str, api_key: str) -> _CatalogFetch:
         timeout = httpx.Timeout(self.timeout_seconds)
         headers = {"Authorization": f"Bearer {api_key}"}
         t0 = time.perf_counter()
@@ -124,48 +277,52 @@ class OpenRouterProbe:
                 payload = response.json()
             upstream_ids = self._extract_model_ids(payload)
         except httpx.TimeoutException as exc:
-            return OpenRouterProbeResult(
-                loadable=False,
+            return _CatalogFetch(
+                ok=False,
+                model_ids=frozenset(),
                 reason="upstream_timeout",
                 detail=str(exc).splitlines()[0][:240] if str(exc) else endpoint,
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                transient=True,
             )
         except httpx.HTTPStatusError as exc:
-            return OpenRouterProbeResult(
-                loadable=False,
+            status = exc.response.status_code
+            return _CatalogFetch(
+                ok=False,
+                model_ids=frozenset(),
                 reason="upstream_http_error",
-                detail=f"GET /v1/models returned HTTP {exc.response.status_code}",
+                detail=f"GET /v1/models returned HTTP {status}",
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                # 5xx is a server-side blip worth masking; 4xx (auth, quota) is
+                # authoritative and should prune.
+                transient=status >= 500,
             )
         except httpx.RequestError as exc:
-            return OpenRouterProbeResult(
-                loadable=False,
+            return _CatalogFetch(
+                ok=False,
+                model_ids=frozenset(),
                 reason="upstream_unreachable",
                 detail=str(exc).splitlines()[0][:240] if str(exc) else endpoint,
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                transient=True,
             )
         except ValueError as exc:
-            return OpenRouterProbeResult(
-                loadable=False,
+            return _CatalogFetch(
+                ok=False,
+                model_ids=frozenset(),
                 reason="upstream_bad_models_response",
                 detail=str(exc).splitlines()[0][:240] if str(exc) else "invalid JSON",
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                transient=False,
             )
 
-        if model_id in upstream_ids:
-            return OpenRouterProbeResult(
-                loadable=True,
-                duration_ms=(time.perf_counter() - t0) * 1000,
-            )
-
-        listed = ", ".join(upstream_ids[:8]) if upstream_ids else "none"
-        if len(upstream_ids) > 8:
-            listed += ", ..."
-        return OpenRouterProbeResult(
-            loadable=False,
-            reason="upstream_model_missing",
-            detail=f"upstream did not list {model_id!r}; listed: {listed}",
+        return _CatalogFetch(
+            ok=True,
+            model_ids=frozenset(upstream_ids),
+            reason="",
+            detail="",
             duration_ms=(time.perf_counter() - t0) * 1000,
+            transient=False,
         )
 
     @staticmethod
