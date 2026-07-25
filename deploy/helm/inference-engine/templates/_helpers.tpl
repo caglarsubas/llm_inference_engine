@@ -118,6 +118,15 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if and .Values.otel.enabled (not .Values.otel.endpoint) -}}
 {{- fail "otel.endpoint is required when otel.enabled=true" -}}
 {{- end -}}
+{{- if not (has .Values.otel.protocol (list "grpc" "http/protobuf")) -}}
+{{- fail "otel.protocol must be grpc or http/protobuf" -}}
+{{- end -}}
+{{- if and .Values.otel.headersSecretName (not .Values.otel.headersSecretKey) -}}
+{{- fail "otel.headersSecretKey is required when otel.headersSecretName is set" -}}
+{{- end -}}
+{{- if and (not .Values.otel.enabled) .Values.otel.headersSecretName -}}
+{{- fail "otel header credentials require otel.enabled=true" -}}
+{{- end -}}
 {{- if and .Values.trustedCA.enabled (not .Values.trustedCA.configMapName) -}}
 {{- fail "trustedCA.configMapName is required when trustedCA.enabled=true" -}}
 {{- end -}}
@@ -163,7 +172,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if not (has .Values.workloadSurface.profileId (list "unrestricted" "orchestra-model-plane-workload-v1")) -}}
 {{- fail "workloadSurface.profileId must be unrestricted or orchestra-model-plane-workload-v1" -}}
 {{- end -}}
-{{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" "MODEL_PLANE_WORKLOAD_SURFACE" "INFERENCE_ENGINE_SERVER_TLS_CERT_FILE" "INFERENCE_ENGINE_SERVER_TLS_KEY_FILE" "INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE" "INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE" "INFERENCE_ENGINE_PROBE_TLS_CERT_FILE" "INFERENCE_ENGINE_PROBE_TLS_KEY_FILE" "INFERENCE_ENGINE_PROBE_TLS_CA_FILE" -}}
+{{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_EXPORTER_OTLP_PROTOCOL" "OTEL_EXPORTER_OTLP_HEADERS" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" "MODEL_PLANE_WORKLOAD_SURFACE" "INFERENCE_ENGINE_SERVER_TLS_CERT_FILE" "INFERENCE_ENGINE_SERVER_TLS_KEY_FILE" "INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE" "INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE" "INFERENCE_ENGINE_PROBE_TLS_CERT_FILE" "INFERENCE_ENGINE_PROBE_TLS_KEY_FILE" "INFERENCE_ENGINE_PROBE_TLS_CA_FILE" -}}
 {{- range $key, $_ := .Values.extraEnv -}}
 {{- if or (has $key $managedEnv) (hasPrefix "MODEL_ROUTING_" $key) (hasPrefix "MODEL_PLANE_OBSERVATION_" $key) -}}
 {{- fail (printf "extraEnv cannot override chart-managed variable %s" $key) -}}
@@ -177,6 +186,81 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 {{- if or (hasKey .Values.podAnnotations "orchestra.prometa.ai/rollout-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/deployment-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/server-tls-rollout-id") -}}
 {{- fail "podAnnotations cannot override rollout, deployment, or server TLS identity" -}}
+{{- end -}}
+
+{{- if and .Values.productionProfile.enabled .Values.engineeringTrialProfile.enabled -}}
+{{- fail "productionProfile and engineeringTrialProfile are mutually exclusive" -}}
+{{- end -}}
+{{- if .Values.engineeringTrialProfile.enabled -}}
+{{- if ne .Values.engineeringTrialProfile.profileId "orchestra-ocp-sno-trial-amd64-v1" -}}
+{{- fail "the engineering trial profile ID must be orchestra-ocp-sno-trial-amd64-v1" -}}
+{{- end -}}
+{{- if not .Values.engineeringTrialProfile.sourceOnlyAcknowledged -}}
+{{- fail "the engineering trial profile requires source-only acknowledgement" -}}
+{{- end -}}
+{{- if ne $environment "test" -}}
+{{- fail "the engineering trial profile requires targetEnvironment=test" -}}
+{{- end -}}
+{{- if ne (int .Values.replicaCount) 1 -}}
+{{- fail "the engineering trial profile requires exactly one replica" -}}
+{{- end -}}
+{{- if not .Values.image.digest -}}
+{{- fail "the engineering trial profile requires an immutable image digest" -}}
+{{- end -}}
+{{- if ne .Values.workloadSurface.profileId "orchestra-model-plane-workload-v1" -}}
+{{- fail "the engineering trial profile requires the bounded workload surface" -}}
+{{- end -}}
+{{- if not (and .Values.auth.enabled .Values.routing.enabled .Values.routing.policyRequired) -}}
+{{- fail "the engineering trial profile requires auth and signed routing policy enforcement" -}}
+{{- end -}}
+{{- if or (ne $rateLimitScope "deployment-shared") (ne $sharedBackend "direct") $shared.allowInsecureRedis -}}
+{{- fail "the engineering trial profile requires secure direct shared rate limiting" -}}
+{{- end -}}
+{{- if or (not .Values.observation.enabled) (ne (int .Values.observation.version) 2) (not (hasPrefix "https://" .Values.observation.endpoint)) -}}
+{{- fail "the engineering trial profile requires HTTPS observation contract v2" -}}
+{{- end -}}
+{{- if or (not .Values.otel.enabled) (ne .Values.otel.protocol "http/protobuf") (not (hasPrefix "https://" .Values.otel.endpoint)) (not .Values.otel.headersSecretName) -}}
+{{- fail "the engineering trial profile requires authenticated HTTPS OTLP/HTTP export" -}}
+{{- end -}}
+{{- if or (not .Values.serverTls.enabled) (not .Values.serverTls.rolloutId) -}}
+{{- fail "the engineering trial profile requires server TLS and rollout identity" -}}
+{{- end -}}
+{{- if ne .Values.securityContextMode "openshift" -}}
+{{- fail "the engineering trial profile delegates UID and GID allocation to OpenShift" -}}
+{{- end -}}
+{{- if or .Values.serviceAccount.automountServiceAccountToken (ne .Values.service.type "ClusterIP") -}}
+{{- fail "the engineering trial profile requires a token-free internal service account" -}}
+{{- end -}}
+{{- if or (not .Values.containerSecurityContext.runAsNonRoot) .Values.containerSecurityContext.allowPrivilegeEscalation (not .Values.containerSecurityContext.readOnlyRootFilesystem) (not (has "ALL" .Values.containerSecurityContext.capabilities.drop)) -}}
+{{- fail "the engineering trial profile requires the restricted container security context" -}}
+{{- end -}}
+{{- if ne .Values.containerSecurityContext.seccompProfile.type "RuntimeDefault" -}}
+{{- fail "the engineering trial profile requires RuntimeDefault seccomp" -}}
+{{- end -}}
+{{- if not .Values.networkPolicy.enabled -}}
+{{- fail "the engineering trial profile requires NetworkPolicy" -}}
+{{- end -}}
+{{- if or (not .Values.networkPolicy.runtimeIngressFrom) (not .Values.networkPolicy.observationEgress) (not .Values.networkPolicy.otelEgress) (not .Values.modelBackends.networkPolicyEgress) -}}
+{{- fail "the engineering trial profile requires exact runtime, model, observation, and OTLP paths" -}}
+{{- end -}}
+{{- if ne .Values.networkPolicy.dns.provider "openshift" -}}
+{{- fail "the engineering trial profile requires the OpenShift DNS selector" -}}
+{{- end -}}
+{{- if ne .Values.modelBackends.mode "remote" -}}
+{{- fail "the engineering trial profile requires one remote in-cluster model backend" -}}
+{{- end -}}
+{{- if or (not .Values.persistence.enabled) (ne .Values.persistence.storage "1Gi") .Values.persistence.externalBackupAcknowledged -}}
+{{- fail "the engineering trial profile requires one ephemeral 1Gi LKG volume without backup claims" -}}
+{{- end -}}
+{{- if not .Values.trustedCA.enabled -}}
+{{- fail "the engineering trial profile requires an operator-provided trusted CA" -}}
+{{- end -}}
+{{- if or .Values.podDisruptionBudget.enabled .Values.topologySpread.enabled .Values.metrics.serviceMonitor.enabled -}}
+{{- fail "the single-node engineering trial forbids PDB, topology spread, and ServiceMonitor claims" -}}
+{{- end -}}
+{{- if or (ne (toString .Values.resources.requests.cpu) "500m") (ne (toString .Values.resources.requests.memory) "4096Mi") (ne (toString .Values.resources.limits.cpu) "1500m") (ne (toString .Values.resources.limits.memory) "8192Mi") -}}
+{{- fail "the engineering trial resources must match the locked capacity candidate" -}}
+{{- end -}}
 {{- end -}}
 
 {{- if eq $environment "prod" -}}

@@ -267,10 +267,13 @@ class Settings(BaseSettings):
     # 128 GB unified-memory M5 Max. Override via MEMORY_BUDGET_GB in .env.
     memory_budget_gb: float = Field(default=60.0)
 
-    # OpenTelemetry. Disabled by default — flip to true with OTEL_ENABLED=true and
-    # `make otel-up` (Jaeger), or point at any OTLP/gRPC collector.
+    # OpenTelemetry. Disabled by default. Both OTLP/gRPC and OTLP/HTTP are
+    # supported so tenant deployments can export directly to Orchestra or to a
+    # collector without changing application instrumentation.
     otel_enabled: bool = Field(default=False)
     otel_exporter_otlp_endpoint: str = Field(default="http://localhost:4317")
+    otel_exporter_otlp_protocol: Literal["grpc", "http/protobuf"] = Field(default="grpc")
+    otel_exporter_otlp_headers: str = Field(default="", repr=False, exclude=True)
     otel_service_name: str = Field(default="inference-engine")
 
     # Per-key bearer auth. Off by default; flip on for any environment where

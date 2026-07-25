@@ -41,6 +41,14 @@ productionProfile:
   imageFlavor: ""
   namespaceDefaultDenyAcknowledged: false
 
+# Separate non-production profile for the cost-bounded single-node engineering
+# trial. It is never production or certification input and is mutually
+# exclusive with productionProfile.
+engineeringTrialProfile:
+  enabled: false
+  profileId: ""
+  sourceOnlyAcknowledged: false
+
 # Development installs expose the engine's complete API. The pinned production
 # profile requires the named core surface: chat, legacy completions, and
 # embeddings are governed; rerank, standalone eval, and chat auto-eval fail
@@ -93,6 +101,11 @@ observation:
 otel:
   enabled: false
   endpoint: ""
+  protocol: grpc # grpc | http/protobuf
+  # Optional purpose-scoped exporter headers, for example an Orchestra OTLP
+  # API key. The chart references this Secret and never creates it.
+  headersSecretName: ""
+  headersSecretKey: headers
   serviceName: orchestra-model-plane
 
 # One LKG volume per StatefulSet replica. The customer storage operator owns
