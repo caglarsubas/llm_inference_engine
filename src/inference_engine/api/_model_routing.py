@@ -61,7 +61,9 @@ def chat_input_token_upper_bound(req: ChatCompletionRequest) -> int | None:
         "messages": [message.model_dump(exclude_none=True) for message in req.messages],
         "tools": [tool.model_dump(exclude_none=True) for tool in req.tools or []],
         "tool_choice": req.tool_choice,
-        "response_format": req.response_format,
+        "response_format": (
+            req.response_format.model_dump(exclude_none=True) if req.response_format else None
+        ),
         "chat_template_kwargs": req.chat_template_kwargs,
         "stop": req.stop,
     }
@@ -123,11 +125,21 @@ def _enforcement_http_error(exc: ModelRoutingEnforcementError) -> HTTPException:
         "policy_id": exc.policy_id,
         "route_id": exc.route_id,
     }
-    headers = None
+    headers: dict[str, str] = {}
     if exc.retry_after_seconds is not None:
         detail["retry_after_seconds"] = exc.retry_after_seconds
-        headers = {"Retry-After": str(exc.retry_after_seconds)}
-    return HTTPException(status_code=status_code, detail=detail, headers=headers)
+        headers["Retry-After"] = str(exc.retry_after_seconds)
+        # OpenAI's SDKs read these to schedule their own backoff instead of
+        # retrying blind. ``remaining`` is 0 by construction — we only get here
+        # because the window is full.
+        headers["x-ratelimit-reset-requests"] = f"{exc.retry_after_seconds}s"
+    if status_code == 429:
+        headers["x-ratelimit-remaining-requests"] = "0"
+        if exc.limit_requests is not None:
+            headers["x-ratelimit-limit-requests"] = str(exc.limit_requests)
+    return HTTPException(
+        status_code=status_code, detail=detail, headers=headers or None
+    )
 
 
 def _emit_denial_span(

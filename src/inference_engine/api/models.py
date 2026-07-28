@@ -2,7 +2,9 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from ..adapters.llama_cpp import LlamaCppAdapter
 from ..auth import require_identity
+from ..config import settings
 from ..registry import (
     VLLMRegistry,
     get_openrouter_probe,
@@ -52,9 +54,37 @@ def _request_key_source_for_format(fmt: str) -> str:
     return "local-inference"
 
 
+def _context_lengths(desc) -> tuple[int | None, int | None]:
+    """``(context_length, max_model_len)`` for a descriptor.
+
+    ``context_length`` is what the model was trained for; ``max_model_len`` is
+    what *this* engine will actually allocate, which for a GGUF is the trained
+    window clamped by the configured ``N_CTX`` ceiling. Reporting both keeps a
+    client from sizing a prompt against a 128k model card when the replica in
+    front of it is serving a 32k window.
+    """
+    params = desc.params or {}
+    declared = params.get("context_length")
+    if declared is not None:
+        # Upstream-served models (vLLM, OpenRouter) own their own window.
+        return int(declared), int(declared)
+
+    if desc.format == "gguf":
+        try:
+            n_ctx_train = int(get_probe().probe(desc).n_ctx_train)
+        except Exception:  # noqa: BLE001 — metadata is advisory
+            return None, None
+        if n_ctx_train <= 0:
+            return None, None
+        return n_ctx_train, LlamaCppAdapter._effective_n_ctx(settings.n_ctx, n_ctx_train)
+
+    return None, None
+
+
 def _to_info(desc) -> ModelInfo:
     backend = _BACKEND_FOR_FORMAT.get(desc.format, "unknown")
     caps = infer_model_capabilities(desc.qualified_name, backend=backend, fmt=desc.format)
+    context_length, max_model_len = _context_lengths(desc)
     return ModelInfo(
         id=desc.qualified_name,
         size_bytes=desc.size_bytes,
@@ -62,6 +92,8 @@ def _to_info(desc) -> ModelInfo:
         format=desc.format,
         model_path=str(desc.model_path),
         request_key_source=_request_key_source_for_format(desc.format),
+        context_length=context_length,
+        max_model_len=max_model_len,
         **caps,
     )
 

@@ -51,6 +51,32 @@ class ProbeResult:
     n_ctx_train: int = 0
 
 
+def _n_ctx_train_from_metadata(metadata: object) -> int:
+    """Pull ``<arch>.context_length`` out of a GGUF's metadata dictionary.
+
+    The key is architecture-prefixed (``llama.context_length``,
+    ``gemma3.context_length``, …), so we match on the suffix rather than
+    enumerating architectures. Returns 0 when absent or unparseable, which
+    callers treat as "unknown" and fall back to the configured ceiling.
+
+    This reads metadata rather than ``llama_model_n_ctx_train`` deliberately:
+    the C accessor reports 0 on the vocab-light handles used for probing,
+    while the header value is always present.
+    """
+    if not isinstance(metadata, dict):
+        return 0
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not key.endswith(".context_length"):
+            continue
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 0
+
+
 class GGUFLoadProbe:
     """Lazy, cached vocab-only load probe for GGUF descriptors.
 
@@ -140,13 +166,8 @@ class GGUFLoadProbe:
             )
             # Read the trained context length off the loaded model metadata
             # while we have the handle — free here, saves the chat adapter a
-            # second load just to size its KV cache. Defensive: older
-            # llama-cpp-python builds may not expose ``n_ctx_train()``.
-            n_ctx_train = 0
-            try:
-                n_ctx_train = int(llm.n_ctx_train())
-            except Exception:  # noqa: BLE001 — metadata read is best-effort
-                n_ctx_train = 0
+            # second load just to size its KV cache.
+            n_ctx_train = _n_ctx_train_from_metadata(getattr(llm, "metadata", None))
             del llm
             return ProbeResult(
                 loadable=True,

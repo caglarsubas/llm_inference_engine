@@ -28,6 +28,7 @@ from ..adapters import (
     UpstreamGenerationError,
 )
 from ..auth import Identity, require_identity
+from ..genai_metrics import genai_metrics
 from ..observability import span
 from ..schemas import (
     CompletionChoice,
@@ -73,6 +74,10 @@ def _params(req: CompletionRequest) -> GenerationParams:
         max_tokens=req.max_tokens if req.max_tokens is not None else 128,
         stop=stop,
         seed=req.seed,
+        frequency_penalty=req.frequency_penalty,
+        presence_penalty=req.presence_penalty,
+        repetition_penalty=req.repetition_penalty,
+        logit_bias=req.logit_bias,
     )
 
 
@@ -185,14 +190,18 @@ async def _complete_once(
     total_prompt_tokens = 0
     total_completion_tokens = 0
 
+    started = time.perf_counter()
     try:
         with span(
             "completions.run",
             **{
                 "gen_ai.system": adapter.backend_name,
+                "gen_ai.provider.name": adapter.backend_name,
+                "gen_ai.operation.name": "text_completion",
                 "gen_ai.request.model": model_name,
                 "gen_ai.request.max_tokens": params.max_tokens,
                 "gen_ai.request.temperature": params.temperature,
+                "gen_ai.request.top_p": params.top_p,
                 "completion.batch_size": len(prompts),
                 **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
@@ -239,6 +248,14 @@ async def _complete_once(
                     "gen_ai.usage.input_tokens": total_prompt_tokens,
                     "gen_ai.usage.output_tokens": total_completion_tokens,
                 }
+            )
+            genai_metrics.record_operation(
+                operation="text_completion",
+                provider=adapter.backend_name,
+                model=model_name,
+                duration_seconds=time.perf_counter() - started,
+                input_tokens=total_prompt_tokens,
+                output_tokens=total_completion_tokens,
             )
     finally:
         await app_state.scheduler.release(lease)

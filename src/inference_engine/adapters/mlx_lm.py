@@ -199,6 +199,36 @@ class MLXAdapter(InferenceAdapter):
     def _tokenize(self, text: str) -> list[int]:
         return list(self._tokenizer.encode(text))
 
+    # Public tokenizer surface for /tokenize and /detokenize. MLX holds the
+    # HuggingFace tokenizer in-process, so these are exact.
+
+    def tokenize(self, text: str, *, add_special_tokens: bool = True) -> list[int]:  # noqa: ARG002 — HF tokenizer adds specials by default
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+        return [int(t) for t in self._tokenize(text)]
+
+    def detokenize(self, tokens: list[int]) -> str:
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+        return str(self._tokenizer.decode([int(t) for t in tokens]))
+
+    def format_chat_prompt(self, messages: Iterable[ChatMessage]) -> str:
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+        return self._format_prompt(messages)
+
+    @property
+    def max_model_len(self) -> int | None:
+        if not self.is_loaded:
+            return None
+        for attr in ("model_max_length", "max_position_embeddings"):
+            value = getattr(self._tokenizer, attr, None)
+            # HF tokenizers use a sentinel int32 max for "unbounded"; treat
+            # that as unknown rather than reporting a nonsense window.
+            if isinstance(value, int) and 0 < value < 1_000_000:
+                return value
+        return None
+
     # ------------------------------------------------------------------
     # Cache resolution — multi-slot
     # ------------------------------------------------------------------
@@ -331,6 +361,39 @@ class MLXAdapter(InferenceAdapter):
             return None
         return make_sampler(temp=params.temperature, top_p=params.top_p, top_k=params.top_k)
 
+    @staticmethod
+    def _make_logits_processors(params: GenerationParams) -> Any | None:
+        """Build mlx-lm logits processors for repetition penalty / logit bias.
+
+        mlx-lm has no grammar-constrained decoding, so Structured Outputs on
+        this backend is enforced by the route layer's validate-and-retry loop
+        rather than here. These two knobs it *can* honour natively.
+        """
+        if params.repetition_penalty is None and not params.logit_bias:
+            return None
+        try:
+            from mlx_lm.sample_utils import make_logits_processors  # type: ignore  # noqa: PLC0415
+        except ImportError:
+            return None
+        bias: dict[int, float] | None = None
+        if params.logit_bias:
+            bias = {}
+            for token_id, value in params.logit_bias.items():
+                try:
+                    bias[int(token_id)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            bias = bias or None
+        try:
+            return make_logits_processors(
+                logit_bias=bias,
+                repetition_penalty=params.repetition_penalty,
+            )
+        except TypeError:
+            # Older mlx-lm releases have a different signature; skip rather
+            # than fail the request over an optional sampling knob.
+            return None
+
     # ------------------------------------------------------------------
     # Generation
     # ------------------------------------------------------------------
@@ -349,6 +412,7 @@ class MLXAdapter(InferenceAdapter):
         prompt = self._format_prompt(messages)
         prompt_tokens = self._tokenize(prompt)
         sampler = self._make_sampler(params)
+        logits_processors = self._make_logits_processors(params)
 
         async with self._lock:
             cache, slot = self._resolve_cache(prompt_tokens)
@@ -363,6 +427,8 @@ class MLXAdapter(InferenceAdapter):
                 }
                 if sampler is not None:
                     kwargs["sampler"] = sampler
+                if logits_processors is not None:
+                    kwargs["logits_processors"] = logits_processors
                 if cache is not None:
                     kwargs["prompt_cache"] = cache
                 return mlx_generate(**kwargs)
@@ -379,6 +445,7 @@ class MLXAdapter(InferenceAdapter):
             finish_reason="stop",
             prompt_tokens=len(prompt_tokens),
             completion_tokens=len(self._tokenize(text)) if text else 0,
+            cached_tokens=self.last_cached_prompt_tokens,
         )
 
     async def complete(
@@ -400,6 +467,7 @@ class MLXAdapter(InferenceAdapter):
 
         prompt_tokens = self._tokenize(prompt)
         sampler = self._make_sampler(params)
+        logits_processors = self._make_logits_processors(params)
 
         async with self._lock:
             cache, slot = self._resolve_cache(prompt_tokens)
@@ -414,6 +482,8 @@ class MLXAdapter(InferenceAdapter):
                 }
                 if sampler is not None:
                     kwargs["sampler"] = sampler
+                if logits_processors is not None:
+                    kwargs["logits_processors"] = logits_processors
                 if cache is not None:
                     kwargs["prompt_cache"] = cache
                 return mlx_generate(**kwargs)
@@ -431,6 +501,7 @@ class MLXAdapter(InferenceAdapter):
             prompt_tokens=len(prompt_tokens),
             completion_tokens=len(self._tokenize(text)) if text else 0,
             tool_calls=None,
+            cached_tokens=self.last_cached_prompt_tokens,
         )
 
     async def stream(
@@ -447,6 +518,7 @@ class MLXAdapter(InferenceAdapter):
         prompt = self._format_prompt(messages)
         prompt_tokens = self._tokenize(prompt)
         sampler = self._make_sampler(params)
+        logits_processors = self._make_logits_processors(params)
 
         queue: asyncio.Queue[StreamChunk | tuple[str, list[int]] | Exception] = asyncio.Queue(maxsize=64)
         loop = asyncio.get_running_loop()
@@ -464,6 +536,8 @@ class MLXAdapter(InferenceAdapter):
                     }
                     if sampler is not None:
                         kwargs["sampler"] = sampler
+                    if logits_processors is not None:
+                        kwargs["logits_processors"] = logits_processors
                     if cache is not None:
                         kwargs["prompt_cache"] = cache
 
@@ -483,6 +557,19 @@ class MLXAdapter(InferenceAdapter):
                             ).result()
                     asyncio.run_coroutine_threadsafe(
                         queue.put(StreamChunk(text="", finish_reason="stop")), loop
+                    ).result()
+                    # Terminal accounting chunk. Both halves are exact here —
+                    # we tokenized the prompt ourselves and counted every
+                    # sampled token id as it came off the generator.
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(
+                            StreamChunk(
+                                text="",
+                                prompt_tokens=len(prompt_tokens),
+                                completion_tokens=len(generated_token_ids),
+                            )
+                        ),
+                        loop,
                     ).result()
                     asyncio.run_coroutine_threadsafe(
                         queue.put(("__done__", prompt_tokens + generated_token_ids)), loop

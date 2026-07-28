@@ -7,6 +7,7 @@ from dataclasses import replace
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
 
 from ..adapters import (
@@ -26,7 +27,13 @@ from ..auth import Identity, require_identity
 from ..cancellation import watch_disconnect
 from ..config import settings
 from ..evals import PolicyEntry
+from ..genai_metrics import genai_metrics
 from ..observability import get_logger, span
+from ..structured_outputs import (
+    SchemaViolation,
+    repair_instruction,
+    validate_json_document,
+)
 from ..schemas import (
     AutoEvalSpec,
     ChatCompletionChoice,
@@ -35,7 +42,10 @@ from ..schemas import (
     ChatCompletionDelta,
     ChatCompletionRequest,
     ChatCompletionResponse,
+    ChatCompletionTokenLogprob,
     ChatMessage,
+    ChoiceLogprobs,
+    PromptTokensDetails,
     ToolCall,
     ToolCallDelta,
     ToolCallFunction,
@@ -60,7 +70,12 @@ def _params_from_request(req: ChatCompletionRequest) -> GenerationParams:
     else:
         stop = list(req.stop)
 
-    json_mode = bool(req.response_format and req.response_format.get("type") == "json_object")
+    rf = req.response_format
+    # ``json_mode`` stays true for both JSON mode and Structured Outputs so the
+    # existing JSON-repair path keeps applying; ``json_schema`` is what tells
+    # an adapter it can constrain the sampler instead of merely asking nicely.
+    json_mode = bool(rf and rf.wants_json)
+    schema = rf.schema_payload if rf else None
 
     # tools come in as ToolDefinition pydantic models; the backend wants the
     # plain OpenAI dict shape, so dump back to dicts here.
@@ -74,10 +89,89 @@ def _params_from_request(req: ChatCompletionRequest) -> GenerationParams:
         stop=stop,
         seed=req.seed,
         json_mode=json_mode,
+        json_schema=schema,
+        json_schema_name=(rf.json_schema.name if rf and rf.json_schema else "response"),
+        json_schema_strict=bool(rf and rf.json_schema and rf.json_schema.strict),
         tools=tools,
         tool_choice=req.tool_choice,
+        parallel_tool_calls=req.parallel_tool_calls,
         chat_template_kwargs=req.chat_template_kwargs,
+        frequency_penalty=req.frequency_penalty,
+        presence_penalty=req.presence_penalty,
+        repetition_penalty=req.repetition_penalty,
+        logit_bias=req.logit_bias,
+        logprobs=req.logprobs,
+        top_logprobs=req.top_logprobs,
     )
+
+
+def _usage_from(prompt_tokens: int, completion_tokens: int, cached_tokens: int) -> Usage:
+    """Build the wire ``usage`` object, including the cached-token breakdown.
+
+    ``prompt_tokens_details`` stays ``null`` when nothing was served from cache
+    rather than reporting a zero — same convention the ``fallback_*`` fields
+    use, and it keeps "this backend can't measure it" distinguishable from
+    "measured, and it was zero".
+
+    ``cached_tokens`` is clamped to ``prompt_tokens``. llama.cpp's cache entries
+    are keyed on the full context that produced them — prompt *plus* whatever
+    that call generated — so a matched entry's token count can legitimately
+    exceed the current request's prompt. Reporting ``cached > prompt`` would be
+    incoherent to every cost dashboard downstream, so the sub-claim is the one
+    we make.
+    """
+    cached = max(0, min(cached_tokens, prompt_tokens))
+    return Usage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        prompt_tokens_details=(
+            PromptTokensDetails(cached_tokens=cached) if cached > 0 else None
+        ),
+    )
+
+
+def _choice_logprobs(entries: list[dict] | None) -> ChoiceLogprobs | None:
+    """Validate adapter-supplied logprob dicts into the response model."""
+    if not entries:
+        return None
+    try:
+        return ChoiceLogprobs(
+            content=[ChatCompletionTokenLogprob.model_validate(e) for e in entries]
+        )
+    except ValidationError:
+        # A backend that reports logprobs in a shape we don't recognise should
+        # not fail the whole completion — drop the field and keep the answer.
+        log.warning("logprobs.unrecognized_shape")
+        return None
+
+
+def _genai_request_attrs(
+    adapter: InferenceAdapter,
+    model_name: str,
+    params: GenerationParams,
+    *,
+    stream: bool,
+) -> dict:
+    """OTel GenAI semantic-convention request attributes.
+
+    ``gen_ai.system`` is kept alongside the newer ``gen_ai.provider.name``:
+    recent semconv versions renamed it, but the orchestra-python-sdk's own
+    instrumentation (``prometa/integrations/openai.py``) still writes
+    ``gen_ai.system``, and dropping it would split existing dashboards across
+    two attribute names mid-flight. Emitting both costs one attribute and keeps
+    old and new queries working.
+    """
+    return {
+        "gen_ai.system": adapter.backend_name,
+        "gen_ai.provider.name": adapter.backend_name,
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": model_name,
+        "gen_ai.request.max_tokens": params.max_tokens,
+        "gen_ai.request.temperature": params.temperature,
+        "gen_ai.request.top_p": params.top_p,
+        "gen_ai.request.stream": stream,
+    }
 
 
 def _identity_attrs(identity: Identity) -> dict:
@@ -102,6 +196,20 @@ def _request_key_attrs(adapter: InferenceAdapter) -> dict:
 def _estimated_chat_tokens(messages: list[ChatMessage], params: GenerationParams) -> int:
     chars = sum(len(chat_content_text(m.content)) for m in messages)
     return max(1, (chars // 4) + int(params.max_tokens or 0))
+
+
+def _end_user_attrs(user: str | None) -> dict:
+    """Stamp OpenAI's ``user`` field onto the span as ``user.id``.
+
+    OpenAI defines this as a stable end-user identifier for abuse tracing. It
+    slots naturally beside the engine's existing tenant/key attribution, and
+    stamping it is the only thing that makes accepting the field meaningful.
+    Truncated because the value is caller-controlled and ends up in every
+    exported span.
+    """
+    if not user:
+        return {}
+    return {"user.id": user[:128]}
 
 
 def _intent_attrs(req: ChatCompletionRequest) -> dict:
@@ -147,7 +255,10 @@ async def chat_completions(
     request: Request,
     identity: Identity = Depends(require_identity),
 ):
-    intent_attrs = _intent_attrs(req)
+    # Caller-supplied span attributes, threaded to model.acquire and the
+    # generate/stream spans alike. ``user`` rides along with intent because
+    # both describe who asked, not what the engine did.
+    intent_attrs = {**_intent_attrs(req), **_end_user_attrs(req.user)}
     params = _params_from_request(req)
     decision = await _model_routing.enforce_generation_request(
         identity=identity,
@@ -204,6 +315,7 @@ async def chat_completions(
                 active.fallback_info,
                 decision,
                 active.candidate_index,
+                bool(req.stream_options and req.stream_options.include_usage),
             )
         )
 
@@ -435,14 +547,12 @@ async def _generate_blocking_once(
     caps = infer_model_capabilities(
         model_name, backend=adapter.backend_name, fmt=getattr(adapter, "format", "")
     )
+    started = time.perf_counter()
     try:
         with span(
             "chat.generate",
             **{
-                "gen_ai.system": adapter.backend_name,
-                "gen_ai.request.model": model_name,
-                "gen_ai.request.max_tokens": params.max_tokens,
-                "gen_ai.request.temperature": params.temperature,
+                **_genai_request_attrs(adapter, model_name, params, stream=False),
                 "n_messages": len(messages),
                 **_request_key_attrs(adapter),
                 **_identity_attrs(identity),
@@ -500,8 +610,20 @@ async def _generate_blocking_once(
                     "gen_ai.usage.input_tokens": result.prompt_tokens,
                     "gen_ai.usage.output_tokens": result.completion_tokens,
                     "gen_ai.response.finish_reason": result.finish_reason,
+                    # semconv names the plural form for the array-valued
+                    # attribute; the SDK's own instrumentation reads that one.
+                    "gen_ai.response.finish_reasons": result.finish_reason,
+                    "gen_ai.usage.cached_input_tokens": result.cached_tokens,
                     **post_attrs,
                 }
+            )
+            genai_metrics.record_operation(
+                operation="chat",
+                provider=adapter.backend_name,
+                model=model_name,
+                duration_seconds=time.perf_counter() - started,
+                input_tokens=result.prompt_tokens,
+                output_tokens=result.completion_tokens,
             )
     finally:
         await app_state.scheduler.release(lease)
@@ -519,6 +641,97 @@ def _raise_generation_http_error(exc: Exception) -> None:
     if isinstance(exc, UpstreamGenerationError):
         raise HTTPException(status_code=502, detail=exc.error_detail()) from exc
     raise exc
+
+
+async def _enforce_structured_output(
+    result,
+    adapter: InferenceAdapter,
+    model_name: str,
+    messages: list[ChatMessage],
+    params: GenerationParams,
+    identity: Identity,
+    intent_attrs: dict | None = None,
+):
+    """Validate-and-retry for backends that can't constrain decoding.
+
+    A no-op unless the caller asked for a JSON Schema *and* the backend has no
+    grammar hook (MLX today). Backends that enforce in the sampler are trusted:
+    re-validating them here would risk rejecting a valid document over a gap in
+    our own schema-subset checker, which is a worse failure than the one it
+    would catch.
+
+    One retry, with the validation error fed back to the model. If the second
+    attempt is still invalid we surface a typed 502 rather than handing back a
+    document that silently violates the contract the caller asked for — a
+    strict-mode client has no way to tell the difference otherwise.
+    """
+    if not params.json_schema or adapter.supports_structured_outputs:
+        return result
+    if result.tool_calls:
+        # The model chose to call a tool instead of answering; there is no
+        # document to validate against the schema.
+        return result
+
+    try:
+        validate_json_document(result.text, params.json_schema)
+        return result
+    except SchemaViolation as exc:
+        # Bind the message before the except block ends — Python deletes the
+        # ``as`` name on exit, so it is not readable further down.
+        first_error = str(exc)
+
+    log.warning(
+        "structured_output.invalid",
+        model=model_name,
+        backend=adapter.backend_name,
+        error=first_error,
+    )
+
+    retry_messages = [
+        *messages,
+        ChatMessage(role="assistant", content=result.text or ""),
+        ChatMessage(
+            role="user",
+            content=repair_instruction(
+                params.json_schema, first_error, params.json_schema_name
+            ),
+        ),
+    ]
+    retried = await _generate_blocking_once(
+        adapter,
+        model_name,
+        retry_messages,
+        params,
+        identity,
+        intent_attrs=intent_attrs,
+    )
+    retried = _normalize_blocking_result(retried, params)
+
+    try:
+        validate_json_document(retried.text, params.json_schema)
+    except SchemaViolation as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": (
+                    f"The model could not produce a response satisfying the "
+                    f"'{params.json_schema_name}' schema after one retry: {exc}"
+                ),
+                "type": "structured_output_invalid",
+                "code": "structured_output_invalid",
+                "param": "response_format",
+                "backend": adapter.backend_name,
+                "model": model_name,
+            },
+        ) from exc
+
+    # Bill the caller for both attempts — they paid for both.
+    return replace(
+        retried,
+        prompt_tokens=result.prompt_tokens + retried.prompt_tokens,
+        completion_tokens=result.completion_tokens + retried.completion_tokens,
+        cached_tokens=result.cached_tokens + retried.cached_tokens,
+    )
 
 
 async def _blocking_response(
@@ -575,6 +788,16 @@ async def _blocking_response(
             if fallback is None:
                 _raise_generation_http_error(exc)
             active = fallback
+
+    result = await _enforce_structured_output(
+        result,
+        active.adapter,
+        active.model_name,
+        messages,
+        params,
+        identity,
+        intent_attrs,
+    )
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
 
@@ -639,12 +862,11 @@ async def _blocking_response(
                 finish_reason=result.finish_reason
                 if result.finish_reason in ("stop", "length", "tool_calls")
                 else "stop",
+                logprobs=_choice_logprobs(result.logprobs),
             )
         ],
-        usage=Usage(
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            total_tokens=result.prompt_tokens + result.completion_tokens,
+        usage=_usage_from(
+            result.prompt_tokens, result.completion_tokens, result.cached_tokens
         ),
         evals=eval_results,
     )
@@ -664,18 +886,45 @@ async def _stream_response(
     fallback_info: _fallback.FallbackInfo | None = None,
     routing_decision: _model_routing.ModelRoutingDecision | None = None,
     candidate_index: int | None = None,
+    include_usage: bool = False,
 ) -> AsyncIterator[dict]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
-    def _chunk(delta: ChatCompletionDelta, finish: str | None = None) -> dict:
+    def _chunk(
+        delta: ChatCompletionDelta,
+        finish: str | None = None,
+        logprobs: ChoiceLogprobs | None = None,
+    ) -> dict:
         chunk = ChatCompletionChunk(
             id=completion_id,
             created=created,
             model=model_name,
             request_key_source=_request_key_source(adapter),
             **_fallback.response_fields(fallback_info),
-            choices=[ChatCompletionChunkChoice(index=0, delta=delta, finish_reason=finish)],
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0, delta=delta, finish_reason=finish, logprobs=logprobs
+                )
+            ],
+        )
+        return {"data": chunk.model_dump_json()}
+
+    def _usage_chunk(usage: Usage) -> dict:
+        """The ``stream_options.include_usage`` trailer.
+
+        OpenAI's shape for this frame is an empty ``choices`` array with the
+        token counts attached — clients keyed on ``choices[0]`` skip it
+        naturally and only usage-aware clients read it.
+        """
+        chunk = ChatCompletionChunk(
+            id=completion_id,
+            created=created,
+            model=model_name,
+            request_key_source=_request_key_source(adapter),
+            **_fallback.response_fields(fallback_info),
+            choices=[],
+            usage=usage,
         )
         return {"data": chunk.model_dump_json()}
 
@@ -685,6 +934,17 @@ async def _stream_response(
         role_emitted = False
         cancelled = False
         accumulated: list[str] = []
+        # Token accounting for the usage trailer. Adapters report these on a
+        # terminal, text-free StreamChunk — either from the upstream's own
+        # include_usage frame (vLLM, Ollama, OpenRouter) or counted locally
+        # (llama.cpp, MLX).
+        usage_prompt_tokens = 0
+        usage_completion_tokens = 0
+        # TTFT / TPOT timing. ``stream_started`` is stamped immediately before
+        # the adapter call so prefill is inside the measurement; scheduler wait
+        # is not, since it's already reported separately as scheduler.wait_ms.
+        stream_started = 0.0
+        first_token_at: float | None = None
         # Audit inbound tool messages first (same shape the blocking path uses).
         n_tool_results = 0
         n_tool_calls_streamed = 0
@@ -762,11 +1022,27 @@ async def _stream_response(
             def _piece_events(piece) -> list[dict]:
                 """Convert one backend stream piece into zero or more SSE chunks."""
                 nonlocal finish_reason, next_tool_index, role_emitted
+                nonlocal usage_prompt_tokens, usage_completion_tokens, first_token_at
+
+                if first_token_at is None and (piece.text or piece.tool_call_deltas):
+                    first_token_at = time.perf_counter()
+
+                # Token counts ride on their own terminal piece and must be
+                # picked up before the empty-text early-outs below.
+                if piece.prompt_tokens is not None:
+                    usage_prompt_tokens = int(piece.prompt_tokens)
+                if piece.completion_tokens is not None:
+                    usage_completion_tokens = int(piece.completion_tokens)
 
                 events: list[dict] = []
                 if not role_emitted:
                     events.append(_chunk(ChatCompletionDelta(role="assistant")))
                     role_emitted = True
+
+                if piece.logprobs:
+                    resolved = _choice_logprobs(piece.logprobs)
+                    if resolved is not None:
+                        events.append(_chunk(ChatCompletionDelta(), logprobs=resolved))
 
                 if piece.text:
                     events.extend(_ingest(normalizer.feed(piece.text)))
@@ -808,8 +1084,7 @@ async def _stream_response(
             with span(
                 "chat.stream",
                 **{
-                    "gen_ai.system": adapter.backend_name,
-                    "gen_ai.request.model": model_name,
+                    **_genai_request_attrs(adapter, model_name, params, stream=True),
                     "n_messages": len(messages),
                     **_request_key_attrs(adapter),
                     **_identity_attrs(identity),
@@ -826,6 +1101,7 @@ async def _stream_response(
             ) as s:
                 n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
                 try:
+                    stream_started = time.perf_counter()
                     pieces = adapter.stream(messages, params, cancel=cancel)
                     try:
                         first_piece = await anext(pieces)
@@ -907,6 +1183,7 @@ async def _stream_response(
                                 fallback.fallback_info,
                                 routing_decision,
                                 fallback.candidate_index,
+                                include_usage,
                             ):
                                 yield chunk
                             return
@@ -963,6 +1240,7 @@ async def _stream_response(
                                 fallback.fallback_info,
                                 routing_decision,
                                 fallback.candidate_index,
+                                include_usage,
                             ):
                                 yield chunk
                             return
@@ -992,19 +1270,61 @@ async def _stream_response(
                         n_tool_calls_streamed = _tool_audit.emit_tool_calls(
                             s, reassembler.assembled() if reassembler.has_calls() else None
                         )
-                    s.bind(
-                        **{
-                            "gen_ai.response.finish_reason": (
-                                "cancelled" if cancelled else (finish_reason or "stop")
-                            ),
-                            "stream.chunks_emitted": chunks_emitted,
-                            "stream.cancelled": cancelled,
-                            "stream.cancel_reason": cancel.reason or "",
-                            "tool_audit.tool_results_in": n_tool_results,
-                            "tool_audit.tool_calls_out": n_tool_calls_streamed,
-                            **_prefix_cache_post_call_attrs(adapter),
-                        }
+                    resolved_finish = (
+                        "cancelled" if cancelled else (finish_reason or "stop")
                     )
+                    stream_attrs: dict = {
+                        "gen_ai.response.finish_reason": resolved_finish,
+                        "gen_ai.response.finish_reasons": resolved_finish,
+                        "stream.chunks_emitted": chunks_emitted,
+                        "stream.cancelled": cancelled,
+                        "stream.cancel_reason": cancel.reason or "",
+                        "tool_audit.tool_results_in": n_tool_results,
+                        "tool_audit.tool_calls_out": n_tool_calls_streamed,
+                        **_prefix_cache_post_call_attrs(adapter),
+                    }
+                    if usage_prompt_tokens or usage_completion_tokens:
+                        stream_attrs["gen_ai.usage.input_tokens"] = usage_prompt_tokens
+                        stream_attrs["gen_ai.usage.output_tokens"] = usage_completion_tokens
+
+                    ended = time.perf_counter()
+                    # ``stream_started`` is still 0.0 if we failed before the
+                    # adapter call (e.g. tool-result auditing raised). Recording
+                    # then would push a perf_counter epoch into the histogram.
+                    measured = stream_started > 0.0
+                    if measured and first_token_at is not None:
+                        ttft = first_token_at - stream_started
+                        stream_attrs["gen_ai.server.time_to_first_token"] = ttft
+                        # Only a successful stream describes real serving
+                        # latency — a cancelled or errored one would skew the
+                        # histogram toward whatever it managed before failing.
+                        if not cancelled and resolved_finish in ("stop", "length", "tool_calls"):
+                            genai_metrics.record_time_to_first_token(
+                                operation="chat",
+                                provider=adapter.backend_name,
+                                model=model_name,
+                                seconds=ttft,
+                            )
+                            # TPOT excludes the first token by definition: it is
+                            # the decode rate after prefill.
+                            decode_tokens = usage_completion_tokens - 1
+                            if decode_tokens > 0:
+                                genai_metrics.record_time_per_output_token(
+                                    operation="chat",
+                                    provider=adapter.backend_name,
+                                    model=model_name,
+                                    seconds=(ended - first_token_at) / decode_tokens,
+                                )
+                    if measured and not cancelled:
+                        genai_metrics.record_operation(
+                            operation="chat",
+                            provider=adapter.backend_name,
+                            model=model_name,
+                            duration_seconds=ended - stream_started,
+                            input_tokens=usage_prompt_tokens or None,
+                            output_tokens=usage_completion_tokens or None,
+                        )
+                    s.bind(**stream_attrs)
 
         if cancelled:
             # Client is gone — no point sending the trailing frames or running
@@ -1012,6 +1332,14 @@ async def _stream_response(
             return
 
         yield _chunk(ChatCompletionDelta(), finish=finish_reason or "stop")
+        if include_usage:
+            yield _usage_chunk(
+                _usage_from(
+                    usage_prompt_tokens,
+                    usage_completion_tokens,
+                    adapter.last_cached_prompt_tokens,
+                )
+            )
         yield {"data": "[DONE]"}
 
         # Background auto-eval kicks off after the stream is delivered. Blocking

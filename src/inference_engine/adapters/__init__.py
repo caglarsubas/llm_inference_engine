@@ -3,9 +3,11 @@ from .base import (
     EmbeddingResult,
     EmbeddingsNotSupportedError,
     GenerationParams,
+    GenerationResult,
     GenerationTimeoutError,
     InferenceAdapter,
     StreamChunk,
+    TokenizationNotSupportedError,
     UpstreamGenerationError,
 )
 
@@ -14,8 +16,10 @@ __all__ = [
     "EmbeddingResult",
     "EmbeddingsNotSupportedError",
     "GenerationParams",
+    "GenerationResult",
     "GenerationTimeoutError",
     "InferenceAdapter",
     "StreamChunk",
+    "TokenizationNotSupportedError",
     "UpstreamGenerationError",
 ]

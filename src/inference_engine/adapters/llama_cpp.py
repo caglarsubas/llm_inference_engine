@@ -52,6 +52,7 @@ from .base import (
     GenerationResult,
     InferenceAdapter,
     StreamChunk,
+    TokenizationNotSupportedError,
 )
 
 log = get_logger("adapter.llama_cpp")
@@ -70,6 +71,21 @@ _CTX_OVERFLOW_RE = re.compile(
     r"requested\s+tokens?\s*\((\d+)\).*context\s+window\s+of\s*(\d+)",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _openai_logprob_content(logprobs: Any) -> list[dict] | None:
+    """Extract the OpenAI ``logprobs.content`` list from a llama.cpp choice.
+
+    llama-cpp-python already converts its native token-parallel-arrays shape
+    into the chat shape (``{"content": [...], "refusal": None}``) before
+    returning, so this is just the unwrap plus a defensive type check.
+    """
+    if not isinstance(logprobs, dict):
+        return None
+    content = logprobs.get("content")
+    if not isinstance(content, list) or not content:
+        return None
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +144,8 @@ def _tracked_cache(capacity_bytes: int) -> Any:
 
 class LlamaCppAdapter(InferenceAdapter):
     backend_name = "llama_cpp"
+    # llama-cpp-python compiles response_format["schema"] to a GBNF grammar.
+    supports_structured_outputs = True
 
     def __init__(self) -> None:
         self._llm: Any = None  # llama_cpp.Llama (lazy import to keep startup quick)
@@ -373,7 +391,50 @@ class LlamaCppAdapter(InferenceAdapter):
         return out
 
     @staticmethod
-    def _completion_kwargs(params: GenerationParams) -> dict:
+    def _sampling_kwargs(params: GenerationParams, *, chat: bool = True) -> dict:
+        """Sampling knobs shared by the chat and raw-completion paths.
+
+        Only forwards what the caller actually set — llama.cpp's own defaults
+        (``repeat_penalty=1.0``, both OpenAI penalties at 0.0) are better left
+        alone than overwritten with ours.
+
+        ``chat`` selects the logprobs calling convention: the chat entry point
+        takes ``logprobs: bool`` plus ``top_logprobs: int``, while the raw
+        ``create_completion`` takes a single ``logprobs: int`` count.
+        """
+        kw: dict = {}
+        if params.frequency_penalty is not None:
+            kw["frequency_penalty"] = params.frequency_penalty
+        if params.presence_penalty is not None:
+            kw["presence_penalty"] = params.presence_penalty
+        if params.repetition_penalty is not None:
+            # llama.cpp calls this repeat_penalty; same multiplicative knob.
+            kw["repeat_penalty"] = params.repetition_penalty
+        if params.logit_bias:
+            # llama.cpp keys logit_bias by int token id, OpenAI by string.
+            bias: dict[int, float] = {}
+            for token_id, value in params.logit_bias.items():
+                try:
+                    bias[int(token_id)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            if bias:
+                kw["logit_bias"] = bias
+        if params.logprobs:
+            # llama-cpp-python forwards ``top_logprobs`` as the underlying
+            # completion's ``logprobs`` count, and passes ``None`` when it is
+            # unset — which silently disables logprobs entirely. Default to 1
+            # so ``logprobs=true`` alone still returns the chosen token.
+            top_n = params.top_logprobs if params.top_logprobs is not None else 1
+            if chat:
+                kw["logprobs"] = True
+                kw["top_logprobs"] = top_n
+            else:
+                kw["logprobs"] = top_n
+        return kw
+
+    @classmethod
+    def _completion_kwargs(cls, params: GenerationParams) -> dict:
         kw: dict = {
             "temperature": params.temperature,
             "top_p": params.top_p,
@@ -385,11 +446,19 @@ class LlamaCppAdapter(InferenceAdapter):
         if params.seed is not None:
             kw["seed"] = params.seed
         if params.json_mode:
-            kw["response_format"] = {"type": "json_object"}
+            # llama-cpp-python compiles a GBNF grammar from ``schema`` and
+            # constrains the sampler with it, so a Structured Outputs request
+            # is genuinely enforced here rather than merely requested. Without
+            # a schema this degrades to plain "must be valid JSON" mode.
+            response_format: dict = {"type": "json_object"}
+            if params.json_schema:
+                response_format["schema"] = params.json_schema
+            kw["response_format"] = response_format
         if params.tools:
             kw["tools"] = params.tools
         if params.tool_choice is not None:
             kw["tool_choice"] = params.tool_choice
+        kw.update(cls._sampling_kwargs(params))
         return kw
 
     async def generate(
@@ -444,6 +513,8 @@ class LlamaCppAdapter(InferenceAdapter):
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
             tool_calls=list(tool_calls) if tool_calls else None,
+            cached_tokens=self.last_cached_prompt_tokens,
+            logprobs=_openai_logprob_content(choice.get("logprobs")),
         )
 
     async def stream(
@@ -468,6 +539,14 @@ class LlamaCppAdapter(InferenceAdapter):
         loop = asyncio.get_running_loop()
 
         def _producer() -> None:
+            # llama.cpp's streaming path emits no usage block, so we account for
+            # tokens ourselves: it yields exactly one event per sampled token
+            # (plus a leading role-only event and a trailing finish-only one),
+            # and ``Llama.n_tokens`` is the KV position — prompt + generated —
+            # once the loop ends. That gives both halves without a second
+            # tokenize pass over the templated prompt, which we cannot see from
+            # out here anyway.
+            completion_tokens = 0
             try:
                 try:
                     iterator = self._llm.create_chat_completion(messages=msgs, stream=True, **kwargs)
@@ -486,12 +565,30 @@ class LlamaCppAdapter(InferenceAdapter):
                     text = delta.get("content") or ""
                     tool_call_deltas = delta.get("tool_calls")
                     finish = choice.get("finish_reason")
+                    if "content" in delta:
+                        completion_tokens += 1
                     chunk = StreamChunk(
                         text=text,
                         finish_reason=finish,
                         tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+                        logprobs=_openai_logprob_content(choice.get("logprobs")),
                     )
                     asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result()
+                # Terminal accounting chunk — no text, just the counts the
+                # route layer needs for ``stream_options.include_usage``.
+                total_tokens = int(getattr(self._llm, "n_tokens", 0) or 0)
+                prompt_tokens = max(0, total_tokens - completion_tokens)
+                self._last_prompt_tokens = prompt_tokens
+                asyncio.run_coroutine_threadsafe(
+                    queue.put(
+                        StreamChunk(
+                            text="",
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                        )
+                    ),
+                    loop,
+                ).result()
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
             except Exception as exc:  # noqa: BLE001 — surface to consumer
                 asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
@@ -539,6 +636,7 @@ class LlamaCppAdapter(InferenceAdapter):
             kwargs["stop"] = params.stop
         if params.seed is not None:
             kwargs["seed"] = params.seed
+        kwargs.update(self._sampling_kwargs(params, chat=False))
 
         async with self._lock:
             if self._cache is not None:
@@ -564,7 +662,73 @@ class LlamaCppAdapter(InferenceAdapter):
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
             tool_calls=None,  # raw completion never produces tool calls
+            cached_tokens=self.last_cached_prompt_tokens,
         )
+
+    # ------------------------------------------------------------------
+    # Tokenizer surface — llama.cpp holds the vocabulary in-process, so we
+    # can answer /tokenize and /detokenize exactly rather than estimating.
+    # ------------------------------------------------------------------
+
+    def tokenize(self, text: str, *, add_special_tokens: bool = True) -> list[int]:
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+        return [
+            int(t)
+            for t in self._llm.tokenize(text.encode("utf-8"), add_bos=add_special_tokens)
+        ]
+
+    def detokenize(self, tokens: list[int]) -> str:
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+        return self._llm.detokenize([int(t) for t in tokens]).decode("utf-8", errors="replace")
+
+    def format_chat_prompt(self, messages: Iterable[ChatMessage]) -> str:
+        """Render the GGUF's own Jinja chat template.
+
+        llama-cpp-python applies this internally on the generation path and
+        doesn't expose the rendered string, so we rebuild the formatter from
+        the same GGUF metadata it reads (``tokenizer.chat_template`` plus the
+        BOS/EOS tokens). A GGUF with no embedded template — a base model, say —
+        has nothing to render and raises instead of guessing a format.
+        """
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+
+        metadata = getattr(self._llm, "metadata", None) or {}
+        template = metadata.get("tokenizer.chat_template")
+        if not template:
+            raise TokenizationNotSupportedError(
+                f"{self.backend_name}: model has no embedded chat template; "
+                "use 'prompt' instead of 'messages'"
+            )
+
+        from llama_cpp.llama_chat_format import Jinja2ChatFormatter  # noqa: PLC0415
+
+        def _special(kind: str) -> str:
+            token_id = metadata.get(f"tokenizer.ggml.{kind}_token_id")
+            if token_id is None:
+                return ""
+            try:
+                return self._llm.detokenize([int(token_id)]).decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 — a missing special token is not fatal
+                return ""
+
+        formatter = Jinja2ChatFormatter(
+            template=template,
+            eos_token=_special("eos"),
+            bos_token=_special("bos"),
+        )
+        return formatter(messages=self._to_llama_messages(messages)).prompt
+
+    @property
+    def max_model_len(self) -> int | None:
+        if not self.is_loaded:
+            return None
+        try:
+            return int(self._llm.n_ctx())
+        except Exception:  # noqa: BLE001 — advisory only
+            return None
 
     async def embed(self, inputs: list[str]) -> EmbeddingResult:
         """Compute embedding vectors via ``Llama.create_embedding``.

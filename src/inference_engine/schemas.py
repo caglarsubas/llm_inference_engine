@@ -7,7 +7,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 def _split_trace_value(value) -> list[str] | None:
@@ -112,6 +119,78 @@ class ToolDefinition(BaseModel):
     function: dict  # {"name": str, "description": str, "parameters": <JSON schema>}
 
 
+class JSONSchemaSpec(BaseModel):
+    """The ``json_schema`` payload of an OpenAI Structured Outputs request.
+
+    ``strict=True`` is the caller asking for *grammar-enforced* decoding rather
+    than prompt-level persuasion. Backends that can honour that constrain the
+    sampler (llama.cpp compiles the schema to GBNF; vLLM routes it through
+    guided decoding). Backends that can't fall back to validate-and-retry —
+    see ``GenerationParams.json_schema``.
+    """
+
+    # ``schema`` shadows a deprecated ``BaseModel`` classmethod in pydantic v2,
+    # which raises at class-construction time. Keep the wire name via alias.
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = "response"
+    description: str | None = None
+    json_schema: dict = Field(default_factory=dict, alias="schema")
+    strict: bool | None = None
+
+
+class ResponseFormat(BaseModel):
+    """OpenAI ``response_format`` — text, JSON mode, or Structured Outputs."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["text", "json_object", "json_schema"] = "text"
+    json_schema: JSONSchemaSpec | None = None
+
+    @model_validator(mode="after")
+    def _require_schema_payload(self):
+        if self.type == "json_schema" and self.json_schema is None:
+            raise ValueError("response_format.json_schema is required when type='json_schema'")
+        return self
+
+    @property
+    def wants_json(self) -> bool:
+        return self.type in ("json_object", "json_schema")
+
+    @property
+    def schema_payload(self) -> dict | None:
+        """The bare JSON Schema, or ``None`` for plain JSON mode."""
+        if self.type != "json_schema" or self.json_schema is None:
+            return None
+        return self.json_schema.json_schema or None
+
+
+class StreamOptions(BaseModel):
+    """OpenAI ``stream_options``.
+
+    ``include_usage`` makes the stream emit one final chunk with an empty
+    ``choices`` array and a populated ``usage`` object, immediately before
+    ``[DONE]``. Without it a streaming caller has no token counts at all,
+    which is why every OpenAI-compatible client asks for it.
+    """
+
+    include_usage: bool = False
+
+
+class TopLogprob(BaseModel):
+    token: str
+    logprob: float
+    bytes: list[int] | None = None
+
+
+class ChatCompletionTokenLogprob(TopLogprob):
+    top_logprobs: list[TopLogprob] = Field(default_factory=list)
+
+
+class ChoiceLogprobs(BaseModel):
+    content: list[ChatCompletionTokenLogprob] | None = None
+
+
 class AutoEvalSpec(BaseModel):
     """Opt-in auto-eval that runs rubrics against the assistant's response.
 
@@ -169,10 +248,25 @@ class ChatCompletionRequest(BaseModel):
     top_p: float | None = Field(default=0.95, ge=0.0, le=1.0)
     top_k: int | None = Field(default=40, ge=0)
     max_tokens: int | None = Field(default=512, ge=1)
+    # OpenAI renamed ``max_tokens`` to ``max_completion_tokens`` for chat. Both
+    # are accepted; ``_merge_max_tokens`` below collapses them so the rest of
+    # the engine keeps reading ``max_tokens``. The orchestra-python-sdk model
+    # gateway still sends ``max_tokens``, so the old name must keep working.
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     stream: bool = False
+    stream_options: StreamOptions | None = None
     stop: list[str] | str | None = None
     seed: int | None = None
-    response_format: dict | None = None  # {"type": "json_object"} accepted
+    n: int = Field(default=1, ge=1, le=1, description="Only n=1 is served; declared for client compatibility.")
+    response_format: ResponseFormat | None = None
+    logprobs: bool = False
+    top_logprobs: int | None = Field(default=None, ge=0, le=20)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    repetition_penalty: float | None = Field(default=None, gt=0.0, le=2.0)
+    logit_bias: dict[str, float] | None = None
+    parallel_tool_calls: bool | None = None
+    user: str | None = None
     chat_template_kwargs: dict | None = Field(
         default=None,
         description=(
@@ -240,6 +334,24 @@ class ChatCompletionRequest(BaseModel):
         return _split_trace_value(value)
 
     @model_validator(mode="after")
+    def _merge_max_tokens(self):
+        """Collapse ``max_completion_tokens`` onto ``max_tokens``.
+
+        The newer name wins when both are sent — a client that knows the modern
+        field is expressing the more deliberate intent. ``max_tokens`` keeps its
+        512 default, so callers that send neither are unaffected.
+        """
+        if self.max_completion_tokens is not None:
+            self.max_tokens = self.max_completion_tokens
+        return self
+
+    @model_validator(mode="after")
+    def _check_top_logprobs(self):
+        if self.top_logprobs is not None and not self.logprobs:
+            raise ValueError("top_logprobs requires logprobs=true")
+        return self
+
+    @model_validator(mode="after")
     def _merge_metadata_intent(self):
         intent = self.metadata.intent if self.metadata else None
         if intent is None:
@@ -262,12 +374,26 @@ class ChatCompletionChoice(BaseModel):
     index: int = 0
     message: ChatMessage
     finish_reason: Literal["stop", "length", "tool_calls"] | None = "stop"
+    logprobs: ChoiceLogprobs | None = None
+
+
+class PromptTokensDetails(BaseModel):
+    """Breakdown of ``prompt_tokens``.
+
+    ``cached_tokens`` is the count served from a prefix cache instead of being
+    prefilled. The engine measures this exactly on the backends that expose it
+    (llama.cpp's tracked ``LlamaRAMCache``, MLX's multi-slot cache); backends
+    with opaque KV management — vLLM's PagedAttention over HTTP — report 0.
+    """
+
+    cached_tokens: int = 0
 
 
 class Usage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: PromptTokensDetails | None = None
 
 
 class AutoEvalResult(BaseModel):
@@ -331,6 +457,7 @@ class ChatCompletionChunkChoice(BaseModel):
     index: int = 0
     delta: ChatCompletionDelta
     finish_reason: Literal["stop", "length", "tool_calls"] | None = None
+    logprobs: ChoiceLogprobs | None = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -344,6 +471,10 @@ class ChatCompletionChunk(BaseModel):
     fallback_reason: str | None = None
     fallback_error_type: str | None = None
     choices: list[ChatCompletionChunkChoice]
+    # Populated only on the final chunk, and only when the caller asked via
+    # ``stream_options={"include_usage": true}``. Every other chunk carries
+    # ``null`` here, matching OpenAI's wire behaviour.
+    usage: Usage | None = None
 
 
 # --- /v1/completions (legacy) ------------------------------------------------
@@ -365,6 +496,11 @@ class CompletionRequest(BaseModel):
     max_tokens: int | None = Field(default=128, ge=1)
     stop: list[str] | str | None = None
     seed: int | None = None
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    repetition_penalty: float | None = Field(default=None, gt=0.0, le=2.0)
+    logit_bias: dict[str, float] | None = None
+    user: str | None = None
 
 
 class CompletionChoice(BaseModel):
@@ -450,6 +586,46 @@ class RerankResponse(BaseModel):
     usage: Usage
 
 
+# --- /tokenize, /detokenize --------------------------------------------------
+
+
+class TokenizeRequest(BaseModel):
+    """vLLM/TGI-shaped tokenizer probe.
+
+    Either ``prompt`` (raw text) or ``messages`` (run through the model's chat
+    template first) — exactly one. Lets a client size a request against the
+    model's real context window before paying for a rejected generation.
+    """
+
+    model: str
+    prompt: str | None = None
+    messages: list[ChatMessage] | None = None
+    add_special_tokens: bool = True
+
+    @model_validator(mode="after")
+    def _exactly_one_input(self):
+        if (self.prompt is None) == (self.messages is None):
+            raise ValueError("provide exactly one of 'prompt' or 'messages'")
+        return self
+
+
+class TokenizeResponse(BaseModel):
+    count: int
+    max_model_len: int | None = None
+    tokens: list[int]
+    model: str
+
+
+class DetokenizeRequest(BaseModel):
+    model: str
+    tokens: list[int]
+
+
+class DetokenizeResponse(BaseModel):
+    prompt: str
+    model: str
+
+
 class ModelInfo(BaseModel):
     id: str
     object: Literal["model"] = "model"
@@ -457,6 +633,10 @@ class ModelInfo(BaseModel):
     owned_by: str = "local"
     # extension fields (non-standard but useful)
     size_bytes: int = 0
+    # Promoted from ModelCatalogEntry so the standard /v1/models entry carries
+    # the one capability every client needs to size a request.
+    context_length: int | None = None
+    max_model_len: int | None = None
     backend: str = "llama_cpp"
     format: str = "gguf"
     model_path: str | None = None
