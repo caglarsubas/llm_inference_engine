@@ -264,13 +264,15 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 |--------|-------------------------------|----------------------------------------------------------------------------|
 | GET    | `/v1/health`                  | Liveness + every currently-loaded model + budget usage                     |
 | GET    | `/v1/ready`                   | Readiness probe; returns 503 + `Retry-After` while startup probes run      |
-| GET    | `/v1/metrics`                 | Prometheus scrape for model, scheduler, cache, and observer health         |
+| GET    | `/v1/metrics`, `/metrics`     | Prometheus scrape — engine internals plus OTel GenAI semconv instruments   |
 | GET    | `/v1/models`                  | All models discoverable in the unified registry                            |
-| GET    | `/v1/models/{model:tag}`      | Single model details (size, blob path, backend)                            |
+| GET    | `/v1/models/{model:tag}`      | Single model details (size, blob path, backend, `context_length`)          |
 | POST   | `/v1/chat/completions`        | Blocking + SSE streaming (`stream: true`)                                  |
 | POST   | `/v1/completions`             | Legacy raw-prompt completions — bypasses chat templating                   |
 | POST   | `/v1/embeddings`              | OpenAI-compatible embeddings (llama.cpp); MLX returns 501                  |
 | POST   | `/v1/rerank`                  | Cohere/Jina-shaped relevance ranking via embedding cosine similarity        |
+| POST   | `/tokenize`                   | vLLM/TGI-shaped token count for a prompt or templated messages; 501 on HTTP-proxy backends |
+| POST   | `/detokenize`                 | Token ids → text, same backend support as `/tokenize`                      |
 | GET    | `/v1/evals/rubrics`           | List built-in + registered rubrics                                         |
 | GET    | `/v1/evals/policy`            | Active server-side auto-eval policy entries (Prometa-driven)               |
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
@@ -288,6 +290,70 @@ finish. `/v1/health` stays open and reports `status: "starting"`;
 `/v1/ready` returns HTTP 503 with `Retry-After`; normal `/v1/*` model,
 inference, eval, and admin routes return a typed 503 detail with
 `type: "engine_starting"` until the probe pass completes.
+
+### OpenAI request/response compatibility
+
+Request fields honoured on `/v1/chat/completions` beyond the basics:
+
+| Field | Behaviour |
+|-------|-----------|
+| `max_completion_tokens` | OpenAI's replacement for `max_tokens`. Both accepted; the newer name wins when both are sent. |
+| `stream_options: {include_usage: true}` | Emits a final SSE frame with empty `choices` and a populated `usage`, immediately before `[DONE]`. **Without this a streaming caller gets no token counts at all.** |
+| `response_format: {type: "json_schema", …}` | Structured Outputs — see below. |
+| `logprobs` / `top_logprobs` | Returned as `choices[].logprobs.content` on llama.cpp and vLLM. |
+| `frequency_penalty`, `presence_penalty`, `repetition_penalty` | Forwarded only when set, so each backend keeps its own default otherwise. `repetition_penalty` maps to llama.cpp's `repeat_penalty`. |
+| `logit_bias` | OpenAI keys by string token id; converted to llama.cpp's int keys. |
+| `parallel_tool_calls`, `user`, `n` | Accepted; `n` is restricted to `1` (only one choice is served). |
+
+Responses carry `usage.prompt_tokens_details.cached_tokens` when the request
+hit a prefix cache — the engine already measured this token-precisely on
+llama.cpp and MLX, and now reports it in the standard field so ordinary cost
+dashboards see the saving. vLLM's value is passed through from its own
+accounting. The count is clamped to `prompt_tokens`: llama.cpp keys cache
+entries on the full context that produced them (prompt *plus* generated
+tokens), so the raw figure can legitimately exceed the current prompt.
+
+#### Error envelope
+
+Failures return **both** shapes:
+
+```json
+{
+  "detail": {"message": "…", "type": "context_length_exceeded", "code": "…", "param": "messages", "context_window": 8192},
+  "error":  {"message": "…", "type": "context_length_exceeded", "code": "…", "param": "messages", "context_window": 8192}
+}
+```
+
+`error` is what every OpenAI SDK reads (`APIStatusError.body`, `BadRequestError.code`,
+`RateLimitError`); `detail` is retained unchanged for existing Prometa consumers
+and the admin tooling. Typed extras like `context_window` and
+`retry_after_seconds` survive in both. 429s additionally carry
+`x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, and
+`x-ratelimit-reset-requests` alongside `Retry-After`.
+
+Every response carries `x-request-id`. An inbound `x-request-id` — or the
+orchestra-python-sdk's `x-orchestra-runtime-request-id` — is echoed so a
+caller's correlation survives the hop.
+
+#### Structured Outputs
+
+`response_format: {"type": "json_schema", "json_schema": {"name": …, "strict": true, "schema": {…}}}`
+is **grammar-enforced** wherever the backend can do it, not merely requested in
+the prompt:
+
+| Backend | Enforcement |
+|---------|-------------|
+| `llama_cpp` | Schema compiled to GBNF; the sampler cannot emit a non-conforming token |
+| `vllm` | Forwarded natively to guided decoding (xgrammar) |
+| `ollama_http`, `openrouter` | Forwarded; the upstream enforces |
+| `mlx` | No constrained-decoding hook — the route validates the document and retries once with the validation error fed back, then returns a typed 502 `structured_output_invalid` |
+
+The MLX fallback validator implements the subset of JSON Schema that OpenAI's
+strict mode itself permits (`type`, `properties`, `required`,
+`additionalProperties`, `items`, `enum`, `anyOf`, `$ref` into `$defs`).
+Assertion keywords like `minimum` and `pattern` are **not** checked and pass
+silently — it never rejects a valid document, which is the property that
+matters for not breaking working requests.
 
 ### Multi-model, multi-backend hot-keep
 
@@ -582,18 +648,54 @@ POST /v1/chat/completions                      ← HTTP server span (FastAPIInst
 ├── POST /v1/chat/completions http receive
 ├── model.acquire                              ← ModelManager.get(): cache hit / cold load
 ├── chat.generate                              ← inference, carrying gen_ai.* attrs
-│     gen_ai.system               = llama_cpp
+│     gen_ai.system               = llama_cpp  ← kept for existing dashboards
+│     gen_ai.provider.name        = llama_cpp  ← current semconv name for the same thing
+│     gen_ai.operation.name       = chat
 │     gen_ai.request.model        = llama3.2:1b
 │     gen_ai.request.max_tokens   = 8
 │     gen_ai.request.temperature  = 0.2
+│     gen_ai.request.top_p        = 0.95
+│     gen_ai.request.stream       = false
 │     gen_ai.usage.input_tokens   = 41         ← post-bind: filled after generate() returns
 │     gen_ai.usage.output_tokens  = 5          ← post-bind
+│     gen_ai.usage.cached_input_tokens = 32    ← post-bind: prefix-cache reuse
 │     gen_ai.response.finish_reason = stop     ← post-bind
 │     duration_ms                 = 24.38
 └── POST /v1/chat/completions http send
 ```
 
+Recent semconv versions renamed `gen_ai.system` to `gen_ai.provider.name`. Both
+are emitted: the orchestra-python-sdk's own instrumentation still writes
+`gen_ai.system`, and splitting existing dashboards across two attribute names
+mid-flight would cost more than the duplicate attribute does.
+
 Cold model load shows up as a long `model.acquire` (e.g. 263 ms) above an unchanged `chat.generate`; warm hits drop `model.acquire` to <1 ms. That's exactly the kind of evidence Prometa's signal layer needs to attribute latency to load vs. compute.
+
+Streaming spans additionally carry `gen_ai.server.time_to_first_token`.
+
+### GenAI metrics — TTFT, TPOT, token usage, operation duration
+
+`/v1/metrics` (and its conventional alias `/metrics`) publishes the four
+standard [GenAI semantic-convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+instruments alongside the existing `inference_engine_*` series:
+
+| Metric | What it answers |
+|--------|-----------------|
+| `gen_ai_server_time_to_first_token_seconds` | How long until the user sees anything — the primary streaming SLI |
+| `gen_ai_server_time_per_output_token_seconds` | Decode rate after prefill (inter-token latency) |
+| `gen_ai_client_operation_duration_seconds` | End-to-end per operation |
+| `gen_ai_client_token_usage` | Tokens in/out, split by `gen_ai_token_type` |
+
+Labels are the semconv attribute names (`gen_ai_operation_name`,
+`gen_ai_provider_name`, `gen_ai_request_model`), i.e. exactly what an OTel
+Collector would produce scraping a vLLM deployment — so a stock GenAI dashboard
+works against this endpoint without remapping every series.
+
+TTFT and TPOT are recorded only for streams that finished cleanly; a cancelled
+or errored stream would otherwise skew the histogram toward whatever it managed
+before failing. TPOT excludes the first token by definition. Metric export is
+**scrape-only** — `otel.py` installs a TracerProvider, not a MeterProvider, so
+these do not go out over OTLP.
 
 ### Caller intent labels on chat spans
 
@@ -2051,6 +2153,7 @@ Standard `llama` family models work on either backend today.
 2. **Phase 3 — engine behaviour.** ✅ Multi-model routing · ✅ per-key load dedup + parallel cold loads · ✅ llama.cpp prefix cache (9.86×) · ✅ MLX multi-slot LRU prefix cache (~22× hit-rate lift) · ✅ token-precise cache observability on **both** backends · ✅ dynamic batching for `/v1/embeddings` (coalescer + capability fallback) · ✅ continuous chat batching via vLLM-as-subprocess (`VLLMAdapter` + `docker-compose.vllm.yml` overlay).
 3. **Phase 4 — Prometa integration.** ✅ Real OTel exporter (OTLP/gRPC + Jaeger compose) · ✅ LLM-as-a-Judge eval harness · ✅ auto-judge attached to chat completions · ✅ server-side auto-eval policy (Prometa-authoritative) · ✅ tool-call audit logs (`gen_ai.tool_*` events with payload truncation).
 4. **Adapter coverage.** ✅ MLX-LM (Apple Silicon native) · vLLM / SGLang for GPU-server workloads · TensorRT-LLM for NVIDIA optimization.
+5. **Phase 5 — wire standardization.** ✅ `stream_options.include_usage` streaming usage trailer · ✅ OpenAI `error` envelope + `x-request-id` + `x-ratelimit-*` · ✅ `max_completion_tokens` · ✅ grammar-enforced Structured Outputs (`json_schema`) · ✅ logprobs, penalties, `logit_bias` · ✅ `usage.prompt_tokens_details.cached_tokens` · ✅ `/tokenize` + `/detokenize` · ✅ OTel GenAI semconv attrs + TTFT/TPOT metrics · `/v1/responses` (stateful; deferred) · batch/files/audio/moderations (deferred until a consumer needs them).
 
 ## Constraints (as instructed)
 

@@ -225,11 +225,16 @@ class ModelRoutingEnforcementError(ValueError):
         policy_id: str,
         route_id: str | None = None,
         retry_after_seconds: int | None = None,
+        limit_requests: int | None = None,
     ) -> None:
         self.code = code
         self.policy_id = policy_id
         self.route_id = route_id
         self.retry_after_seconds = retry_after_seconds
+        # The per-window request ceiling that was hit, when the denial was a
+        # rate limit. Feeds the ``x-ratelimit-limit-requests`` response header
+        # that OpenAI SDKs read for backoff.
+        self.limit_requests = limit_requests
         super().__init__(code)
 
 
@@ -407,6 +412,7 @@ class ModelRoutingRateLimiter:
                     policy_id=policy_id,
                     route_id=route_id,
                     retry_after_seconds=retry_after,
+                    limit_requests=limit,
                 )
             bucket.append(now)
 
@@ -535,6 +541,7 @@ class RedisModelRoutingRateLimiter:
                 policy_id=policy_id,
                 route_id=route_id,
                 retry_after_seconds=max(1, math.ceil(retry_after_milliseconds / 1000)),
+                limit_requests=limit,
             )
         except ModelRoutingEnforcementError:
             raise

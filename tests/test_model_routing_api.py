@@ -507,6 +507,8 @@ def test_embeddings_use_signed_alias_limits_and_policy_evidence(
         "prompt_tokens": 6,
         "completion_tokens": 0,
         "total_tokens": 6,
+        # Embeddings have no prefix-cache accounting to report.
+        "prompt_tokens_details": None,
     }
     assert body["fallback_from_model"] is None
     assert calls == ["qwen3:32b"]

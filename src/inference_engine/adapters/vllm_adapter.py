@@ -73,9 +73,40 @@ def _deadline_seconds() -> float | None:
     return seconds if seconds > 0 else None
 
 
+def _upstream_cached_tokens(usage: dict | None) -> int:
+    """Read ``usage.prompt_tokens_details.cached_tokens`` off an upstream body.
+
+    vLLM reports this when automatic prefix caching is on. We surface whatever
+    the upstream states rather than claiming 0 — the docstring at the top of
+    this module says we can't introspect the KV cache ourselves, and that
+    remains true; this is the upstream's own accounting passed through.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return max(0, int(details.get("cached_tokens", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _upstream_logprob_content(logprobs: dict | None) -> list[dict] | None:
+    """Unwrap an upstream OpenAI ``logprobs`` object to its ``content`` list."""
+    if not isinstance(logprobs, dict):
+        return None
+    content = logprobs.get("content")
+    if not isinstance(content, list) or not content:
+        return None
+    return content
+
+
 class VLLMAdapter(InferenceAdapter):
     backend_name = "vllm"
     descriptor_format = "vllm"
+    # vLLM enforces json_schema upstream via guided decoding (xgrammar).
+    supports_structured_outputs = True
     request_key_source = "local-inference"
 
     def __init__(self) -> None:
@@ -192,6 +223,29 @@ class VLLMAdapter(InferenceAdapter):
             out.append(entry)
         return out
 
+    @staticmethod
+    def _sampling_kwargs(params: GenerationParams) -> dict:
+        """Sampling knobs vLLM's OpenAI shim accepts on the request body.
+
+        ``repetition_penalty`` is a vLLM extension rather than an OpenAI field;
+        current versions read it off the top level of the body alongside
+        ``top_k``, so it goes out the same way.
+        """
+        kw: dict = {}
+        if params.frequency_penalty is not None:
+            kw["frequency_penalty"] = params.frequency_penalty
+        if params.presence_penalty is not None:
+            kw["presence_penalty"] = params.presence_penalty
+        if params.repetition_penalty is not None:
+            kw["repetition_penalty"] = params.repetition_penalty
+        if params.logit_bias:
+            kw["logit_bias"] = params.logit_bias
+        if params.logprobs:
+            kw["logprobs"] = True
+            if params.top_logprobs is not None:
+                kw["top_logprobs"] = params.top_logprobs
+        return kw
+
     def _completion_kwargs(self, params: GenerationParams) -> dict:
         kw: dict = {
             "model": self._model_id,
@@ -209,11 +263,27 @@ class VLLMAdapter(InferenceAdapter):
         if params.seed is not None:
             kw["seed"] = params.seed
         if params.json_mode:
-            kw["response_format"] = {"type": "json_object"}
+            # vLLM implements Structured Outputs natively via guided decoding
+            # (xgrammar), so the OpenAI ``json_schema`` shape goes upstream
+            # unchanged and the constraint is enforced in the sampler.
+            if params.json_schema:
+                kw["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": params.json_schema_name,
+                        "schema": params.json_schema,
+                        "strict": params.json_schema_strict,
+                    },
+                }
+            else:
+                kw["response_format"] = {"type": "json_object"}
         if params.tools:
             kw["tools"] = params.tools
         if params.tool_choice is not None:
             kw["tool_choice"] = params.tool_choice
+        if params.parallel_tool_calls is not None:
+            kw["parallel_tool_calls"] = params.parallel_tool_calls
+        kw.update(self._sampling_kwargs(params))
         chat_template_kwargs = dict(self._chat_template_kwargs or {})
         if params.chat_template_kwargs:
             chat_template_kwargs.update(params.chat_template_kwargs)
@@ -259,6 +329,8 @@ class VLLMAdapter(InferenceAdapter):
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
             tool_calls=list(tool_calls) if tool_calls else None,
+            cached_tokens=_upstream_cached_tokens(usage),
+            logprobs=_upstream_logprob_content(choice.get("logprobs")),
         )
 
     async def stream(
@@ -274,6 +346,10 @@ class VLLMAdapter(InferenceAdapter):
             **self._completion_kwargs(params),
             "messages": self._to_messages(messages),
             "stream": True,
+            # Ask vLLM for the trailing usage chunk so our own
+            # ``stream_options.include_usage`` support is backed by the
+            # upstream's real counts rather than a local estimate.
+            "stream_options": {"include_usage": True},
         }
 
         # vLLM emits standard OpenAI SSE: ``data: {json}`` per chunk, terminated
@@ -297,7 +373,16 @@ class VLLMAdapter(InferenceAdapter):
                         log.warning("vllm.stream.bad_json", payload=payload[:200])
                         continue
                     choices = event.get("choices") or []
+                    usage = event.get("usage")
                     if not choices:
+                        # The include_usage trailer: a chunk with an empty
+                        # choices array carrying only the final token counts.
+                        if isinstance(usage, dict):
+                            yield StreamChunk(
+                                text="",
+                                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                                completion_tokens=int(usage.get("completion_tokens", 0)),
+                            )
                         continue
                     choice = choices[0]
                     delta = choice.get("delta") or {}
@@ -308,6 +393,7 @@ class VLLMAdapter(InferenceAdapter):
                         text=text,
                         finish_reason=finish,
                         tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+                        logprobs=_upstream_logprob_content(choice.get("logprobs")),
                     )
         except httpx.TimeoutException as exc:
             raise self._timeout_error() from exc
@@ -342,6 +428,7 @@ class VLLMAdapter(InferenceAdapter):
             body["stop"] = params.stop
         if params.seed is not None:
             body["seed"] = params.seed
+        body.update(self._sampling_kwargs(params))
 
         assert self._client is not None
         try:
@@ -359,6 +446,7 @@ class VLLMAdapter(InferenceAdapter):
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
             tool_calls=None,
+            cached_tokens=_upstream_cached_tokens(usage),
         )
 
     # ------------------------------------------------------------------

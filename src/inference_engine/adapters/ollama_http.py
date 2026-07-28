@@ -95,6 +95,8 @@ def _prepend_json_retry_prompt(messages: list[dict]) -> list[dict]:
 
 class OllamaHttpAdapter(InferenceAdapter):
     backend_name = "ollama_http"
+    # Ollama implements structured outputs in its own sampler.
+    supports_structured_outputs = True
 
     def __init__(self) -> None:
         self._descriptor: ModelDescriptor | None = None
@@ -199,11 +201,30 @@ class OllamaHttpAdapter(InferenceAdapter):
         if params.seed is not None:
             kw["seed"] = params.seed
         if params.json_mode:
-            kw["response_format"] = {"type": "json_object"}
+            # Ollama's OpenAI shim understands the json_schema form on recent
+            # releases and ignores the extra key on older ones, degrading to
+            # plain JSON mode rather than erroring.
+            if params.json_schema:
+                kw["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": params.json_schema_name,
+                        "schema": params.json_schema,
+                        "strict": params.json_schema_strict,
+                    },
+                }
+            else:
+                kw["response_format"] = {"type": "json_object"}
         if params.tools:
             kw["tools"] = params.tools
         if params.tool_choice is not None:
             kw["tool_choice"] = params.tool_choice
+        if params.frequency_penalty is not None:
+            kw["frequency_penalty"] = params.frequency_penalty
+        if params.presence_penalty is not None:
+            kw["presence_penalty"] = params.presence_penalty
+        if params.repetition_penalty is not None:
+            kw["repetition_penalty"] = params.repetition_penalty
         return kw
 
     # ------------------------------------------------------------------
@@ -286,6 +307,10 @@ class OllamaHttpAdapter(InferenceAdapter):
             **self._completion_kwargs(params),
             "messages": self._to_messages(messages),
             "stream": True,
+            # Ollama's OpenAI shim honours include_usage and emits the same
+            # trailing usage-only chunk; older builds simply omit it and we
+            # fall through with zero counts.
+            "stream_options": {"include_usage": True},
         }
         assert self._client is not None
         try:
@@ -306,6 +331,13 @@ class OllamaHttpAdapter(InferenceAdapter):
                         continue
                     choices = event.get("choices") or []
                     if not choices:
+                        usage = event.get("usage")
+                        if isinstance(usage, dict):
+                            yield StreamChunk(
+                                text="",
+                                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                                completion_tokens=int(usage.get("completion_tokens", 0)),
+                            )
                         continue
                     choice = choices[0]
                     delta = choice.get("delta") or {}

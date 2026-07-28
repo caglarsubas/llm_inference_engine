@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
 from .. import __version__
+from ..genai_metrics import genai_metrics
 from .state import app_state
 
 router = APIRouter()
@@ -136,4 +137,20 @@ async def metrics() -> str:
         labels = f'{{resource="{_label_value(resource)}"}}'
         lines.append(f"inference_engine_scheduler_in_flight_by_resource{labels} {count}")
 
+    # OTel GenAI semantic-convention instruments, rendered in Prometheus form.
+    # These carry the standard names, so a stock GenAI dashboard works against
+    # this endpoint without remapping every series.
+    lines.extend(genai_metrics.render())
+
     return "\n".join(lines) + "\n"
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+async def metrics_root() -> str:
+    """Prometheus' conventional scrape path.
+
+    ``/v1/metrics`` predates this and stays the canonical one; scrapers and
+    service monitors default to ``/metrics``, and making an operator override
+    that for one target is friction with no upside. Same body either way.
+    """
+    return await metrics()

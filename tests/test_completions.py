@@ -301,3 +301,24 @@ def test_route_emits_completions_run_span(patched_manager, _session_exporter) ->
     assert s.attributes["completion.batch_size"] == 2
     assert s.attributes["gen_ai.usage.input_tokens"] == 8
     assert s.attributes["gen_ai.usage.output_tokens"] == 4
+
+
+def test_completion_sampling_params_reach_generation_params() -> None:
+    """Fields accepted by the schema must actually be plumbed to the adapter."""
+    from inference_engine.api.completions import _params
+    from inference_engine.schemas import CompletionRequest
+
+    params = _params(
+        CompletionRequest(
+            model="m",
+            prompt="hi",
+            frequency_penalty=0.4,
+            presence_penalty=-0.1,
+            repetition_penalty=1.05,
+            logit_bias={"7": -20.0},
+        )
+    )
+    assert params.frequency_penalty == 0.4
+    assert params.presence_penalty == -0.1
+    assert params.repetition_penalty == 1.05
+    assert params.logit_bias == {"7": -20.0}

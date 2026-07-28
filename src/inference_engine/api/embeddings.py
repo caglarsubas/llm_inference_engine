@@ -20,10 +20,13 @@ Spans follow the same ``gen_ai.*`` semconv shape as chat:
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..adapters import EmbeddingResult, EmbeddingsNotSupportedError, InferenceAdapter
 from ..auth import Identity, require_identity
+from ..genai_metrics import genai_metrics
 from ..observability import span
 from ..schemas import (
     EmbeddingObject,
@@ -70,11 +73,14 @@ async def _embed_once(
         estimated_tokens=estimated_tokens,
     )
 
+    started = time.perf_counter()
     try:
         with span(
             "embeddings.run",
             **{
                 "gen_ai.system": active.adapter.backend_name,
+                "gen_ai.provider.name": active.adapter.backend_name,
+                "gen_ai.operation.name": "embeddings",
                 "gen_ai.request.model": active.model_name,
                 "embedding.batch_size": len(inputs),
                 **_request_key_attrs(active.adapter),
@@ -100,6 +106,13 @@ async def _embed_once(
                     "batch.wait_ms": round(outcome.wait_ms, 2),
                     "batch.adapter_action": outcome.adapter_action,
                 }
+            )
+            genai_metrics.record_operation(
+                operation="embeddings",
+                provider=active.adapter.backend_name,
+                model=active.model_name,
+                duration_seconds=time.perf_counter() - started,
+                input_tokens=outcome.prompt_tokens,
             )
             return outcome
     finally:

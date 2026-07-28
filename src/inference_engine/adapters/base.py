@@ -26,11 +26,30 @@ class GenerationParams:
     stop: list[str] | None = None
     seed: int | None = None
     json_mode: bool = False
+    # Structured Outputs. ``json_schema`` is the bare JSON Schema the response
+    # must satisfy; ``json_schema_strict`` is the caller demanding enforcement
+    # rather than best-effort. Backends that can constrain the sampler do
+    # (llama.cpp compiles GBNF from the schema, vLLM routes it through guided
+    # decoding); those that can't leave enforcement to the route layer, which
+    # validates and retries. ``json_mode`` stays true whenever a schema is set
+    # so existing JSON-repair paths keep applying.
+    json_schema: dict | None = None
+    json_schema_name: str = "response"
+    json_schema_strict: bool = False
     # OpenAI-compatible tool calling. Passed straight through to the backend
     # when supported. Adapters that don't support tools (mlx-lm) ignore these.
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
+    parallel_tool_calls: bool | None = None
     chat_template_kwargs: dict | None = None
+    # Sampling extensions. ``None`` means "don't send it" so each backend keeps
+    # its own default rather than us imposing OpenAI's.
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+    repetition_penalty: float | None = None
+    logit_bias: dict[str, float] | None = None
+    logprobs: bool = False
+    top_logprobs: int | None = None
 
 
 @dataclass
@@ -45,6 +64,9 @@ class StreamChunk:
     # fragments that get concatenated per index. ``None`` when the chunk
     # carries only text.
     tool_call_deltas: list[dict] | None = None
+    # OpenAI-shaped per-token logprob entries for this chunk, when the caller
+    # requested them and the backend can produce them.
+    logprobs: list[dict] | None = None
 
 
 @dataclass
@@ -60,6 +82,12 @@ class GenerationResult:
     # llama.cpp grammars start parsing ``<think>`` natively). Most adapters
     # leave this ``None`` and let the chat-layer normalizer split it out.
     reasoning_content: str | None = None
+    # Prompt tokens served from a prefix cache rather than prefilled. Reported
+    # by backends that can measure it; 0 elsewhere. Surfaces to clients as
+    # ``usage.prompt_tokens_details.cached_tokens``.
+    cached_tokens: int = 0
+    # OpenAI-shaped ``logprobs.content`` entries, when requested.
+    logprobs: list[dict] | None = None
 
 
 @dataclass
@@ -76,6 +104,14 @@ class EmbeddingsNotSupportedError(NotImplementedError):
     The route catches this and returns HTTP 501 with the backend name so the
     caller can pick a backend that does (e.g. drop a llama.cpp embedding model
     next to the MLX chat model).
+    """
+
+
+class TokenizationNotSupportedError(NotImplementedError):
+    """Raised by adapters with no local tokenizer to expose.
+
+    HTTP-proxy adapters (vLLM, Ollama, OpenRouter) don't hold the vocabulary
+    themselves; the route maps this to HTTP 501 the same way embeddings do.
     """
 
 
@@ -226,6 +262,12 @@ class InferenceAdapter(ABC):
 
     backend_name: str = "abstract"
     request_key_source: str = "local-inference"
+    # True when the backend constrains decoding to a JSON Schema rather than
+    # merely being asked for JSON — llama.cpp via GBNF, vLLM via guided
+    # decoding, and the HTTP upstreams that implement Structured Outputs
+    # themselves. When False the chat route validates the document and retries,
+    # because nothing else in the path would catch a schema violation.
+    supports_structured_outputs: bool = False
 
     @abstractmethod
     async def load(self, descriptor: ModelDescriptor) -> None: ...
@@ -276,6 +318,43 @@ class InferenceAdapter(ABC):
         return await self.generate(
             [ChatMessage(role="user", content=prompt)], params, cancel=cancel
         )
+
+    @property
+    def last_cached_prompt_tokens(self) -> int:
+        """Prompt tokens reused from the prefix cache on the most recent call.
+
+        Reads the optional per-adapter introspection surface uniformly so the
+        API layer doesn't have to branch per backend. Adapters with no prefix
+        cache — or with an opaque one, like vLLM's PagedAttention behind
+        HTTP — report 0, which is honest rather than absent.
+        """
+        if not getattr(self, "prefix_cache_enabled", False):
+            return 0
+        return max(0, int(getattr(self, "prefix_cache_last_overlap_tokens", 0) or 0))
+
+    def tokenize(self, text: str, *, add_special_tokens: bool = True) -> list[int]:
+        """Return the model's token ids for ``text``.
+
+        Only backends that hold the vocabulary in-process can answer this.
+        """
+        raise TokenizationNotSupportedError(self.backend_name)
+
+    def format_chat_prompt(self, messages: Iterable[ChatMessage]) -> str:
+        """Render ``messages`` through the model's chat template.
+
+        Used by ``/tokenize`` so a message-shaped count includes the template
+        overhead that generation would actually pay — the part callers
+        underestimate. Backends whose templating happens out of process raise.
+        """
+        raise TokenizationNotSupportedError(self.backend_name)
+
+    def detokenize(self, tokens: list[int]) -> str:
+        raise TokenizationNotSupportedError(self.backend_name)
+
+    @property
+    def max_model_len(self) -> int | None:
+        """The loaded model's context window, when the backend knows it."""
+        return None
 
     @property
     @abstractmethod

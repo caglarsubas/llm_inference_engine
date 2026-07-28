@@ -1,13 +1,26 @@
 import asyncio
 import time
+import uuid
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .api import admin, chat, completions, embeddings, evals, health, metrics, models, rerank
+from .api import (
+    admin,
+    chat,
+    completions,
+    embeddings,
+    evals,
+    health,
+    metrics,
+    models,
+    rerank,
+    tokenize,
+)
 from .api._models_snapshot import run_models_snapshot_refresher
+from .api.errors import error_response, install_error_handlers
 from .api.state import app_state
 from .auth import load_keys
 from .config import settings
@@ -32,6 +45,10 @@ from .registry import get_openrouter_probe, get_probe, get_vllm_probe
 configure_tracing()
 
 _READINESS_EXEMPT_PATHS = {"/v1/health", "/v1/ready", "/v1/metrics"}
+# Inference paths that don't live under /v1/. ``/tokenize`` and ``/detokenize``
+# follow the vLLM/TGI convention of sitting at the root, but they still touch
+# the model manager, so the startup gate has to cover them explicitly.
+_READINESS_GUARDED_PATHS = {"/tokenize", "/detokenize"}
 _STARTING_RETRY_AFTER_SECONDS = 5
 
 
@@ -192,9 +209,12 @@ def _readiness_error_response() -> JSONResponse:
     if readiness.get("error"):
         detail["startup_error"] = readiness["error"]
 
-    return JSONResponse(
-        status_code=503,
-        content={"detail": detail},
+    # Built directly rather than raised, so it bypasses the exception handlers;
+    # go through error_response() so a 503 during startup carries the same
+    # ``error`` envelope as every other failure.
+    return error_response(
+        detail,
+        503,
         headers={"Retry-After": str(_STARTING_RETRY_AFTER_SECONDS)},
     )
 
@@ -307,14 +327,41 @@ app = FastAPI(
 # Uvicorn imports this module before binding the socket.
 instrument_fastapi(app)
 
+# OpenAI-shaped {"error": {...}} alongside FastAPI's {"detail": ...}.
+install_error_handlers(app)
+
+
+@app.middleware("http")
+async def request_id_header(request: Request, call_next):
+    """Stamp ``x-request-id`` on every response.
+
+    An inbound id wins so a caller's correlation survives the hop — the
+    orchestra-python-sdk model gateway sends its own under
+    ``x-orchestra-runtime-request-id``, and generic clients use
+    ``x-request-id``. Otherwise we mint one, which is what makes a support
+    conversation about a single bad completion tractable at all.
+    """
+    incoming = (
+        request.headers.get("x-request-id")
+        or request.headers.get("x-orchestra-runtime-request-id")
+        or ""
+    ).strip()
+    # Bound it: this value is echoed back and lands in logs, so an unbounded
+    # caller-controlled string is not something we want to propagate.
+    request_id = incoming[:200] if incoming else f"req_{uuid.uuid4().hex}"
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["x-request-id"] = request_id
+    return response
+
 
 @app.middleware("http")
 async def startup_readiness_gate(request: Request, call_next):
-    if (
-        request.url.path.startswith("/v1/")
-        and request.url.path not in _READINESS_EXEMPT_PATHS
-        and not app_state.is_ready
-    ):
+    path = request.url.path
+    guarded = (
+        path.startswith("/v1/") and path not in _READINESS_EXEMPT_PATHS
+    ) or path in _READINESS_GUARDED_PATHS
+    if guarded and not app_state.is_ready:
         return _readiness_error_response()
     return await call_next(request)
 
@@ -326,5 +373,6 @@ app.include_router(chat.router, tags=["chat"])
 app.include_router(completions.router, tags=["completions"])
 app.include_router(embeddings.router, tags=["embeddings"])
 app.include_router(rerank.router, tags=["rerank"])
+app.include_router(tokenize.router, tags=["tokenize"])
 app.include_router(evals.router, tags=["evals"])
 app.include_router(admin.router, tags=["admin"])

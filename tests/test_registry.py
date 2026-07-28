@@ -84,3 +84,21 @@ def test_missing_model_blob_skips_manifest(tmp_path: Path) -> None:
 def test_missing_root_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         OllamaRegistry(tmp_path / "does-not-exist")
+
+
+def test_n_ctx_train_reads_arch_prefixed_metadata_key() -> None:
+    """GGUF stores it as ``<arch>.context_length``; match on the suffix so a
+    new architecture doesn't silently report an unknown window."""
+    from inference_engine.registry.probe import _n_ctx_train_from_metadata
+
+    assert _n_ctx_train_from_metadata({"llama.context_length": "131072"}) == 131072
+    assert _n_ctx_train_from_metadata({"gemma3.context_length": 8192}) == 8192
+
+
+def test_n_ctx_train_returns_zero_when_unknown() -> None:
+    from inference_engine.registry.probe import _n_ctx_train_from_metadata
+
+    assert _n_ctx_train_from_metadata(None) == 0
+    assert _n_ctx_train_from_metadata({}) == 0
+    assert _n_ctx_train_from_metadata({"llama.context_length": "not-a-number"}) == 0
+    assert _n_ctx_train_from_metadata({"llama.context_length": "0"}) == 0
