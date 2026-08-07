@@ -1,8 +1,10 @@
 # Local LLM Inference Engine (v1)
 
-A laptop-class inference service that wraps your existing **Ollama-format GGUF model store** and exposes an **OpenAI-compatible HTTP API** — without requiring the Ollama daemon.
+An **OpenAI-compatible model plane**. It began as a laptop-class service wrapping an existing **Ollama-format GGUF model store** without needing the Ollama daemon, and it still runs that way — but the same routes now also front vLLM, OpenRouter, and Ollama-HTTP upstreams, and the whole thing ships as a signed, fail-closed tenant deployment on OpenShift.
 
-The service is **backend-agnostic**: a thin adapter interface (`InferenceAdapter`) sits between the API layer and the actual model runtime, so we can swap llama.cpp for MLX-LM, vLLM, or SGLang without touching the routes.
+The service is **backend-agnostic**: a thin adapter interface (`InferenceAdapter`) sits between the API layer and the actual model runtime, so llama.cpp, MLX-LM, vLLM, OpenRouter, and a remote Ollama server all serve the same routes — and a new runtime slots in without touching them.
+
+Scope note: this is the **model plane**, not a full API gateway. It governs and serves models — signed routing, tenant admission, evals, and OTel evidence — while ingress termination, cross-tenant quota, and the control plane itself stay outside it. Read the gaps below against that boundary.
 
 ## Why this stack
 
@@ -11,7 +13,8 @@ Synthesised from the multi-LLM guide (GPT, Claude, Gemini, Grok all converge on 
 - **Engines — `llama.cpp` (GGUF) + `mlx-lm` (Apple Silicon native).** Both implement the same `InferenceAdapter` ABC. The `ModelManager` dispatches per-descriptor so each loaded model uses the runtime that matches its on-disk format. llama.cpp gives universal hardware reach + access to the existing 135 GB Ollama GGUF store; MLX is native to the M5 Max's unified Metal stack and tracks newer architectures faster than mainline llama.cpp.
 - **Service layer — FastAPI.** OpenAI-compatible `/v1/chat/completions`, streaming via SSE, structured JSON mode, model registry, health checks.
 - **Registry — composite, direct manifest reader.** `OllamaRegistry` parses the Docker-distribution layout (`manifests/<registry>/<ns>/<model>/<tag>` + `blobs/sha256-*`) so we use the existing store with zero copying or daemon overhead. `MLXRegistry` scans for HF-style safetensors directories. `CompositeRegistry` merges them, with `prefer_mlx_over_gguf` controlling collision resolution.
-- **Roadmap — backend-agnostic from day one.** Same routes serve both backends today; `vLLM` / `SGLang` slot in as additional adapters whenever GPU-server workloads matter.
+- **Remote runtimes — same routes, no client change.** `vLLM` (continuous batching on a CUDA upstream), `ollama_http` (architectures the bundled llama.cpp wheel can't load yet), and `openrouter` (large open-weight models beyond local memory) are all live adapters behind the identical API. `SGLang` / TensorRT-LLM would slot in the same way.
+- **Governance — signed desired state, verified locally.** An Ed25519 routing-policy envelope from the control plane pins routes, token/cost ceilings, and RPM per tenant. Verification is entirely local: the engine never calls the control plane on the request path.
 
 ## Containerized deployment (horizontally scalable)
 
@@ -75,6 +78,30 @@ Route, runtime host, or Orchestra control-plane workload.
 This makes the deployment topology honest: the tenant runtime calls the model
 plane directly while Orchestra receives observations out of band. A successful
 chart render is contract evidence, not OpenShift production certification.
+
+The chart carries two mutually incompatible profiles:
+
+| profile | values file | what it is |
+|---|---|---|
+| Production | `values.openshift-production.yaml` | Fail-closed pinned `orchestra-ocp-4.20-amd64-v1` contract — multi-replica, PDB, topology spread, ServiceMonitor, external Sentinel state |
+| SNO engineering trial | `values.openshift-sno-trial.yaml` | Source-only single-node `orchestra-ocp-sno-trial-amd64-v1` contract — one replica, deliberately non-HA, PDB / topology spread / backup claims / ServiceMonitor all disabled |
+
+The SNO profile names only a public image repository and the objects an
+operator would have to create; it carries no credentials or model artifacts,
+and its image digest is deliberately empty until a release containing both this
+profile and the secure OTLP/HTTP transport is published. Rendering it neither
+installs anything nor supports a production or certification claim. Both
+profiles have an adversarial render proof under `ci/`:
+
+```bash
+./deploy/helm/inference-engine/ci/render-production-profile.sh /tmp/production.yaml
+./deploy/helm/inference-engine/ci/render-sno-trial-profile.sh  /tmp/sno-trial.yaml
+```
+
+Each script first proves the values file fails unchanged, then injects a
+synthetic digest to render. Chart version and engine `appVersion` are
+independent by design; `scripts/verify_release_contract.sh` enforces that
+`appVersion` matches the Python runtime version and the release tag.
 
 ### Topology
 
@@ -266,6 +293,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | GET    | `/v1/ready`                   | Readiness probe; returns 503 + `Retry-After` while startup probes run      |
 | GET    | `/v1/metrics`, `/metrics`     | Prometheus scrape — engine internals plus OTel GenAI semconv instruments   |
 | GET    | `/v1/models`                  | All models discoverable in the unified registry                            |
+| GET    | `/v1/models.data`             | Machine-readable catalog — provider, modality, image / strict-JSON capability, plus a typed `unavailable[]` with the reason each id is not servable |
 | GET    | `/v1/models/{model:tag}`      | Single model details (size, blob path, backend, `context_length`)          |
 | POST   | `/v1/chat/completions`        | Blocking + SSE streaming (`stream: true`)                                  |
 | POST   | `/v1/completions`             | Legacy raw-prompt completions — bypasses chat templating                   |
@@ -434,16 +462,22 @@ consumes the endpoint.
 ```
 src/inference_engine/
 ├── main.py              # FastAPI app + lifespan + module-level OTel wiring + load_keys()
+├── server.py            # fail-closed HTTP/TLS launcher — strict env validation, mTLS, uvicorn config
 ├── config.py            # pydantic-settings (.env-driven)
 ├── manager.py           # ModelManager — LRU multi-model hot-keep, per-format dispatch
 ├── scheduler.py         # TenantScheduler — per-tenant queues, fair dispatch, admission limits
 ├── observability.py     # span() bridges structlog + OTel; Span.bind() mutates both
 ├── otel.py              # OTel SDK setup, NoOp span shim, FastAPI auto-instrumentation
+├── genai_metrics.py     # GenAI semconv instruments — TTFT, TPOT, operation duration, token usage
 ├── auth.py              # bearer-token auth, Identity, key index, FastAPI dependency
 ├── model_routing.py     # signed-policy trust, verification, atomic LKG activation
 ├── model_routing_runtime.py # local route/limit/pricing/RPM enforcement
+├── model_routing_status.py  # payload-free status view of the active signed policy
+├── model_plane_observer.py  # asynchronous payload-free observed-state reporter
 ├── cancellation.py      # Cancellation flag + watch_disconnect() watchdog
 ├── schemas.py           # OpenAI-compatible request/response models
+├── structured_outputs.py # JSON-Schema validator for backends with no grammar hook (MLX)
+├── response_normalize.py # repairs raw model text into tool_calls / reasoning_content
 ├── evals/
 │   ├── rubrics.py       # RubricSpec, built-in helpfulness/correctness/safety, RubricRegistry
 │   ├── runner.py        # EvalRunner: candidate + rubric → judge → Verdict (clean/repaired/failed)
@@ -451,88 +485,118 @@ src/inference_engine/
 │   └── schemas.py       # EvalRequest, EvalResponse, Verdict, PolicyList
 ├── api/
 │   ├── state.py         # composite registry + ModelManager + adapter dispatch + EvalRunner
-│   ├── health.py
-│   ├── metrics.py       # /v1/metrics (Prometheus format)
-│   ├── models.py        # gated by require_identity when auth on
+│   ├── health.py        # /v1/health + /v1/ready — readiness, version, workload surface
+│   ├── metrics.py       # /v1/metrics + /metrics (Prometheus format)
+│   ├── models.py        # /v1/models, /v1/models.data, /v1/models/{id} — gated by require_identity
+│   ├── _models_snapshot.py # background-refreshed catalog so discovery never blocks on probes
 │   ├── embeddings.py    # /v1/embeddings (OpenAI-compatible; llama.cpp only, MLX 501)
 │   ├── rerank.py        # /v1/rerank — Cohere/Jina-shaped relevance via embedding cosine
-│   ├── evals.py         # /v1/evals/rubrics + /v1/evals/run
-│   ├── admin.py         # auto-eval + signed model-routing reload/status endpoints
+│   ├── tokenize.py      # /tokenize + /detokenize (vLLM/TGI-shaped; 501 on HTTP-proxy backends)
+│   ├── completions.py   # /v1/completions — legacy raw-prompt path, bypasses chat templating
+│   ├── evals.py         # /v1/evals/rubrics + /v1/evals/policy + /v1/evals/run
+│   ├── admin.py         # auth-key, auto-eval, and signed model-routing reload/status endpoints
+│   ├── errors.py        # dual `error` + `detail` envelope, x-request-id, x-ratelimit-* headers
 │   ├── _scheduling.py   # shared API helpers for scheduler admission/span attrs
 │   ├── _auto_eval.py    # blocking + background batch helpers for chat-attached eval
 │   ├── _batcher.py      # EmbedCoalescer — dynamic batching for /v1/embeddings
 │   ├── _tool_audit.py   # gen_ai.tool_call / gen_ai.tool_result event emission with truncation
+│   ├── _model_routing.py # per-request signed-policy enforcement wired into generation routes
+│   ├── _fallback.py     # shared OpenRouter fallback helpers for generation endpoints
 │   └── chat.py          # /v1/chat/completions (+ SSE, gen_ai.* spans, watchdog, tenant, auto_eval, tool audit)
 ├── adapters/
 │   ├── base.py          # InferenceAdapter ABC (stream/generate accept cancel=)
 │   ├── llama_cpp.py     # llama-cpp-python implementation (GGUF) — streaming cancel
 │   ├── mlx_lm.py        # mlx-lm implementation (Apple Silicon native) — streaming cancel
+│   ├── ollama_http.py   # Ollama server client for GGUF architectures the wheel can't load
 │   ├── openrouter_adapter.py # OpenRouter OpenAI-compatible client
 │   └── vllm_adapter.py  # vLLM HTTP client (continuous batching on a CUDA upstream)
 └── registry/
     ├── ollama.py        # parses Ollama manifests → ModelDescriptor
+    ├── ollama_http.py   # discovers models served by an Ollama HTTP server
     ├── mlx.py           # scans MLX model directories
     ├── openrouter.py    # parses .openrouter_models.json + policy gate
+    ├── openrouter_probe.py # one shared catalog fetch + TTL + last-known-good window
     ├── vllm.py          # parses .vllm_models.json (HTTP endpoints, no local files)
+    ├── vllm_probe.py    # upstream /v1/models reachability probe with TTL cache
+    ├── probe.py         # GGUF load-probe — can llama.cpp actually open this manifest?
     └── composite.py     # merges multiple registry sources
 Dockerfile                      # multi-stage build, llama-cpp-python from source, non-root runtime
+Dockerfile.ubi                  # Red Hat UBI9 runtime variant for OpenShift estates
 docker-compose.yml              # N engine replicas + nginx LB + healthchecks + volume mounts
 docker-compose.haproxy.yml      # overlay: HAProxy LB with header-based tenant stickiness
 docker-compose.vllm.yml         # overlay: single-GPU vLLM sidecar (count: 1)
 docker-compose.vllm-multigpu.yml# overlay: multi-GPU vLLM (two services pinned via device_ids)
 docker-compose.otel.yml         # overlay: Jaeger sidecar for OTel trace UI
+docker-compose.observability.yml# overlay: Grafana + Prometheus + Jaeger + OTel Collector
+docker-compose.native.yml       # native split: engine + ollama under launchd, obs stack in containers
 docker/nginx.conf               # dynamic-resolution upstream + SSE-friendly buffering
 docker/haproxy.cfg              # balance hdr(Authorization) + dynamic DNS + active healthcheck
+docker/observability/           # collector + Prometheus config, provisioned Grafana dashboard
 docker/config/                  # mount target for auth_keys.json + auto_eval_policies.json
+deploy/helm/inference-engine/   # standalone tenant model-plane chart
+├── templates/                      # StatefulSet, Service, NetworkPolicy, PDB, ServiceMonitor, RBAC
+├── values.yaml                     # permissive defaults
+├── values.openshift-production.yaml  # fail-closed pinned production profile
+├── values.openshift-sno-trial.yaml   # source-only single-node engineering-trial profile
+└── ci/                             # render checks for both profiles
 scripts/
 ├── list_models.py            # CLI to enumerate the unified registry
 ├── download_mlx_model.py     # snapshot_download from mlx-community/*
+├── download_vlm_models.py    # materialize local Hugging Face VLM snapshots
+├── promote_vllm_model.py     # gate a demanded vLLM model into the live manifest
+├── serve_sida_openai.py      # OpenAI-compatible worker for the SIDA reference implementation
+├── serve_molmo_mlx_openai.py # OpenAI-compatible MLX worker for Molmo
+├── serve_mlx_vlm_openai.py   # OpenAI-compatible MLX-VLM worker (InternVL, Ovis, …)
 ├── share_endpoint.sh         # expose the engine on a public HTTPS URL (ngrok/cloudflared)
 ├── share-service.sh          # run the ngrok tunnel as an always-on launchd agent
+├── native-service.sh         # run the engine itself as an always-on launchd agent
+├── relocate_images.sh        # mirror canonical images into a private / air-gapped registry
+├── verify_release_contract.sh# check a release digest against the published contract
+├── container_smoke.sh        # container-level smoke against a built image
 ├── launchd/                  # launchd plist templates (engine, ollama, ngrok-tunnel)
 ├── smoke_test.py             # blocking + streaming end-to-end check
+├── vlm_request_matrix.py     # image-model request matrix across configured backends
+├── vlm_strict_json_smoke.py  # strict image+JSON exposure gate
 └── stress_test.py            # concurrent-traffic harness with p50/p95/p99 + throughput
 docs/
-└── PUBLIC_ENDPOINT.md        # shareable usage guide for the public Engine URL
-tests/
-├── test_registry.py            # Ollama manifest parser
-├── test_mlx_registry.py        # MLX directory scanner
-├── test_composite_registry.py  # merge / collision / fallthrough
-├── test_manager.py             # ModelManager LRU + budget enforcement
-├── test_state_dispatch.py      # adapter factory picks the right backend
-├── test_observability.py       # span() bridges structlog + OTel via in-memory exporter
-├── test_auth.py                # bearer-token resolution, anonymous fallback, file loading
-├── test_cancellation.py        # Cancellation flag + watch_disconnect watchdog
-├── test_chat_streaming.py      # chat.py disconnect → cancel → adapter break wire
-├── test_concurrency.py         # load dedup, parallel cold loads, cache-hit-during-load, watchdog cleanup
-├── test_evals.py               # rubric registry, runner with fakes, JSON repair, schema mismatches
-├── test_prefix_cache.py        # LlamaRAMCache install/teardown gating + introspection
-├── test_auto_eval.py           # AutoEvalSpec validation + blocking/background batch + per-rubric isolation
-├── test_auto_eval_policy.py    # Policy file loading, wildcard match, first-match-wins, resolver vs request
-├── test_mlx_prefix_cache.py    # MLX cache state machine: miss / full / trimmed / disabled / unload
-├── test_tool_audit.py          # tool_call / tool_result span events, payload truncation, disable gate
-├── test_embeddings.py          # /v1/embeddings schema + 200 / 400 / 404 / 501 paths + span attrs
-├── test_dynamic_batching.py    # adapter capability fallback + coalescer flush semantics + slicing
-├── test_completions.py         # /v1/completions raw-prompt path + multi-prompt + spans
-├── test_pairwise.py            # pairwise rubric: score mapping, runner enforcement, route + spans
-├── test_admin_policies.py      # POST /v1/admin/policies:reload — atomic swap + auth gate + bad-file rejection
-├── test_model_routing_policy.py # cross-language signature, trust, revocation, lease, and LKG
-├── test_admin_model_routing_policy.py # payload-free status + atomic reload/auth behavior
-├── test_model_routing_runtime.py # policy freshness, limits, pricing, RPM, evidence attrs
-├── test_model_routing_api.py # alias and signed-only fallback across generation APIs
-├── test_streaming_tool_audit.py # ToolCallReassembler unit tests + end-of-stream gen_ai.tool_call events
-├── test_tool_timing.py          # ToolCallTimingStore (TTL/LRU) + tool.execution_ms cross-event correlation
-├── test_per_rubric_judges.py    # AutoEvalSpec.judge_models override + resolver precedence + dispatch
-├── test_rerank.py               # /v1/rerank schema + cosine ranking + top_n + 404/422/501 + spans
-└── test_vllm_adapter.py         # VLLMRegistry parsing + VLLMAdapter HTTP behaviour via httpx.MockTransport
+├── PUBLIC_ENDPOINT.md        # shareable usage guide for the public Engine URL
+├── CONTAINER_IMAGES.md       # image verification, relocation, air-gap, UBI/FIPS boundary
+└── MODEL_DEMAND_SHORTLIST.md # demanded-model backlog behind /v1/models.data unavailable[]
+tests/                          # 60 modules, all run by `make test`
+├── [registry + catalog]        # test_registry, test_mlx_registry, test_composite_registry,
+│                             #   test_openrouter, test_vllm_probe, test_models_snapshot,
+│                             #   test_manager, test_state_dispatch, test_promote_vllm_model
+├── [adapters + backends]       # test_vllm_adapter, test_ollama_http_adapter, test_adapter_usage_paths,
+│                             #   test_llama_cpp_context_window, test_llama_cpp_tool_arguments,
+│                             #   test_sida_openai_worker, test_molmo_mlx_openai_worker,
+│                             #   test_mlx_vlm_openai_worker, test_vlm_request_matrix, test_vlm_smoke_script
+├── [OpenAI wire contract]      # test_openai_compat, test_http_contract, test_response_normalize,
+│                             #   test_structured_outputs, test_structured_output_enforcement,
+│                             #   test_completions, test_chat_multimodal, test_embeddings, test_rerank
+├── [streaming + concurrency]   # test_cancellation, test_chat_streaming, test_generation_timeout,
+│                             #   test_concurrency, test_scheduler, test_dynamic_batching
+├── [prefix caches]             # test_prefix_cache, test_mlx_prefix_cache
+├── [evals]                     # test_evals, test_auto_eval, test_auto_eval_policy, test_pairwise,
+│                             #   test_per_rubric_judges, test_admin_policies
+├── [observability]             # test_observability, test_otel_exporter, test_genai_metrics, test_metrics,
+│                             #   test_intent_tracing, test_tool_audit, test_streaming_tool_audit, test_tool_timing
+├── [auth + governance]         # test_auth, test_admin_auth_keys, test_model_routing_policy,
+│                             #   test_admin_model_routing_policy, test_model_routing_runtime,
+│                             #   test_model_routing_api, test_model_routing_rate_limit, test_model_plane_observer
+└── [server lifecycle]          # test_server (TLS/mTLS launcher), test_startup_readiness
 ```
 
 ## Configuration
 
-All knobs live in `.env` (see `.env.example`):
+Every knob is an environment variable read through `.env`. The table below is
+the full surface; `.env.example` is a commented starting point that covers the
+common ones, so a var missing from that file is still settable:
 
 | var                      | default                                                                                  | meaning                                                  |
 |--------------------------|------------------------------------------------------------------------------------------|----------------------------------------------------------|
+| `HOST`                   | `127.0.0.1`                                                                              | Listener bind address                                    |
+| `PORT`                   | `8080`                                                                                   | Listener port                                            |
+| `LOG_LEVEL`              | `INFO`                                                                                   | Uvicorn + structlog level                                |
 | `OLLAMA_MODELS_DIR`      | `/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models`                  | Root with `manifests/` and `blobs/`                      |
 | `MLX_MODELS_DIR`         | `~/.cache/inference_engine/mlx`                                                          | Where `download_mlx_model.py` snapshots HF repos         |
 | `MLX_MODELS_HOST_DIR`    | `~/.cache/inference_engine/mlx`                                                          | Host MLX cache mounted into Docker compose               |
@@ -548,12 +612,22 @@ All knobs live in `.env` (see `.env.example`):
 | `OPENROUTER_FALLBACK_ENABLED` | `true`                                                                             | Retry eligible local generation failures on OpenRouter   |
 | `OPENROUTER_FALLBACK_MODEL` | `""`                                                                                  | Explicit fallback model; empty derives `<name>:openrouter` |
 | `OPENROUTER_FALLBACK_BACKENDS` | `llama_cpp,ollama_http,vllm`                                                     | Local backend names eligible for OpenRouter fallback     |
+| `OPENROUTER_HTTP_REFERER` | `""`                                                                                    | Optional OpenRouter `HTTP-Referer` attribution header    |
+| `OPENROUTER_APP_TITLE`   | `llm-inference-engine`                                                                   | Optional OpenRouter `X-Title` attribution header         |
+| `OLLAMA_HTTP_ENDPOINT`   | `""`                                                                                     | Ollama server used as a fallback runtime for GGUF architectures the bundled llama.cpp wheel can't load; empty disables it and unsupported models are marked `unavailable` |
+| `VLLM_UPSTREAM_PROBE_TIMEOUT_SECONDS` | `1.0`                                                                       | Reachability-probe timeout for vLLM / OpenAI-compatible upstreams |
+| `VLLM_UPSTREAM_PROBE_TTL_SECONDS` | `30`                                                                            | How long a vLLM reachability result is cached; `0` probes on every call |
+| `OPENROUTER_UPSTREAM_PROBE_TIMEOUT_SECONDS` | `8.0`                                                                 | Catalog-probe timeout, kept separate because OpenRouter is a public network hop with second-scale latency |
+| `OPENROUTER_UPSTREAM_PROBE_TTL_SECONDS` | `60`                                                                      | Reuse window for one fetched OpenRouter catalog across every configured descriptor |
+| `OPENROUTER_LAST_KNOWN_GOOD_SECONDS` | `900`                                                                        | Grace window that keeps serving the last good OpenRouter catalog through a transient failure; `0` prunes on the first failure |
 | `PREFER_MLX_OVER_GGUF`   | `true`                                                                                   | On a name collision, MLX wins (faster on Apple Silicon)  |
 | `DEFAULT_MODEL`          | `llama3.2:3b`                                                                            | Used by smoke test by default                            |
+| `MODELS_SNAPSHOT_REFRESH_SECONDS` | `15`                                                                            | Rebuild cadence for the background `/v1/models` snapshot, so discovery never blocks on probe-loads; `0` disables the background refresh |
 | `CHAT_COMPLETION_TIMEOUT_SECONDS` | `120`                                                                            | HTTP-backed chat deadline; `0` disables. Keep below public proxy caps. |
 | `N_GPU_LAYERS`           | `-1`                                                                                     | llama.cpp: `-1` = offload all layers to Metal            |
-| `N_CTX`                  | `8192`                                                                                   | Context window                                           |
+| `N_CTX`                  | `32768`                                                                                  | Context-window **ceiling**, not a fixed size — each GGUF loads at `min(N_CTX, n_ctx_train)` |
 | `N_THREADS`              | `0`                                                                                      | `0` = auto                                               |
+| `N_BATCH`                | `512`                                                                                    | llama.cpp prompt batch size                              |
 | `ADAPTER`                | `llama_cpp`                                                                              | Legacy single-adapter mode (manager dispatch ignores it) |
 | `MEMORY_BUDGET_GB`       | `60.0`                                                                                   | LRU evicts past this                                     |
 | `PREFIX_CACHE_BYTES`     | `2147483648` (2 GiB)                                                                     | llama.cpp `LlamaRAMCache` capacity; `0` disables         |
@@ -593,6 +667,7 @@ All knobs live in `.env` (see `.env.example`):
 | `MODEL_ROUTING_EXPECTED_ENVIRONMENT` | empty                                                                        | Optional local environment binding                                          |
 | `MODEL_ROUTING_EXPECTED_ORG_ID` | empty                                                                             | Optional single-org deployment binding                                      |
 | `MODEL_ROUTING_CLOCK_SKEW_SECONDS` | `30`                                                                           | Explicit verification skew, bounded to 300 seconds                          |
+| `MODEL_ROUTING_MAX_FILE_BYTES` | `1048576` (1 MiB)                                                                  | Size bound applied to signed artifacts before parsing                       |
 | `MODEL_ROUTING_INPUT_TOKEN_RESERVE` | `1024`                                                                        | Conservative reserve for model-side chat templates during pre-dispatch bounds |
 | `MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS` | `10000`                                                                     | Fail-closed cap for process-local policy RPM buckets                        |
 | `MODEL_ROUTING_RATE_LIMIT_SCOPE` | `process-replica`                                                                  | `process-replica` or exact `deployment-shared` policy RPM enforcement       |
@@ -603,6 +678,7 @@ All knobs live in `.env` (see `.env.example`):
 | `MODEL_ROUTING_RATE_LIMIT_KEY_PREFIX` | `orchestra:model-routing`                                                   | Bounded, non-secret namespace for hashed shared RPM keys                    |
 | `MODEL_ROUTING_RATE_LIMIT_CONNECT_TIMEOUT_SECONDS` | `1`                                                               | Shared-store connection timeout; an unavailable store fails startup         |
 | `MODEL_ROUTING_RATE_LIMIT_OPERATION_TIMEOUT_SECONDS` | `1`                                                             | Per-request shared-store timeout; failures deny before model acquisition    |
+| `MODEL_PLANE_WORKLOAD_SURFACE` | `unrestricted`                                                                     | `unrestricted`, or `orchestra-model-plane-workload-v1` to fail closed on uncertified workloads; echoed by `/v1/health` and `/v1/ready` |
 | `MODEL_PLANE_OBSERVATION_ENABLED` | `false`                                                                         | Enable asynchronous payload-free observed-state reporting                   |
 | `MODEL_PLANE_OBSERVATION_ENDPOINT` | empty                                                                           | Exact HTTPS Orchestra `/api/model-routing-observations` URL                  |
 | `MODEL_PLANE_OBSERVATION_API_KEY` | empty                                                                            | Direct `model-plane:observe` key; prefer the rotatable file source           |
@@ -1937,6 +2013,55 @@ never returned or logged; legacy records without `key_id` use an irreversible
 SHA-256 fingerprint in status output. A malformed, oversized, missing, or
 lockout-causing candidate preserves the previous in-memory key set.
 
+## In-process TLS and mTLS
+
+`python -m inference_engine.server` is the container entrypoint and a
+fail-closed launcher around uvicorn. It validates listener configuration
+strictly **before** binding, so a half-configured deployment never comes up
+quietly serving plaintext. It reads the four `INFERENCE_ENGINE_SERVER_TLS_*`
+vars from the configuration table above (abbreviated to `…` below) plus `HOST`,
+`PORT`, and `LOG_LEVEL`:
+
+| condition | result |
+|---|---|
+| certificate set without key, or key without certificate | exit 2, `server_tls_configuration_invalid` |
+| client CA or `…REQUIRE_CLIENT_CERTIFICATE=true` with no server certificate | exit 2, `server_tls_configuration_invalid` |
+| `…REQUIRE_CLIENT_CERTIFICATE=true` with no client CA | exit 2, `server_tls_client_ca_required` |
+| unreadable or malformed PEM material | exit 2, `server_tls_material_invalid` |
+| `HOST` / `PORT` outside their allowed ranges | exit 2, `server_listen_address_invalid` |
+| `LOG_LEVEL` not a known level | exit 2, `server_log_level_invalid` |
+| a boolean env var that is not exactly `true` / `false` | exit 2, `server_tls_configuration_invalid` |
+
+Failures print one line of JSON to stderr —
+`{"type":"inference-engine.server","status":"failed","code":"…"}` — and
+deliberately omit certificate paths, so the code is greppable without leaking
+mount layout into logs.
+
+With a certificate configured the context is TLS 1.2 minimum with compression
+disabled; `…REQUIRE_CLIENT_CERTIFICATE=true` additionally sets `CERT_REQUIRED`
+against the mounted client CA, which is the mTLS mode the OpenShift profiles
+run in. With no certificate configured the launcher serves plain HTTP — the
+default for local development.
+
+`make run` bypasses this launcher and starts uvicorn directly on loopback. It
+is a dev convenience, not the deployment path.
+
+The container `HEALTHCHECK` follows the same switch: it probes `https://` when
+`INFERENCE_ENGINE_SERVER_TLS_CERT_FILE` is set, `http://` otherwise. Under mTLS
+the probe needs its own client credential, or it cannot authenticate to the
+listener it is checking:
+
+| var | meaning |
+|---|---|
+| `INFERENCE_ENGINE_PROBE_TLS_CERT_FILE` | Client certificate the healthcheck presents |
+| `INFERENCE_ENGINE_PROBE_TLS_KEY_FILE`  | Matching private key |
+| `INFERENCE_ENGINE_PROBE_TLS_CA_FILE`   | CA used to verify the listener; falls back to the server certificate |
+
+The Helm chart wires all of this from `serverTls.*` — it names the container
+port `https`, sets `scheme: HTTPS` on the liveness, readiness, and startup
+probes, and mounts the probe client credential when `requireClientCertificate`
+is on.
+
 ## KV-cache prefix reuse
 
 llama.cpp ships an explicit prompt-prefix cache (`LlamaRAMCache`) but it's off by default. We install it on every adapter at load time and size it via `PREFIX_CACHE_BYTES` (default 2 GiB). The cache is keyed by token-prefix; whenever a new request shares a prefix with one that's been processed before, prefill skips those tokens entirely.
@@ -2138,22 +2263,43 @@ Limitations:
 
 ## Adapter coverage
 
-| backend     | format | strengths                                               | newer-arch coverage          |
-|-------------|--------|---------------------------------------------------------|------------------------------|
-| `llama_cpp` | GGUF   | universal hardware reach, GGUF lingua franca, fast warm-hits  | bounded by the wheel version |
-| `mlx`       | MLX    | Apple Silicon native, Metal unified memory, often ahead on new architectures | depends on mlx-lm release    |
+Five adapters implement the same `InferenceAdapter` ABC; `ModelManager` picks
+one per descriptor, so a single request set can span all of them concurrently.
 
-The Ollama store you already have includes architectures newer than the bundled `llama-cpp-python==0.3.21`: `mistral3` (ministral-3:*), `gemma4`, `qwen3.6`, `nemotron3`. These will fail to load via `llama_cpp` until the wheel ships support — but if `mlx-community` publishes an MLX conversion (most do), grab it with `make download-mlx-model MODEL=mlx-community/<repo>` and it'll serve through the `mlx` adapter on the same routes.
+| backend       | runs where | format / transport | strengths | newer-arch coverage |
+|---------------|-----------|--------------------|-----------|---------------------|
+| `llama_cpp`   | in-process | GGUF               | universal hardware reach, GGUF lingua franca, fast warm-hits, GBNF-enforced structured outputs, prefix cache | bounded by the wheel version |
+| `mlx`         | in-process | MLX safetensors    | Apple Silicon native, Metal unified memory, multi-slot prefix cache, often ahead on new architectures | depends on mlx-lm release |
+| `ollama_http` | HTTP       | Ollama server      | escape hatch for GGUF architectures the bundled wheel can't load; consulted only after local llama.cpp | tracks Ollama's ggml fork |
+| `vllm`        | HTTP       | OpenAI-compatible  | continuous batching, guided decoding (xgrammar), GPU-pinned upstreams, logprobs | tracks the vLLM deployment |
+| `openrouter`  | HTTP       | OpenAI-compatible  | large open-weight models beyond local memory; gated to open-weight, non-proprietary, `> OPENROUTER_MIN_PARAMETER_COUNT_B` | tracks the OpenRouter catalog |
 
-Standard `llama` family models work on either backend today.
+Only `llama_cpp` and `mlx` load weights into this process; the other three are
+HTTP clients to a runtime you operate (or, for OpenRouter, a provider you pay).
+That is why `/tokenize` and `/detokenize` return `501` on the HTTP-proxy
+backends — there is no local tokenizer to call. `/v1/embeddings` is narrower
+still: `llama_cpp` is the only backend that serves it, and every other one —
+including in-process MLX — returns `501 embeddings not supported by <backend>`.
+
+The Ollama store you already have includes architectures newer than the bundled
+`llama-cpp-python>=0.3.22`: `mistral3` (ministral-3:*), `gemma4`, `qwen3.6`,
+`nemotron3`. These fail to load via `llama_cpp` until the wheel ships support.
+Two ways around it: point `OLLAMA_HTTP_ENDPOINT` at an Ollama server, which
+serves them over the same routes via the `ollama_http` adapter; or, if
+`mlx-community` publishes an MLX conversion (most do), grab it with
+`make download-mlx-model MODEL=mlx-community/<repo>` and it serves through the
+`mlx` adapter.
+
+Standard `llama` family models work on either local backend today.
 
 ## Roadmap (next phases from the guide)
 
-1. **Phase 2 — service features.** ✅ Per-key bearer auth + tenant attribution · ✅ streaming request cancellation · ✅ prompt-template overrides via `/v1/completions` · rate limiting (delegated to API gateway).
+1. **Phase 2 — service features.** ✅ Per-key bearer auth + tenant attribution · ✅ managed key rotation via `/v1/admin/auth-keys:reload` · ✅ streaming request cancellation · ✅ prompt-template overrides via `/v1/completions` · ✅ rate limiting (per-tenant scheduler admission + signed-policy RPM, `process-replica` or exact `deployment-shared` via Redis/Sentinel).
 2. **Phase 3 — engine behaviour.** ✅ Multi-model routing · ✅ per-key load dedup + parallel cold loads · ✅ llama.cpp prefix cache (9.86×) · ✅ MLX multi-slot LRU prefix cache (~22× hit-rate lift) · ✅ token-precise cache observability on **both** backends · ✅ dynamic batching for `/v1/embeddings` (coalescer + capability fallback) · ✅ continuous chat batching via vLLM-as-subprocess (`VLLMAdapter` + `docker-compose.vllm.yml` overlay).
 3. **Phase 4 — Prometa integration.** ✅ Real OTel exporter (OTLP/gRPC + Jaeger compose) · ✅ LLM-as-a-Judge eval harness · ✅ auto-judge attached to chat completions · ✅ server-side auto-eval policy (Prometa-authoritative) · ✅ tool-call audit logs (`gen_ai.tool_*` events with payload truncation).
-4. **Adapter coverage.** ✅ MLX-LM (Apple Silicon native) · vLLM / SGLang for GPU-server workloads · TensorRT-LLM for NVIDIA optimization.
+4. **Adapter coverage.** ✅ MLX-LM (Apple Silicon native) · ✅ vLLM for GPU-server workloads · ✅ Ollama-HTTP for architectures ahead of the llama.cpp wheel · ✅ OpenRouter for large open-weight models · SGLang · TensorRT-LLM for NVIDIA optimization.
 5. **Phase 5 — wire standardization.** ✅ `stream_options.include_usage` streaming usage trailer · ✅ OpenAI `error` envelope + `x-request-id` + `x-ratelimit-*` · ✅ `max_completion_tokens` · ✅ grammar-enforced Structured Outputs (`json_schema`) · ✅ logprobs, penalties, `logit_bias` · ✅ `usage.prompt_tokens_details.cached_tokens` · ✅ `/tokenize` + `/detokenize` · ✅ OTel GenAI semconv attrs + TTFT/TPOT metrics · `/v1/responses` (stateful; deferred) · batch/files/audio/moderations (deferred until a consumer needs them).
+6. **Phase 6 — model plane.** ✅ Signed Ed25519 routing policy, verified locally, with atomic LKG activation and offline lease · ✅ per-route input/output token, cost, and RPM ceilings with fail-closed pricing · ✅ exact `deployment-shared` RPM via Redis/Sentinel · ✅ asynchronous payload-free observation reporting (v1 + v2) · ✅ certified workload surface (`orchestra-model-plane-workload-v1`) · ✅ fail-closed TLS/mTLS listener · ✅ signed UBI images, SBOMs, and a standalone Helm chart with production + SNO-trial profiles · rerank, standalone eval, and chat-attached auto-eval under signed routing (today they fail closed in governed mode) · OpenShift lifecycle, backup/recovery, multi-replica load, and SLO certification.
 
 ## Constraints (as instructed)
 
