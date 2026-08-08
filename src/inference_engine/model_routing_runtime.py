@@ -768,6 +768,30 @@ def _estimate_max_cost_micros(
     return total
 
 
+def usage_cost_micros(
+    pricing: LoadedModelRoutingPricingCatalog | None,
+    *,
+    model: str | None,
+    input_tokens: int,
+    output_tokens: int,
+) -> int | None:
+    """Charge for tokens actually served, or ``None`` when the model is unpriced.
+
+    ``None`` rather than 0: a model absent from the catalog means "we do not
+    know what this costs", and reporting it as free would silently under-bill.
+    The per-component ceiling matches ``_estimate_max_cost_micros`` so the
+    ledger and the pre-flight cost limit never disagree about the same call.
+    """
+    if pricing is None or model is None:
+        return None
+    price = pricing.by_model.get(model)
+    if price is None:
+        return None
+    input_product = input_tokens * price.input_cost_micros_per_million_tokens
+    output_product = output_tokens * price.output_cost_micros_per_million_tokens
+    return (input_product + 999_999) // 1_000_000 + (output_product + 999_999) // 1_000_000
+
+
 def enforce_model_routing_request(
     state: ModelRoutingRuntimeState,
     *,

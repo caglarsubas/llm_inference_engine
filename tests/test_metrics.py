@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from inference_engine import usage_ledger
 from inference_engine.api.metrics import metrics
 from inference_engine.api.state import app_state
 from inference_engine.config import settings
@@ -62,3 +63,29 @@ async def test_metrics_include_model_plane_observer_delivery_state(monkeypatch) 
     assert "inference_engine_model_plane_observer_attempts_total 4" in body
     assert "inference_engine_model_plane_observer_successes_total 3" in body
     assert "inference_engine_model_plane_observer_failures_total 1" in body
+
+
+@pytest.mark.asyncio
+async def test_metrics_expose_usage_ledger_pressure(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "usage_ledger_enabled", True)
+    monkeypatch.setattr(settings, "usage_ledger_max_buffer", 1)
+    usage_ledger._reset_for_tests()
+    try:
+        usage_ledger.usage_ledger.submit({"request_id": "req-1"})
+        usage_ledger.usage_ledger.submit({"request_id": "req-2"})
+        body = await metrics()
+    finally:
+        usage_ledger._reset_for_tests()
+
+    assert "inference_engine_usage_ledger_enabled 1" in body
+    assert "inference_engine_usage_ledger_emitted_total 1" in body
+    assert "inference_engine_usage_ledger_dropped_total 1" in body
+    assert "inference_engine_usage_ledger_sink_failures_total 0" in body
+    assert "inference_engine_usage_ledger_buffered 1" in body
+
+
+@pytest.mark.asyncio
+async def test_metrics_report_the_usage_ledger_off_by_default() -> None:
+    body = await metrics()
+
+    assert "inference_engine_usage_ledger_enabled 0" in body

@@ -1,0 +1,31 @@
+{
+  "fixtureVersion": 1,
+  "description": "Orchestra model routing policy v2 cross-language conformance vector",
+  "trust": {
+    "issuer": "https://orchestra.example.test/model-routing",
+    "keyId": "routing-golden-key-v2",
+    "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAnUfgylDsefdmZ0HPEj0N6+OEScoS8PaCfXMLOROjHG8=",
+    "allowedOrgIds": ["org-golden"],
+    "allowedEnvironments": ["staging"]
+  },
+  "verification": {
+    "now": "2026-07-13T00:10:00.000Z",
+    "expectedAudience": "orchestra-model-plane",
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "expectedReleaseId": "release-golden-model-v2",
+    "expectedDeploymentId": "model-plane-golden-v2",
+    "expectedDigest": "sha256:6083d84d2a5409fc9ad5dba63382ae1e0e87a57e4b8434cc29bb4bf4a22824fd"
+  },
+  "policy": {
+    "policyId": "routing-golden-v2",
+    "policyVersion": 2,
+    "algorithm": "ed25519",
+    "canonicalization": "signed-payload-json-v1",
+    "issuer": "https://orchestra.example.test/model-routing",
+    "keyId": "routing-golden-key-v2",
+    "signedPayload": "{\"artifactType\":\"orchestra.model-routing-policy\",\"audience\":\"orchestra-model-plane\",\"deploymentId\":\"model-plane-golden-v2\",\"expiresAt\":\"2026-07-13T01:00:00.000Z\",\"issuedAt\":\"2026-07-13T00:00:00.000Z\",\"issuer\":\"https://orchestra.example.test/model-routing\",\"jti\":\"routing-golden-v2-r1\",\"keyId\":\"routing-golden-key-v2\",\"notBefore\":\"2026-07-13T00:01:00.000Z\",\"offlineLeaseExpiresAt\":\"2026-07-13T00:30:00.000Z\",\"orgId\":\"org-golden\",\"policyId\":\"routing-golden-v2\",\"policyVersion\":2,\"releaseId\":\"release-golden-model-v2\",\"revision\":1,\"revocationRef\":\"urn:prometa:model-routing-policy:routing-golden-v2:r1\",\"routes\":[{\"candidateWeights\":[90,10],\"fallbackModels\":[\"llama3.3:70b:openrouter\"],\"limits\":{\"budgetWindowSeconds\":3600,\"maxCostMicrosPerRequest\":250000,\"maxCostMicrosPerWindow\":5000000,\"maxInputTokens\":32768,\"maxOutputTokens\":4096,\"maxRequestsPerMinute\":120,\"maxTokensPerMinute\":240000},\"primaryModel\":\"qwen3:32b\",\"requestedModel\":\"reasoning\",\"routeId\":\"reasoning\",\"shadowModel\":\"llama3.2:3b\"},{\"candidateWeights\":null,\"fallbackModels\":[],\"limits\":{\"budgetWindowSeconds\":null,\"maxCostMicrosPerRequest\":null,\"maxCostMicrosPerWindow\":null,\"maxInputTokens\":null,\"maxOutputTokens\":1024,\"maxRequestsPerMinute\":null,\"maxTokensPerMinute\":null},\"primaryModel\":\"llama3.2:3b\",\"requestedModel\":\"*\",\"routeId\":\"default\",\"shadowModel\":null}],\"subject\":\"model-routing-policy:routing-golden-v2\",\"targetEnvironment\":\"staging\"}",
+    "signature": "OG1ysSZYYkk6ln1D3tUGgrexJxhAgZjfulNiqwVxTFs23FnQYuVYSbWpztHRxwjGm2eEBQcPzWIpjreESGC5Bw==",
+    "signed": true
+  }
+}

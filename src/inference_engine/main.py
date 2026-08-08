@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import __version__
+from . import __version__, usage_ledger
 from .api import (
     admin,
     chat,
@@ -43,6 +43,11 @@ from .registry import get_openrouter_probe, get_probe, get_vllm_probe
 # any span is created or any FastAPI middleware is built. configure_tracing()
 # is idempotent and a no-op when OTEL_ENABLED=false.
 configure_tracing()
+
+# Priced inference surfaces, and the only paths that produce a billing record.
+# /v1/rerank is excluded on purpose: it has no routing or pricing integration
+# and already sits outside CERTIFIED_MODEL_WORKLOAD_SURFACE.
+_USAGE_LEDGER_PATHS = {"/v1/chat/completions", "/v1/completions", "/v1/embeddings"}
 
 _READINESS_EXEMPT_PATHS = {"/v1/health", "/v1/ready", "/v1/metrics"}
 # Inference paths that don't live under /v1/. ``/tokenize`` and ``/detokenize``
@@ -286,9 +291,28 @@ async def lifespan(app: FastAPI):
         if settings.models_snapshot_refresh_seconds > 0
         else None
     )
+    ledger_task = (
+        asyncio.create_task(
+            usage_ledger.run_usage_ledger_drain(
+                usage_ledger.usage_ledger,
+                interval_seconds=settings.usage_ledger_drain_interval_seconds,
+            ),
+            name="inference-engine-usage-ledger-drain",
+        )
+        if settings.usage_ledger_enabled
+        else None
+    )
     try:
         yield
     finally:
+        if ledger_task is not None:
+            if not ledger_task.done():
+                ledger_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ledger_task
+            # One last pass so the records buffered between the final drain
+            # and shutdown are still billed.
+            await usage_ledger.drain_once(usage_ledger.usage_ledger)
         if snapshot_task is not None:
             if not snapshot_task.done():
                 snapshot_task.cancel()
@@ -329,6 +353,76 @@ instrument_fastapi(app)
 
 # OpenAI-shaped {"error": {...}} alongside FastAPI's {"detail": ...}.
 install_error_handlers(app)
+
+
+class _LedgerFlushOnSend:
+    """ASGI wrapper that flushes a streamed record once its response is done.
+
+    The SSE generator's own teardown owns the flush so the record carries real
+    token counts, but that teardown runs only if something iterates the response
+    body. A response whose iterator never starts — the client vanished, the
+    first ``send`` failed — would emit no record at all, and a request that was
+    served and never billed is the one failure this channel exists to prevent.
+    Wrapping the send is what makes the emission unconditional: it runs whether
+    the body completed, raised, or never began.
+
+    ``flush`` is idempotent, so on the normal path the generator's earlier and
+    richer flush is the one that counts and this is a no-op.
+    """
+
+    def __init__(self, response, record) -> None:
+        self._response = response
+        self._record = record
+
+    def __getattr__(self, name):
+        return getattr(self._response, name)
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await self._response(scope, receive, send)
+        finally:
+            usage_ledger.flush(self._record)
+
+
+@app.middleware("http")
+async def model_usage_ledger(request: Request, call_next):
+    """Open and close the per-request ``prometa.model-usage.v1`` record.
+
+    Defined first so it ends up *innermost*: ``add_middleware`` inserts at
+    position 0, which makes the last-defined middleware outermost. Innermost
+    means ``request.state.request_id`` is already stamped when this runs and
+    the status observed here is the route's, not the readiness gate's.
+    """
+    if request.url.path not in _USAGE_LEDGER_PATHS:
+        return await call_next(request)
+
+    record = usage_ledger.begin(
+        request_id=getattr(request.state, "request_id", ""),
+        route=request.url.path,
+    )
+    try:
+        response = await call_next(request)
+    except Exception:
+        if record is not None:
+            # Every handler that answers a status of its own sits *below* this
+            # middleware, so an exception arriving here has none left to run:
+            # Starlette's server-error boundary above us answers 500, and that
+            # is the status the caller is billed against.
+            record.http_status = 500
+        usage_ledger.flush(record)
+        raise
+    if record is None:
+        return response
+    record.http_status = response.status_code
+    # A streaming response has not produced a token yet at this point, so the
+    # SSE generator's own teardown owns the flush, with _LedgerFlushOnSend as
+    # the backstop for the body that never runs. Everything rejected before the
+    # stream opened answers non-2xx and is flushed here, because that generator
+    # never runs at all.
+    if record.stream and 200 <= response.status_code < 300:
+        return _LedgerFlushOnSend(response, record)
+    usage_ledger.flush(record)
+    return response
 
 
 @app.middleware("http")

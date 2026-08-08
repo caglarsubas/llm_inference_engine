@@ -8,6 +8,8 @@ from ..adapters import InferenceAdapter
 from ..auth import Identity
 from ..config import settings
 from ..scheduler import SchedulerLease, TenantQueueFullError, TenantQueueTimeoutError
+from . import _usage
+from .state import app_state
 
 
 def resource_key(adapter: InferenceAdapter, model_name: str) -> str:
@@ -39,6 +41,7 @@ def scheduler_span_attrs(lease: SchedulerLease | None) -> dict:
 def scheduling_http_error(exc: TenantQueueFullError | TenantQueueTimeoutError) -> HTTPException:
     headers = {"Retry-After": str(exc.retry_after_seconds)}
     if isinstance(exc, TenantQueueFullError):
+        _usage.bind_error_type("tenant_queue_full")
         return HTTPException(
             status_code=429,
             detail={
@@ -49,6 +52,7 @@ def scheduling_http_error(exc: TenantQueueFullError | TenantQueueTimeoutError) -
             },
             headers=headers,
         )
+    _usage.bind_error_type("tenant_queue_timeout")
     return HTTPException(
         status_code=503,
         detail={
@@ -70,8 +74,6 @@ async def acquire_slot(
     priority: float,
     estimated_tokens: int,
 ):
-    from .state import app_state  # noqa: PLC0415 — avoid import-time singleton cycles
-
     try:
         return await app_state.scheduler.acquire(
             tenant=identity.tenant,

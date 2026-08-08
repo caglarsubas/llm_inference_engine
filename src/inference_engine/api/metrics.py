@@ -10,7 +10,9 @@ from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
 from .. import __version__
+from ..config import settings
 from ..genai_metrics import genai_metrics
+from ..usage_ledger import usage_ledger
 from .state import app_state
 
 router = APIRouter()
@@ -136,6 +138,25 @@ async def metrics() -> str:
     for resource, count in sched.in_flight_by_resource.items():
         labels = f'{{resource="{_label_value(resource)}"}}'
         lines.append(f"inference_engine_scheduler_in_flight_by_resource{labels} {count}")
+
+    ledger = usage_ledger.snapshot()
+    lines.append(
+        "# HELP inference_engine_usage_ledger_enabled Per-request usage ledger enabled flag."
+    )
+    lines.append("# TYPE inference_engine_usage_ledger_enabled gauge")
+    lines.append(
+        f"inference_engine_usage_ledger_enabled {1 if settings.usage_ledger_enabled else 0}"
+    )
+    for metric, metric_type, help_text in (
+        ("emitted_total", "counter", "Usage-ledger records accepted into the buffer."),
+        ("dropped_total", "counter", "Usage-ledger records dropped by buffer overflow."),
+        ("sink_failures_total", "counter", "Usage-ledger records lost to a sink failure."),
+        ("buffered", "gauge", "Usage-ledger records waiting to be drained."),
+    ):
+        name = f"inference_engine_usage_ledger_{metric}"
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {metric_type}")
+        lines.append(f"{name} {ledger[metric]}")
 
     # OTel GenAI semantic-convention instruments, rendered in Prometheus form.
     # These carry the standard names, so a stock GenAI dashboard works against

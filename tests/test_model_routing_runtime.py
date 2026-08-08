@@ -31,11 +31,12 @@ from inference_engine.model_routing_runtime import (
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.json"
+FIXTURE_V2_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v2.json"
 NOW = datetime(2026, 7, 13, 0, 10, tzinfo=UTC)
 
 
-def _active_policy() -> ActivatedModelRoutingPolicy:
-    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+def _active_policy(path: Path = FIXTURE_PATH) -> ActivatedModelRoutingPolicy:
+    fixture = json.loads(path.read_text(encoding="utf-8"))
     envelope = ModelRoutingPolicyEnvelope.model_validate(fixture["policy"], strict=True)
     trust = ModelRoutingTrustStore.model_validate(
         {
@@ -333,6 +334,46 @@ def test_policy_evidence_attributes_are_complete_and_payload_free() -> None:
     assert attrs["model_routing.route.selected_model"] == "qwen3:32b"
     assert attrs["model_routing.pricing.digest"] == "sha256:pricing"
     assert "signed_payload" not in attrs
+
+
+def test_v2_policy_enforces_only_v1_limits_at_request_time() -> None:
+    state = _state(active=_active_policy(FIXTURE_V2_PATH))
+
+    decision = _enforce(state=state, input_tokens=100, output_tokens=10)
+
+    assert decision is not None
+    assert decision.route.candidate_weights == [90, 10]
+    assert decision.route.shadow_model == "llama3.2:3b"
+    assert decision.candidate_models == ("qwen3:32b", "llama3.3:70b:openrouter")
+    assert decision.estimated_max_cost_micros == 460
+
+    attrs = model_routing_span_attrs(decision)
+    assert attrs["model_routing.limit.max_requests_per_minute"] == 120
+    for absent in (
+        "model_routing.limit.max_tokens_per_minute",
+        "model_routing.limit.max_cost_micros_per_window",
+        "model_routing.limit.budget_window_seconds",
+    ):
+        assert absent not in attrs
+
+
+def test_v2_token_rate_and_window_budget_are_not_yet_enforced() -> None:
+    state = _state(active=_active_policy(FIXTURE_V2_PATH))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+
+    for _ in range(120):
+        decision = _enforce(
+            state=state,
+            limiter=limiter,
+            input_tokens=32_768,
+            output_tokens=4_096,
+        )
+        assert decision is not None
+
+    with pytest.raises(ModelRoutingEnforcementError) as raised:
+        _enforce(state=state, limiter=limiter, input_tokens=32_768, output_tokens=4_096)
+    assert raised.value.code == "rate_limit_exceeded"
+    assert raised.value.limit_requests == 120
 
 
 def test_policy_evidence_reports_deployment_shared_rate_limit_scope() -> None:

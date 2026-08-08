@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     ollama_models_dir: Path = Field(
-        default=Path("/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models"),
+        default=Path.home() / ".cache" / "inference_engine" / "ollama",
         description="Root of the Ollama-format model store (contains 'manifests' and 'blobs').",
     )
     mlx_models_dir: Path = Field(
@@ -386,6 +386,14 @@ class Settings(BaseSettings):
     # that opens calls but never closes them can't leak memory.
     tool_timing_ttl_seconds: float = Field(default=300.0, ge=0.0)
     tool_timing_max_entries: int = Field(default=10_000, ge=1)
+
+    # Once ``usage_ledger_max_buffer`` records are buffered the ledger refuses
+    # arriving records rather than evicting buffered ones: a buffered record is
+    # an invoice line the drain task still owes. Refusals are counted by
+    # ``inference_engine_usage_ledger_dropped_total``.
+    usage_ledger_enabled: bool = Field(default=False)
+    usage_ledger_max_buffer: int = Field(default=10_000, ge=1)
+    usage_ledger_drain_interval_seconds: float = Field(default=1.0, gt=0.0, le=60.0)
 
     @property
     def memory_budget_bytes(self) -> int:
