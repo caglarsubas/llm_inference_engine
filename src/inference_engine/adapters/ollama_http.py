@@ -95,8 +95,30 @@ def _prepend_json_retry_prompt(messages: list[dict]) -> list[dict]:
 
 class OllamaHttpAdapter(InferenceAdapter):
     backend_name = "ollama_http"
-    # Ollama implements structured outputs in its own sampler.
-    supports_structured_outputs = True
+    # NOT TRUSTED TO CONSTRAIN DECODING, and this is a measurement rather than
+    # a judgement about Ollama.
+    #
+    # The adapter does send `response_format: {"type": "json_schema", ...}`
+    # below, and recent Ollama releases do honour it. But the OpenAI shim
+    # SILENTLY IGNORES the key on releases that do not — see the comment at the
+    # request-building site, which has always said so — and this flag is what
+    # `_enforce_structured_output` in api/chat.py consults to decide whether to
+    # skip its validate-and-repair net. Claiming enforcement therefore turns
+    # OFF the only thing that would notice the schema was ignored.
+    #
+    # Measured against a live deployment (Ollama backend, gemma4:26b): a strict
+    # `json_schema` request asking for an object with one integer key returned
+    # HTTP 200 and the body "Mars has **two** moons: Phobos and Deimos." —
+    # prose, not JSON, no error, no repair. A strict-mode client cannot tell
+    # that from a conforming answer.
+    #
+    # False costs one validation pass on a backend that DOES enforce, and the
+    # docstring of `_enforce_structured_output` weighs exactly that trade: "a
+    # typed 502 rather than handing back a document that silently violates the
+    # contract the caller asked for". Detecting the capability per deployment,
+    # instead of asserting it per backend class, is the better long-term fix
+    # and is tracked separately.
+    supports_structured_outputs = False
 
     def __init__(self) -> None:
         self._descriptor: ModelDescriptor | None = None

@@ -123,3 +123,42 @@ async def test_text_only_blank_json_response_does_not_retry() -> None:
 
     assert result.text == ""
     assert len(captured) == 1
+
+
+def test_ollama_is_not_trusted_to_constrain_decoding() -> None:
+    """The gateway's validate-and-repair net must stay ON for this backend.
+
+    Regression for a silent contract violation, not a style preference.
+    `_enforce_structured_output` (api/chat.py) returns early for any adapter
+    claiming `supports_structured_outputs`, so claiming it here disables the
+    only check that would notice Ollama's OpenAI shim ignoring
+    `response_format`. Measured against a live deployment: a STRICT json_schema
+    request returned HTTP 200 with the prose body "Mars has **two** moons:
+    Phobos and Deimos." — a strict-mode client cannot distinguish that from a
+    conforming document.
+
+    If a future Ollama enforces schemas in its sampler, the honest change is to
+    DETECT that per deployment, not to re-assert it per backend class.
+    """
+    assert OllamaHttpAdapter.supports_structured_outputs is False
+
+
+def test_ollama_still_sends_the_schema_it_was_given() -> None:
+    """Not trusting the backend is not the same as not asking.
+
+    The request must still carry `response_format`, so a deployment whose
+    Ollama DOES honour it gets constrained decoding; the flag above only
+    governs whether the gateway re-checks the answer.
+    """
+    adapter = OllamaHttpAdapter()
+    params = GenerationParams(
+        json_mode=True,
+        json_schema={"type": "object", "properties": {"a": {"type": "integer"}}},
+        json_schema_name="probe",
+        json_schema_strict=True,
+    )
+    kwargs = adapter._completion_kwargs(params)
+
+    assert kwargs["response_format"]["type"] == "json_schema"
+    assert kwargs["response_format"]["json_schema"]["name"] == "probe"
+    assert kwargs["response_format"]["json_schema"]["strict"] is True
