@@ -586,6 +586,14 @@ tests/                          # 60 modules, all run by `make test`
 └── [server lifecycle]          # test_server (TLS/mTLS launcher), test_startup_readiness
 ```
 
+`make test` (or `uv run pytest`) runs from a fresh clone with no environment
+set up: `tests/conftest.py` creates an empty scratch model store before the
+first `inference_engine` import and points `OLLAMA_MODELS_DIR` and
+`MLX_MODELS_DIR` at it, so the suite never reads a real model store. Export
+either variable yourself to run the suite against a store of your own; an
+explicit environment variable wins over the scratch store, a value in `.env`
+does not.
+
 ## Configuration
 
 Every knob is an environment variable read through `.env`. The table below is
@@ -597,7 +605,7 @@ common ones, so a var missing from that file is still settable:
 | `HOST`                   | `127.0.0.1`                                                                              | Listener bind address                                    |
 | `PORT`                   | `8080`                                                                                   | Listener port                                            |
 | `LOG_LEVEL`              | `INFO`                                                                                   | Uvicorn + structlog level                                |
-| `OLLAMA_MODELS_DIR`      | `/Users/caglarsubasi/Desktop/prometa/pocs/auto-ml/ollama-models/models`                  | Root with `manifests/` and `blobs/`                      |
+| `OLLAMA_MODELS_DIR`      | `~/.cache/inference_engine/ollama`                                                       | Root with `manifests/` and `blobs/`; startup fails loudly if it is missing |
 | `MLX_MODELS_DIR`         | `~/.cache/inference_engine/mlx`                                                          | Where `download_mlx_model.py` snapshots HF repos         |
 | `MLX_MODELS_HOST_DIR`    | `~/.cache/inference_engine/mlx`                                                          | Host MLX cache mounted into Docker compose               |
 | `VLLM_MODELS_FILE`       | `.vllm_models.json`                                                                      | Config file for OpenAI-compatible vLLM/DMR upstreams     |
@@ -696,6 +704,9 @@ common ones, so a var missing from that file is still settable:
 | `TOOL_AUDIT_MAX_PAYLOAD_CHARS` | `1024`                                                                             | Per-event truncation cap for arguments / result content             |
 | `TOOL_TIMING_TTL_SECONDS` | `300`                                                                                  | TTL for the call_id → emit-timestamp store; older entries swept on insert |
 | `TOOL_TIMING_MAX_ENTRIES` | `10000`                                                                                | Hard cap on the timing store; oldest entries LRU-evicted past this        |
+| `USAGE_LEDGER_ENABLED`   | `false`                                                                                  | Emit one `prometa.model-usage.v1` billing record per priced request    |
+| `USAGE_LEDGER_MAX_BUFFER` | `10000`                                                                                 | Bounded hand-off buffer; arriving records refused (counted + logged) past this |
+| `USAGE_LEDGER_DRAIN_INTERVAL_SECONDS` | `1.0`                                                                       | How often the background task ships buffered records, 0 < n <= 60      |
 
 ## Observability — real OpenTelemetry, dual-emission
 
@@ -772,6 +783,123 @@ or errored stream would otherwise skew the histogram toward whatever it managed
 before failing. TPOT excludes the first token by definition. Metric export is
 **scrape-only** — `otel.py` installs a TracerProvider, not a MeterProvider, so
 these do not go out over OTLP.
+
+### Per-request usage ledger — `prometa.model-usage.v1`
+
+Spans answer "what did this request do"; an invoice needs "what is this request
+owed". Those are different artefacts, because the records billing cares about
+most are the ones tracing is worst at keeping: a policy denial never opens a
+`chat.generate` span at all, and sampling drops whichever spans it likes. So
+`USAGE_LEDGER_ENABLED=true` turns on a dedicated channel that emits **exactly
+one record per priced request**, whatever the outcome.
+
+"Priced request" means one that reached the `_usage.bind_request` seam in a
+handler for `/v1/chat/completions`, `/v1/completions`, or `/v1/embeddings` —
+the point that has a resolved caller identity, a body the schema accepted, and
+a token budget to enforce against, which is what makes a record an invoice
+line. Everything short of that seam produces no record at all and cannot
+consume a slot in the bounded buffer: a call with no credentials or a malformed
+body is attributable to nobody, any other route is unpriced (`/v1/rerank` and
+`/tokenize` included), and the two shape guards that answer 400 before the seam
+— a `prompt` or an `input` that is a list containing no strings — reject a
+well-formed body that still names no work to price. None of those reach a
+model. A *denial* is on the other side of the line: it was answered against a
+real identity, so it is recorded with `outcome: "denied"`.
+
+Past the seam the record is guaranteed, not best-effort. The binders that
+enrich it are individually failure-isolated, so a bug in any one of them costs
+that binder's fields and leaves the rest of the line intact.
+
+Records are JSON lines on stdout, written by a background drain task and made
+durable by whatever log pipeline the deployment already runs (the collector in
+`docker-compose.observability.yml`, or your cluster's log shipper). There is no
+file sink on purpose: a billing artefact written to a long-lived handle and
+rotated with `copytruncate` loses records silently, and log shipping is the path
+every supported deployment shape already has.
+
+Not an OTLP log record, deliberately. Every `opentelemetry-*` package lives
+behind the optional `otel` extra — `make install` is a plain `uv sync` — so an
+OTel-only ledger would simply not exist in a default deployment, which is not a
+property a chargeback signal may have. `structlog` is a hard dependency, so the
+ledger works in every deployment shape. Correlation back to traces still happens:
+each record carries the `trace_id` / `span_id` of the serving span when tracing
+is on, via the stable `opentelemetry.trace` API. `usage_ledger._sink` is the one
+seam to add an OTLP-logs sink later without touching a single call site.
+
+| Group | Fields |
+|-------|--------|
+| Identity | `request_id`, `route`, `operation`, `stream`, `tenant`, `org_id`, `key_id` |
+| Outcome | `outcome` (`ok` / `error` / `timeout` / `denied`), `finish_reason`, `http_status`, `error_type`, `denial_code` |
+| Model | `requested_model`, `resolved_model`, `backend`, `request_key_source` |
+| Policy | `policy_id`, `policy_digest`, `route_id`, `pricing_digest` |
+| Tokens | `input_token_upper_bound`, `output_token_budget`, `input_tokens`, `output_tokens`, `cached_tokens`, `cost_micros` |
+| Fallback | `fallback`, `fallback_from_model`, `fallback_from_backend`, `fallback_reason` |
+| Timing | `duration_ms`, `ttft_ms` |
+| Trace | `trace_id`, `span_id` |
+
+**Metadata only.** `usage_ledger.SCHEMA_FIELDS` is the reviewed key set and the
+payload is built by walking that explicit list, never from `dataclasses.asdict`,
+so a field added to the internal accumulator cannot reach an emitted record
+without a deliberate schema change. The two are not two lists that agree by
+convention: `_check_schema_coverage` runs at import and refuses to load the
+module if any accumulator attribute is neither an emitted field nor declared
+control state, or if any schema key has nothing behind it. Adding a field to one
+and forgetting the other fails the process at startup, not silently on an
+invoice. No prompt, completion, tool argument, or embedding input is reachable
+from any field above, and a test asserts that directly.
+
+Things worth knowing before you reconcile against it:
+
+* **Estimated and actual are named differently on purpose.**
+  `input_token_upper_bound` is a conservative enforcement bound (a canonical-JSON
+  byte count plus a reserve), not a token estimate; `input_tokens` /
+  `output_tokens` are what the serving path actually reported. Calling the former
+  `estimated_input_tokens` would mislead anyone reconciling the two.
+* **`cost_micros` is `null`, never `0`, for an unpriced model.** Absent from the
+  pricing catalog means "unknown", and billing it as free under-charges silently.
+  Priced values reuse the pre-flight cost ceiling's rounding, so the ledger and
+  the `max_cost_micros_per_request` limit never disagree about one call.
+* **A billable record can be unattributed.** `tenant`, `org_id`, and `key_id`
+  are bound *after* the request is declared billable, so a fault in the
+  attribution mapping leaves them `null` rather than deleting the invoice line —
+  degrade, never drop. Reconciliation must treat `tenant: null` as
+  **unattributed**, not as a tenant literally named `null` and not as absent
+  traffic: the call was served and consumed capacity. Route those lines to an
+  exceptions queue keyed by `request_id`, which joins back to the request logs
+  that do carry the caller; `resolved_model`, the token counts, and `cost_micros`
+  are still intact on the record, so the cost is recoverable once the identity
+  is. This should be rare enough to alarm on — every occurrence also logs
+  `usage_ledger.bind_failed` with `binder=_bind_attribution`, and a non-zero rate
+  is an engine bug, not a billing edge case.
+* **Buffered, best-effort, and never blocking.** The request path does a dict
+  build and a `deque.append`; the write happens on the drain task. Under overflow
+  it is the *arriving* record that is refused, never a buffered one — a record
+  already accepted is an invoice line the drain task still owes. Every refusal
+  increments a counter and each overflow episode logs `usage_ledger.buffer_full`
+  once, so the loss is never silent: alarm on
+  `inference_engine_usage_ledger_dropped_total` and
+  `inference_engine_usage_ledger_sink_failures_total` on `/v1/metrics`.
+* **At-least-once, and `request_id` is the dedupe key.** A batch stays buffered
+  until the sink accepts it, so shutdown cancelling the drain task mid-write
+  cannot lose it — but the worker thread that cancellation abandons may still
+  have completed those writes, and the final post-cancel drain then ships them
+  again. A duplicate is detectable at reconciliation; a silent hole is not, which
+  is why the trade goes this way. Deduplicate on `request_id` (one record per
+  request, per worker) rather than assuming exactly-once.
+* **Streaming records are flushed by the SSE generator**, not the middleware, so
+  they carry real token counts and TTFT. A streamed response whose body never
+  runs at all — the client vanished before the first byte — is flushed by the
+  middleware's send wrapper instead, so it is still emitted; that record has
+  `http_status`, attribution, and policy fields but no token counts.
+* **SSE always answers HTTP 200**, so a stream that ends in an error frame is
+  recorded as `outcome="error"` with `http_status=200`. A cancelled stream bills
+  as `ok` with `finish_reason="cancelled"` — it consumed tokens.
+* **One buffer and one drain task per worker.** Records are per-request and
+  independently valid, so multi-worker deployments need no join.
+* **Scope.** `/v1/chat/completions`, `/v1/completions`, and `/v1/embeddings` only.
+  `/v1/rerank` is excluded because it has no routing or pricing integration and
+  already sits outside `CERTIFIED_MODEL_WORKLOAD_SURFACE`; `EvalRunner`-driven
+  judge inference is excluded because it does not pass through these routes.
 
 ### Caller intent labels on chat spans
 
@@ -1868,6 +1996,63 @@ and request-time store failures are fail-closed, with no downgrade to the local
 limiter and no call to the Orchestra control plane. The admin reload swaps
 policy and pricing as one immutable runtime snapshot, so requests cannot
 observe a mixed revision.
+
+The verifier accepts `policyVersion` 1 and 2. Version 2 adds
+`maxTokensPerMinute`, the `maxCostMicrosPerWindow` and `budgetWindowSeconds`
+pair, `candidateWeights`, and `shadowModel`. The key set is exact per version:
+a v1 policy carrying any v2 key, or a v2 policy omitting one, is rejected as
+`malformed_claims`, and nonsensical values or combinations are rejected as
+`invalid_routes` — including a `shadowModel` naming any live candidate of its
+own route, that is its `primaryModel` or any of its `fallbackModels`. The v1
+shape check runs before every claim-level check, so a v1 policy carrying a v2
+key reports `malformed_claims` whatever else is wrong with it. The v2 fields
+are parsed, bounded, and reported but not yet
+enforced at request time. `/v1/admin/model-routing-policy` and the model-plane
+observation report `accepted_policy_versions` so the control plane can confirm
+fleet readiness before it starts signing v2.
+
+### Emitter contract for the signer
+
+The five v2 keys are nullable, not optional. The verifier compares the set of
+v2 keys *present* on each route against the set its `policyVersion` mandates,
+so signers must emit by key presence, not by value:
+
+- **A v2 policy must serialise all five v2 keys on every route** —
+  `candidateWeights` and `shadowModel` on the route, `maxTokensPerMinute`,
+  `maxCostMicrosPerWindow`, and `budgetWindowSeconds` on its `limits` — using
+  an explicit `null` wherever the route does not use one. Omitting a key on
+  even one route rejects the whole policy as `malformed_claims`.
+- **A v1 policy must emit none of the five, not even as `null`.** A `null`
+  still counts as present, so a v1 route carrying `"shadowModel": null` is
+  likewise `malformed_claims`.
+
+Both directions reject the whole artifact, not the offending route: the engine
+falls back to its last-known-good policy rather than partially applying the
+rejected one. A route that uses no v2 feature is therefore still five keys
+longer under v2:
+
+```json
+{
+  "routeId": "default",
+  "requestedModel": "*",
+  "primaryModel": "llama3.2:3b",
+  "fallbackModels": [],
+  "candidateWeights": null,
+  "shadowModel": null,
+  "limits": {
+    "maxInputTokens": null,
+    "maxOutputTokens": 1024,
+    "maxRequestsPerMinute": null,
+    "maxCostMicrosPerRequest": null,
+    "maxTokensPerMinute": null,
+    "maxCostMicrosPerWindow": null,
+    "budgetWindowSeconds": null
+  }
+}
+```
+
+`tests/fixtures/model-routing-policy-v2.json` is the reference artifact; its
+first route shows the same shape with the v2 features actually populated.
 
 For a replicated deployment, point
 `MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE` at a Secret-mounted document:

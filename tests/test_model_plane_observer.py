@@ -244,6 +244,8 @@ def test_observation_matches_exact_platform_shape_without_inventory_names() -> N
         "active": False,
         "policy_id": None,
         "revision": None,
+        "policy_version": None,
+        "accepted_policy_versions": [1, 2],
         "digest": None,
         "source": None,
         "org_id": None,

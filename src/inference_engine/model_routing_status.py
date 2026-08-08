@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from .model_routing import MODEL_ROUTING_POLICY_VERSIONS
 from .model_routing_runtime import (
     MODEL_ROUTING_RATE_LIMIT_SCOPE_PROCESS,
     ModelRoutingRuntimeState,
@@ -17,6 +18,10 @@ class ModelRoutingPolicyStatus(BaseModel):
     active: bool
     policy_id: str | None = None
     revision: int | None = None
+    policy_version: int | None = None
+    accepted_policy_versions: list[int] = Field(
+        default_factory=lambda: list(MODEL_ROUTING_POLICY_VERSIONS)
+    )
     digest: str | None = None
     source: str | None = None
     org_id: str | None = None
@@ -52,6 +57,7 @@ def build_model_routing_status(
         active=True,
         policy_id=claims.policy_id,
         revision=claims.revision,
+        policy_version=claims.policy_version,
         digest=active.digest,
         source=active.source,
         org_id=claims.org_id,

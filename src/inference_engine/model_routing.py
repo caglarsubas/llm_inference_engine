@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -27,11 +27,20 @@ from pydantic.alias_generators import to_camel
 from .config import settings
 
 MODEL_ROUTING_POLICY_TYPE = "orchestra.model-routing-policy"
-MODEL_ROUTING_POLICY_VERSION = 1
+MODEL_ROUTING_POLICY_VERSION_V1 = 1
+MODEL_ROUTING_POLICY_VERSION_V2 = 2
+
+ModelRoutingPolicyVersion = Literal[
+    MODEL_ROUTING_POLICY_VERSION_V1,
+    MODEL_ROUTING_POLICY_VERSION_V2,
+]
+MODEL_ROUTING_POLICY_VERSIONS: tuple[int, ...] = get_args(ModelRoutingPolicyVersion)
+
 MODEL_ROUTING_POLICY_CANONICALIZATION = "signed-payload-json-v1"
 MODEL_ROUTING_POLICY_AUDIENCE = "orchestra-model-plane"
 MAX_MODEL_ROUTING_ROUTES = 128
 MAX_MODEL_ROUTING_FALLBACKS = 8
+MAX_MODEL_ROUTING_BUDGET_WINDOW_SECONDS = 86_400
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 _CANONICAL_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -51,6 +60,9 @@ class ModelRoutingLimits(_ContractModel):
     max_output_tokens: StrictInt | None
     max_requests_per_minute: StrictInt | None
     max_cost_micros_per_request: StrictInt | None
+    max_tokens_per_minute: StrictInt | None = None
+    max_cost_micros_per_window: StrictInt | None = None
+    budget_window_seconds: StrictInt | None = None
 
 
 class ModelRoutingRoute(_ContractModel):
@@ -59,11 +71,103 @@ class ModelRoutingRoute(_ContractModel):
     primary_model: StrictStr
     fallback_models: list[StrictStr]
     limits: ModelRoutingLimits
+    candidate_weights: list[StrictInt] | None = None
+    shadow_model: StrictStr | None = None
+
+
+_POLICY_VERSION_INTRODUCED_ROUTE_FIELDS: dict[int, frozenset[str]] = {
+    MODEL_ROUTING_POLICY_VERSION_V1: frozenset(
+        {"route_id", "requested_model", "primary_model", "fallback_models", "limits"}
+    ),
+    MODEL_ROUTING_POLICY_VERSION_V2: frozenset({"candidate_weights", "shadow_model"}),
+}
+_POLICY_VERSION_INTRODUCED_LIMIT_FIELDS: dict[int, frozenset[str]] = {
+    MODEL_ROUTING_POLICY_VERSION_V1: frozenset(
+        {
+            "max_input_tokens",
+            "max_output_tokens",
+            "max_requests_per_minute",
+            "max_cost_micros_per_request",
+        }
+    ),
+    MODEL_ROUTING_POLICY_VERSION_V2: frozenset(
+        {"max_tokens_per_minute", "max_cost_micros_per_window", "budget_window_seconds"}
+    ),
+}
+
+
+def _check_introduction_table(
+    introduced: dict[int, frozenset[str]],
+    model: type[BaseModel],
+    label: str,
+) -> None:
+    """Each field belongs to exactly one version; only v1 fields are required on the wire."""
+    if set(introduced) != set(MODEL_ROUTING_POLICY_VERSIONS):
+        raise RuntimeError(
+            f"model-routing {label} introduction table must cover exactly the accepted versions "
+            f"{sorted(MODEL_ROUTING_POLICY_VERSIONS)}, got {sorted(introduced)}"
+        )
+    declared = [name for names in introduced.values() for name in names]
+    if len(declared) != len(set(declared)) or set(declared) != set(model.model_fields):
+        raise RuntimeError(
+            f"model-routing {label} introduction table must assign every field of "
+            f"{model.__name__} to exactly one version, got {sorted(declared)}"
+        )
+    for version, names in introduced.items():
+        for name in names:
+            is_v1 = version == MODEL_ROUTING_POLICY_VERSION_V1
+            if model.model_fields[name].is_required() != is_v1:
+                raise RuntimeError(
+                    f"model-routing {label} field {name!r} is introduced at version {version} but "
+                    f"its wire requiredness does not match (v1 fields are required, later fields "
+                    "carry defaults)"
+                )
+
+
+_check_introduction_table(_POLICY_VERSION_INTRODUCED_ROUTE_FIELDS, ModelRoutingRoute, "route")
+_check_introduction_table(_POLICY_VERSION_INTRODUCED_LIMIT_FIELDS, ModelRoutingLimits, "limits")
+
+
+def _cumulative_post_v1_route_and_limit_fields(
+    versions: tuple[int, ...],
+    introduced_route_fields: dict[int, frozenset[str]],
+    introduced_limit_fields: dict[int, frozenset[str]],
+) -> dict[int, frozenset[str]]:
+    table: dict[int, frozenset[str]] = {}
+    accumulated: frozenset[str] = frozenset()
+    for version in sorted(versions):
+        if version != MODEL_ROUTING_POLICY_VERSION_V1:
+            accumulated |= introduced_route_fields[version] | introduced_limit_fields[version]
+        table[version] = accumulated
+    return table
+
+
+_POLICY_VERSION_ROUTE_AND_LIMIT_FIELDS: dict[int, frozenset[str]] = (
+    _cumulative_post_v1_route_and_limit_fields(
+        MODEL_ROUTING_POLICY_VERSIONS,
+        _POLICY_VERSION_INTRODUCED_ROUTE_FIELDS,
+        _POLICY_VERSION_INTRODUCED_LIMIT_FIELDS,
+    )
+)
+_SHAPE_GATED_ROUTE_FIELDS: frozenset[str] = frozenset().union(
+    *(
+        names
+        for version, names in _POLICY_VERSION_INTRODUCED_ROUTE_FIELDS.items()
+        if version != MODEL_ROUTING_POLICY_VERSION_V1
+    )
+)
+_SHAPE_GATED_LIMIT_FIELDS: frozenset[str] = frozenset().union(
+    *(
+        names
+        for version, names in _POLICY_VERSION_INTRODUCED_LIMIT_FIELDS.items()
+        if version != MODEL_ROUTING_POLICY_VERSION_V1
+    )
+)
 
 
 class ModelRoutingPolicyClaims(_ContractModel):
     artifact_type: Literal[MODEL_ROUTING_POLICY_TYPE]
-    policy_version: Literal[MODEL_ROUTING_POLICY_VERSION]
+    policy_version: ModelRoutingPolicyVersion
     issuer: StrictStr
     key_id: StrictStr
     subject: StrictStr
@@ -85,7 +189,7 @@ class ModelRoutingPolicyClaims(_ContractModel):
 
 class ModelRoutingPolicyEnvelope(_ContractModel):
     policy_id: StrictStr
-    policy_version: Literal[MODEL_ROUTING_POLICY_VERSION]
+    policy_version: ModelRoutingPolicyVersion
     algorithm: Literal["ed25519"]
     canonicalization: Literal[MODEL_ROUTING_POLICY_CANONICALIZATION]
     issuer: StrictStr
@@ -201,6 +305,30 @@ def _parse_timestamp(value: str) -> datetime:
         raise ModelRoutingPolicyError("invalid_validity_window") from exc
 
 
+def _validate_route_version_shape(
+    routes: list[ModelRoutingRoute],
+    *,
+    policy_version: int,
+) -> None:
+    """Require every route to carry exactly its version's post-v1 key set.
+
+    The post-v1 fields are declared ``| None = None`` so that one model can
+    parse every version, but that default is a parsing device, not permission
+    to omit them: a signer emitting version N MUST serialise all of N's keys,
+    using an explicit ``null`` where unused, and MUST NOT emit a later
+    version's keys at all. Both directions fail the whole artifact as
+    ``malformed_claims``.
+    """
+
+    expected = _POLICY_VERSION_ROUTE_AND_LIMIT_FIELDS[policy_version]
+    for route in routes:
+        present = (route.model_fields_set & _SHAPE_GATED_ROUTE_FIELDS) | (
+            route.limits.model_fields_set & _SHAPE_GATED_LIMIT_FIELDS
+        )
+        if present != expected:
+            raise ModelRoutingPolicyError("malformed_claims")
+
+
 def _validate_routes(routes: list[ModelRoutingRoute]) -> None:
     if not 1 <= len(routes) <= MAX_MODEL_ROUTING_ROUTES:
         raise ModelRoutingPolicyError("invalid_routes")
@@ -231,8 +359,31 @@ def _validate_routes(routes: list[ModelRoutingRoute]) -> None:
             route.limits.max_output_tokens,
             route.limits.max_requests_per_minute,
             route.limits.max_cost_micros_per_request,
+            route.limits.max_tokens_per_minute,
+            route.limits.max_cost_micros_per_window,
+            route.limits.budget_window_seconds,
         ):
             if limit is not None and (limit <= 0 or limit > MAX_SAFE_INTEGER):
+                raise ModelRoutingPolicyError("invalid_routes")
+        limits = route.limits
+        if (limits.max_cost_micros_per_window is None) != (limits.budget_window_seconds is None):
+            raise ModelRoutingPolicyError("invalid_routes")
+        if (
+            limits.budget_window_seconds is not None
+            and limits.budget_window_seconds > MAX_MODEL_ROUTING_BUDGET_WINDOW_SECONDS
+        ):
+            raise ModelRoutingPolicyError("invalid_routes")
+        if route.candidate_weights is not None:
+            weights = route.candidate_weights
+            if len(weights) != len(fallbacks) + 1:
+                raise ModelRoutingPolicyError("invalid_routes")
+            if any(weight < 0 or weight > MAX_SAFE_INTEGER for weight in weights):
+                raise ModelRoutingPolicyError("invalid_routes")
+            if not 0 < sum(weights) <= MAX_SAFE_INTEGER:
+                raise ModelRoutingPolicyError("invalid_routes")
+        if route.shadow_model is not None:
+            shadow_model = _non_empty(route.shadow_model, code="invalid_routes")
+            if shadow_model == primary_model or shadow_model in fallbacks:
                 raise ModelRoutingPolicyError("invalid_routes")
 
 
@@ -388,6 +539,7 @@ def verify_model_routing_policy(
         claims = ModelRoutingPolicyClaims.model_validate(raw_claims, strict=True)
     except ValidationError as exc:
         raise ModelRoutingPolicyError("malformed_claims") from exc
+    _validate_route_version_shape(claims.routes, policy_version=claims.policy_version)
 
     for value in (
         claims.issuer,

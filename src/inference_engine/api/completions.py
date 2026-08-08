@@ -36,7 +36,7 @@ from ..schemas import (
     CompletionResponse,
     Usage,
 )
-from . import _fallback, _model_routing
+from . import _fallback, _model_routing, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -96,11 +96,21 @@ async def create_completion(
         raise HTTPException(status_code=400, detail="prompt must contain at least one string")
 
     params = _params(req)
+    input_token_upper_bound = _model_routing.completion_input_token_upper_bound(req)
+    output_token_budget = int(params.max_tokens or 0) * len(prompts)
+    _usage.bind_request(
+        identity=identity,
+        requested_model=req.model,
+        operation="text_completion",
+        stream=False,
+        input_token_upper_bound=input_token_upper_bound,
+        output_token_budget=output_token_budget,
+    )
     decision = await _model_routing.enforce_generation_request(
         identity=identity,
         requested_model=req.model,
-        input_token_upper_bound=_model_routing.completion_input_token_upper_bound(req),
-        output_token_budget=int(params.max_tokens or 0) * len(prompts),
+        input_token_upper_bound=input_token_upper_bound,
+        output_token_budget=output_token_budget,
     )
     active = await _model_routing.resolve_initial_candidate(
         requested_model=req.model,
@@ -140,6 +150,10 @@ async def create_completion(
                 _raise_generation_http_error(exc)
             active = fallback
 
+    _usage.bind_usage(
+        input_tokens=total_prompt_tokens,
+        output_tokens=total_completion_tokens,
+    )
     return CompletionResponse(
         id=f"cmpl-{uuid.uuid4().hex}",
         created=int(time.time()),
@@ -156,6 +170,7 @@ async def create_completion(
 
 
 def _raise_generation_http_error(exc: Exception) -> None:
+    _usage.bind_error(exc)
     if isinstance(exc, HTTPException):
         raise exc
     if isinstance(exc, ContextLengthExceededError):
@@ -214,6 +229,11 @@ async def _complete_once(
                 **scheduler_span_attrs(lease),
             },
         ) as s:
+            _usage.bind_serving(
+                adapter=adapter,
+                model_name=model_name,
+                fallback_info=fallback_info,
+            )
             for index, prompt in enumerate(prompts):
                 try:
                     result = await adapter.complete(prompt, params)

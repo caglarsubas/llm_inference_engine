@@ -9,9 +9,39 @@ every test module gets the same exporter instance.
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
 
-from inference_engine import otel as otel_mod
+
+def _isolate_model_stores() -> None:
+    """Point the model-store settings at an empty scratch store for this run.
+
+    ``inference_engine.config.settings`` is built at import time and
+    ``inference_engine.api.state`` constructs ``OllamaRegistry`` at module
+    scope, which raises when the store is missing — so this has to happen
+    before the first ``inference_engine`` import, not in a fixture. An
+    ``OLLAMA_MODELS_DIR`` / ``MLX_MODELS_DIR`` already in the environment
+    always wins; anything in ``.env`` does not.
+    """
+    if "OLLAMA_MODELS_DIR" in os.environ and "MLX_MODELS_DIR" in os.environ:
+        return
+    root = Path(tempfile.mkdtemp(prefix="inference-engine-tests-"))
+    atexit.register(shutil.rmtree, root, True)
+    (root / "ollama" / "manifests").mkdir(parents=True)
+    (root / "ollama" / "blobs").mkdir(parents=True)
+    (root / "mlx").mkdir()
+    os.environ.setdefault("OLLAMA_MODELS_DIR", str(root / "ollama"))
+    os.environ.setdefault("MLX_MODELS_DIR", str(root / "mlx"))
+
+
+_isolate_model_stores()
+
+from inference_engine import otel as otel_mod  # noqa: E402 — see _isolate_model_stores()
 
 
 @pytest.fixture(scope="session")

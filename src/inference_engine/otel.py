@@ -231,6 +231,25 @@ def mark_span_error(span: Any, exc: BaseException) -> None:
     span.set_status(Status(StatusCode.ERROR, str(exc)))
 
 
+def current_trace_context() -> tuple[str, str] | None:
+    """Hex ``(trace_id, span_id)`` of the span in flight, else ``None``.
+
+    Uses only the stable ``opentelemetry.trace`` API so records emitted outside
+    the span pipeline (the usage ledger) can still be joined back to a trace
+    without any caller branching on whether tracing is configured.
+    """
+    if _tracer is None:
+        return None
+    try:
+        from opentelemetry import trace  # noqa: PLC0415
+    except ImportError:
+        return None
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return None
+    return format(context.trace_id, "032x"), format(context.span_id, "016x")
+
+
 def instrument_fastapi(app: Any) -> None:
     """Auto-create one parent span per HTTP request (POST /v1/chat/completions, etc.)."""
     if _tracer is None:

@@ -25,7 +25,7 @@ from ..schemas import (
     ChatImageUrlContentPart,
     CompletionRequest,
 )
-from . import _fallback
+from . import _fallback, _usage
 from .state import app_state
 
 
@@ -163,6 +163,11 @@ def _emit_denial_span(
         attrs["model_routing.route.id"] = route_id
     if workload is not None:
         attrs["model_routing.denial.workload"] = workload
+    _usage.bind_denial(
+        code=code,
+        policy_id=active.policy_id if active is not None else None,
+        route_id=route_id,
+    )
     with span("model.routing.decision", **attrs):
         pass
 
@@ -175,7 +180,7 @@ async def enforce_generation_request(
     output_token_budget: int,
 ) -> ModelRoutingDecision | None:
     try:
-        return await asyncio.to_thread(
+        decision = await asyncio.to_thread(
             enforce_model_routing_request,
             app_state.model_routing_runtime,
             identity=identity,
@@ -192,6 +197,8 @@ async def enforce_generation_request(
             route_id=exc.route_id,
         )
         raise _enforcement_http_error(exc) from exc
+    _usage.bind_decision(decision)
+    return decision
 
 
 def reject_unsupported_governed_workload(
@@ -309,10 +316,12 @@ async def resolve_initial_candidate(
         routing_span.bind(**{"error.type": "model_route_unavailable"})
 
     if decision is None:
+        _usage.bind_error_type("model_not_found")
         raise HTTPException(
             status_code=404,
             detail=f"model not found: {requested_model!r}",
         )
+    _usage.bind_error_type("model_route_unavailable")
     raise HTTPException(
         status_code=503,
         detail={

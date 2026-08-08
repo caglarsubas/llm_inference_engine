@@ -110,6 +110,8 @@ def test_status_is_payload_free_and_reports_active_identity() -> None:
         "active": True,
         "policy_id": "routing-golden-v1",
         "revision": 1,
+        "policy_version": 1,
+        "accepted_policy_versions": [1, 2],
         "digest": "sha256:b320a77f8c2a14916c0776a051eca6be614fbdb52ac6854783e651680c6973be",
         "source": "last-known-good",
         "org_id": "org-golden",
@@ -133,6 +135,14 @@ def test_status_reports_disabled_without_claiming_policy() -> None:
     assert response.status_code == 200
     assert response.json()["active"] is False
     assert response.json()["digest"] is None
+
+
+def test_status_reports_accepted_policy_versions_without_an_active_policy() -> None:
+    app_state.model_routing_policy = None
+    response = TestClient(app).get("/v1/admin/model-routing-policy")
+    assert response.status_code == 200
+    assert response.json()["accepted_policy_versions"] == [1, 2]
+    assert response.json()["policy_version"] is None
 
 
 def test_status_reports_deployment_shared_rate_limit_scope() -> None:

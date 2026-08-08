@@ -53,12 +53,19 @@ from ..schemas import (
     Usage,
     chat_content_text,
 )
-from . import _auto_eval, _fallback, _model_routing, _tool_audit
+from .. import usage_ledger
+from . import _auto_eval, _fallback, _model_routing, _tool_audit, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
 log = get_logger("api.chat")
+
+# SSE answers 200 even when the stream ends in an ``{"event": "error"}`` frame,
+# so the ledger outcome has to come from the resolved finish reason rather than
+# the HTTP status. Anything unmapped bills as "ok" — a cancelled stream still
+# consumed tokens, and ``finish_reason`` keeps that distinction readable.
+_STREAM_OUTCOMES = {"timeout": "timeout", "error": "error"}
 
 
 def _params_from_request(req: ChatCompletionRequest) -> GenerationParams:
@@ -260,11 +267,23 @@ async def chat_completions(
     # both describe who asked, not what the engine did.
     intent_attrs = {**_intent_attrs(req), **_end_user_attrs(req.user)}
     params = _params_from_request(req)
+    input_token_upper_bound = _model_routing.chat_input_token_upper_bound(req)
+    output_token_budget = int(params.max_tokens or 0)
+    # Before enforcement, so a denied request still records the model that was
+    # asked for and the bounds it was judged against.
+    _usage.bind_request(
+        identity=identity,
+        requested_model=req.model,
+        operation="chat",
+        stream=bool(req.stream),
+        input_token_upper_bound=input_token_upper_bound,
+        output_token_budget=output_token_budget,
+    )
     decision = await _model_routing.enforce_generation_request(
         identity=identity,
         requested_model=req.model,
-        input_token_upper_bound=_model_routing.chat_input_token_upper_bound(req),
-        output_token_budget=int(params.max_tokens or 0),
+        input_token_upper_bound=input_token_upper_bound,
+        output_token_budget=output_token_budget,
     )
     active = await _model_routing.resolve_initial_candidate(
         requested_model=req.model,
@@ -568,6 +587,11 @@ async def _generate_blocking_once(
                 **scheduler_span_attrs(lease),
             },
         ) as s:
+            _usage.bind_serving(
+                adapter=adapter,
+                model_name=model_name,
+                fallback_info=fallback_info,
+            )
             # Audit inbound tool messages BEFORE generation — these record what
             # tools the agent has already executed and is now feeding back.
             n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
@@ -632,6 +656,7 @@ async def _generate_blocking_once(
 
 
 def _raise_generation_http_error(exc: Exception) -> None:
+    _usage.bind_error(exc)
     if isinstance(exc, HTTPException):
         raise exc
     if isinstance(exc, ContextLengthExceededError):
@@ -710,6 +735,16 @@ async def _enforce_structured_output(
     try:
         validate_json_document(retried.text, params.json_schema)
     except SchemaViolation as exc:
+        # This 502 does not go through _raise_generation_http_error, and
+        # _blocking_response's usage bind is downstream of it, so the ledger
+        # is completed here. Both generations really ran: rejecting the
+        # document does not un-spend the tokens they consumed.
+        _usage.bind_error_type("structured_output_invalid")
+        _usage.bind_usage(
+            input_tokens=result.prompt_tokens + retried.prompt_tokens,
+            output_tokens=result.completion_tokens + retried.completion_tokens,
+            cached_tokens=result.cached_tokens + retried.cached_tokens,
+        )
         raise HTTPException(
             status_code=502,
             detail={
@@ -797,6 +832,15 @@ async def _blocking_response(
         params,
         identity,
         intent_attrs,
+    )
+    # Bound here rather than inside _generate_blocking_once: the structured
+    # output retry sums both attempts, and binding per-attempt would let the
+    # retry's own smaller counts overwrite the total the caller is billed for.
+    _usage.bind_usage(
+        input_tokens=result.prompt_tokens,
+        output_tokens=result.completion_tokens,
+        cached_tokens=result.cached_tokens,
+        finish_reason=result.finish_reason,
     )
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -1099,6 +1143,11 @@ async def _stream_response(
                     **scheduler_span_attrs(scheduler_lease),
                 },
             ) as s:
+                _usage.bind_serving(
+                    adapter=adapter,
+                    model_name=model_name,
+                    fallback_info=fallback_info,
+                )
                 n_tool_results = _tool_audit.emit_tool_results(s, list(messages))
                 try:
                     stream_started = time.perf_counter()
@@ -1292,8 +1341,10 @@ async def _stream_response(
                     # adapter call (e.g. tool-result auditing raised). Recording
                     # then would push a perf_counter epoch into the histogram.
                     measured = stream_started > 0.0
+                    ttft_ms: float | None = None
                     if measured and first_token_at is not None:
                         ttft = first_token_at - stream_started
+                        ttft_ms = round(ttft * 1000, 3)
                         stream_attrs["gen_ai.server.time_to_first_token"] = ttft
                         # Only a successful stream describes real serving
                         # latency — a cancelled or errored one would skew the
@@ -1324,6 +1375,14 @@ async def _stream_response(
                             input_tokens=usage_prompt_tokens or None,
                             output_tokens=usage_completion_tokens or None,
                         )
+                    _usage.bind_usage(
+                        input_tokens=usage_prompt_tokens,
+                        output_tokens=usage_completion_tokens,
+                        cached_tokens=adapter.last_cached_prompt_tokens,
+                        ttft_ms=ttft_ms,
+                        finish_reason=resolved_finish,
+                        outcome=_STREAM_OUTCOMES.get(resolved_finish, "ok"),
+                    )
                     s.bind(**stream_attrs)
 
         if cancelled:
@@ -1358,5 +1417,9 @@ async def _stream_response(
                 identity=identity,
             )
     finally:
+        # On the fallback path the inner generator has already flushed the
+        # model that really served; flush() is idempotent, so this second call
+        # cannot produce a duplicate invoice line.
+        usage_ledger.flush(usage_ledger.current())
         if scheduler_lease is not None:
             await app_state.scheduler.release(scheduler_lease)

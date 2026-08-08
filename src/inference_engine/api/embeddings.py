@@ -34,7 +34,7 @@ from ..schemas import (
     EmbeddingResponse,
     Usage,
 )
-from . import _fallback, _model_routing
+from . import _fallback, _model_routing, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -94,6 +94,11 @@ async def _embed_once(
                 **scheduler_span_attrs(lease),
             },
         ) as embedding_span:
+            _usage.bind_serving(
+                adapter=active.adapter,
+                model_name=active.model_name,
+                fallback_info=active.fallback_info,
+            )
             outcome = await app_state.embed_coalescer.submit(active.adapter, inputs)
             dims = len(outcome.embeddings[0]) if outcome.embeddings else 0
             embedding_span.bind(
@@ -128,10 +133,19 @@ async def create_embeddings(
     if not inputs:
         raise HTTPException(status_code=400, detail="input must contain at least one string")
 
+    input_token_upper_bound = _model_routing.embedding_input_token_upper_bound(inputs)
+    _usage.bind_request(
+        identity=identity,
+        requested_model=req.model,
+        operation="embeddings",
+        stream=False,
+        input_token_upper_bound=input_token_upper_bound,
+        output_token_budget=0,
+    )
     decision = await _model_routing.enforce_generation_request(
         identity=identity,
         requested_model=req.model,
-        input_token_upper_bound=_model_routing.embedding_input_token_upper_bound(inputs),
+        input_token_upper_bound=input_token_upper_bound,
         output_token_budget=0,
     )
     active = await _model_routing.resolve_initial_candidate(
@@ -176,6 +190,7 @@ async def create_embeddings(
                 raise
             active = fallback
 
+    _usage.bind_usage(input_tokens=outcome.prompt_tokens, output_tokens=0)
     return EmbeddingResponse(
         data=[EmbeddingObject(index=i, embedding=vec) for i, vec in enumerate(outcome.embeddings)],
         model=active.model_name,
