@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import fields
 
+import httpx
 import pytest
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -333,16 +335,21 @@ async def test_a_stream_whose_body_never_runs_is_still_emitted() -> None:
     assert record["outcome"] == "ok"
 
 
-@pytest.mark.skip(
+@pytest.mark.skipif(
+    sys.version_info < (3, 12),
     reason=(
-        "Streaming plus fallback deadlocks when driven through the full ASGI "
-        "stack, on 3.11 and 3.12 alike, and reproduces on an unmodified main "
-        "with none of the ledger in the path. Every other streaming-fallback "
-        "test calls _stream_response directly, which is why nothing caught it "
-        "before. Un-skip once the deadlock itself is fixed."
-    )
+        "A streamed response that falls back deadlocks the in-process test "
+        "harness on 3.11 — TestClient's blocking portal deadlocks on both "
+        "versions, ASGITransport only on 3.11, and both reproduce on an "
+        "unmodified main with none of the ledger in the path. The same request "
+        "completes in 0.01s over uvicorn, so the limitation is the harness, "
+        "not the app."
+    ),
 )
-def test_streaming_fallback_emits_one_record_for_the_serving_model(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_streaming_fallback_emits_one_record_for_the_serving_model(monkeypatch) -> None:
+    # ASGITransport rather than TestClient: TestClient's blocking portal
+    # deadlocks on a streamed response that falls back.
     _install_models(
         monkeypatch,
         {
@@ -351,13 +358,17 @@ def test_streaming_fallback_emits_one_record_for_the_serving_model(monkeypatch) 
         },
     )
 
-    with TestClient(app).stream(
-        "POST",
-        CHAT,
-        json={"model": "reasoning", "messages": _MESSAGES, "stream": True},
-    ) as response:
-        assert response.status_code == 200
-        body = "".join(response.iter_text())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://engine",
+    ) as client:
+        async with client.stream(
+            "POST",
+            CHAT,
+            json={"model": "reasoning", "messages": _MESSAGES, "stream": True},
+        ) as response:
+            assert response.status_code == 200
+            body = "".join([chunk async for chunk in response.aiter_text()])
 
     assert "signed" in body
     record = _one()
