@@ -296,6 +296,7 @@ class Settings(BaseSettings):
     model_routing_max_file_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
     model_routing_input_token_reserve: int = Field(default=1_024, ge=0)
     model_routing_rate_limit_max_buckets: int = Field(default=10_000, ge=1)
+    model_routing_rate_limit_max_window_entries: int = Field(default=100_000, ge=1)
     model_routing_rate_limit_scope: Literal["process-replica", "deployment-shared"] = Field(
         default="process-replica"
     )

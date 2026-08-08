@@ -148,57 +148,69 @@ async def create_embeddings(
         input_token_upper_bound=input_token_upper_bound,
         output_token_budget=0,
     )
-    active = await _model_routing.resolve_initial_candidate(
-        requested_model=req.model,
-        decision=decision,
-        identity=identity,
-    )
+    try:
+        active = await _model_routing.resolve_initial_candidate(
+            requested_model=req.model,
+            decision=decision,
+            identity=identity,
+        )
 
-    while True:
-        try:
-            outcome = await _embed_once(
-                active=active,
-                inputs=inputs,
-                identity=identity,
-                decision=decision,
-            )
-            break
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if decision is None:
-                if isinstance(exc, EmbeddingsNotSupportedError):
-                    raise HTTPException(
-                        status_code=501,
-                        detail=f"embeddings not supported by {exc} backend",
-                    ) from exc
+        while True:
+            try:
+                outcome = await _embed_once(
+                    active=active,
+                    inputs=inputs,
+                    identity=identity,
+                    decision=decision,
+                )
+                break
+            except HTTPException:
                 raise
-            fallback = await _model_routing.resolve_next_fallback(
-                decision=decision,
-                current_candidate_index=active.candidate_index,
-                adapter=active.adapter,
-                model_name=active.model_name,
-                exc=exc,
-                identity=identity,
-            )
-            if fallback is None:
-                if isinstance(exc, EmbeddingsNotSupportedError):
-                    raise HTTPException(
-                        status_code=501,
-                        detail=f"embeddings not supported by {exc} backend",
-                    ) from exc
-                raise
-            active = fallback
+            except Exception as exc:
+                if decision is None:
+                    if isinstance(exc, EmbeddingsNotSupportedError):
+                        raise HTTPException(
+                            status_code=501,
+                            detail=f"embeddings not supported by {exc} backend",
+                        ) from exc
+                    raise
+                fallback = await _model_routing.resolve_next_fallback(
+                    decision=decision,
+                    current_candidate_index=active.candidate_index,
+                    adapter=active.adapter,
+                    model_name=active.model_name,
+                    exc=exc,
+                    identity=identity,
+                )
+                if fallback is None:
+                    if isinstance(exc, EmbeddingsNotSupportedError):
+                        raise HTTPException(
+                            status_code=501,
+                            detail=f"embeddings not supported by {exc} backend",
+                        ) from exc
+                    raise
+                active = fallback
 
-    _usage.bind_usage(input_tokens=outcome.prompt_tokens, output_tokens=0)
-    return EmbeddingResponse(
-        data=[EmbeddingObject(index=i, embedding=vec) for i, vec in enumerate(outcome.embeddings)],
-        model=active.model_name,
-        request_key_source=_request_key_source(active.adapter),
-        **_fallback.response_fields(active.fallback_info),
-        usage=Usage(
-            prompt_tokens=outcome.prompt_tokens,
-            completion_tokens=0,
-            total_tokens=outcome.prompt_tokens,
-        ),
-    )
+        _model_routing.observe_usage(
+            decision,
+            model=active.model_name,
+            input_tokens=outcome.prompt_tokens,
+            output_tokens=0,
+        )
+        _usage.bind_usage(input_tokens=outcome.prompt_tokens, output_tokens=0)
+        return EmbeddingResponse(
+            data=[
+                EmbeddingObject(index=i, embedding=vec)
+                for i, vec in enumerate(outcome.embeddings)
+            ],
+            model=active.model_name,
+            request_key_source=_request_key_source(active.adapter),
+            **_fallback.response_fields(active.fallback_info),
+            usage=Usage(
+                prompt_tokens=outcome.prompt_tokens,
+                completion_tokens=0,
+                total_tokens=outcome.prompt_tokens,
+            ),
+        )
+    finally:
+        await _model_routing.settle_reservation(decision)

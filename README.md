@@ -677,8 +677,9 @@ common ones, so a var missing from that file is still settable:
 | `MODEL_ROUTING_CLOCK_SKEW_SECONDS` | `30`                                                                           | Explicit verification skew, bounded to 300 seconds                          |
 | `MODEL_ROUTING_MAX_FILE_BYTES` | `1048576` (1 MiB)                                                                  | Size bound applied to signed artifacts before parsing                       |
 | `MODEL_ROUTING_INPUT_TOKEN_RESERVE` | `1024`                                                                        | Conservative reserve for model-side chat templates during pre-dispatch bounds |
-| `MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS` | `10000`                                                                     | Fail-closed cap for process-local policy RPM buckets                        |
-| `MODEL_ROUTING_RATE_LIMIT_SCOPE` | `process-replica`                                                                  | `process-replica` or exact `deployment-shared` policy RPM enforcement       |
+| `MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS` | `10000`                                                                     | Fail-closed cap on process-local policy windows; one route holds one window per enforced dimension, so a route bounded by requests, tokens, and spend occupies three |
+| `MODEL_ROUTING_RATE_LIMIT_MAX_WINDOW_ENTRIES` | `100000`                                                             | Fail-closed cap on reservations one token or spend window retains, local and shared alike; size it above the requests one route serves in one `budgetWindowSeconds` |
+| `MODEL_ROUTING_RATE_LIMIT_SCOPE` | `process-replica`                                                                  | `process-replica` or exact `deployment-shared` policy rate/budget enforcement |
 | `MODEL_ROUTING_RATE_LIMIT_REDIS_URL` | empty                                                                         | Direct Redis-compatible URL for shared scope; prefer the mounted file source |
 | `MODEL_ROUTING_RATE_LIMIT_REDIS_URL_FILE` | empty                                                                    | Mounted Redis-compatible URL used by the shared limiter                     |
 | `MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE` | empty                                                              | Mounted strict JSON config for TLS/auth Sentinel discovery and replica acknowledgement |
@@ -1959,8 +1960,9 @@ model registry lookup:
 1. Re-check policy validity, expiry, and offline lease at request time.
 2. Require the caller's `org_id` to match the signed policy organization.
 3. Resolve an exact requested-model alias or the final wildcard route.
-4. Reject caller input/output bounds, RPM, or worst-case fallback cost before
-   loading a model or contacting an upstream.
+4. Reject caller input/output bounds, RPM, TPM, worst-case fallback cost, or an
+   exhausted window spend budget before loading a model or contacting an
+   upstream.
 5. Try only the signed primary and ordered fallback set for timeout, backend,
    or embedding-capability failures. Global OpenRouter fallback is not
    consulted in governed mode.
@@ -1983,19 +1985,97 @@ cannot activate unless every signed candidate has pricing. The catalog is
 deployment metadata, not hidden policy: its digest is exposed in status and on
 every governed decision span.
 
-`maxRequestsPerMinute` is a sliding window keyed by policy, route,
-organization, and tenant. The dependency-free default remains
-`process-replica`. Setting `MODEL_ROUTING_RATE_LIMIT_SCOPE=deployment-shared`
-uses a tenant-owned Redis-compatible service and one atomic server-time script
-for exact aggregate enforcement across replicas. Exactly one direct URL, URL
-file, or Sentinel config file must be selected. Store keys contain only a
-SHA-256 identity digest; request, route, tenant, and organization values are not
-stored in clear text. Remote connections require TLS unless the operator
-explicitly enables insecure transport for an isolated test profile. Startup
-and request-time store failures are fail-closed, with no downgrade to the local
-limiter and no call to the Orchestra control plane. The admin reload swaps
-policy and pricing as one immutable runtime snapshot, so requests cannot
-observe a mixed revision.
+`maxRequestsPerMinute`, `maxTokensPerMinute`, and the
+`maxCostMicrosPerWindow`/`budgetWindowSeconds` pair are sliding windows keyed by
+policy, route, organization, and tenant. All three are evaluated in a single
+atomic step, before model acquisition, and admit together or not at all: a
+request denied on its token window leaves no charge on its request window. When
+more than one of them would deny, the reported code is fixed: windows are
+evaluated in the order requests, tokens, spend, the entry ceiling below is
+checked ahead of the limit within each, and the first denial is the answer. Both
+scopes apply that order, so a signed policy denies with the same code and the
+same status wherever it runs.
+Each has its own stable denial code and `Retry-After` — `rate_limit_exceeded`,
+`token_rate_limit_exceeded`, and `budget_exceeded`, all answered 429. A token
+denial additionally carries `x-ratelimit-limit-tokens`,
+`x-ratelimit-remaining-tokens`, and `x-ratelimit-reset-tokens`; a request denial
+carries the `-requests` trio it always did. A spend denial carries neither:
+there is no OpenAI header dimension for a budget window, and reporting the
+request window as exhausted when it is not would send an SDK into an hour-long
+backoff it does not owe.
+
+`maxTokensPerMinute` and `maxCostMicrosPerWindow` are **pre-consumed, then
+settled**. Admission reserves the conservative upper bound — the input estimate
+plus the request's own output-token budget (its `max_tokens`, itself already
+bounded by the route's `maxOutputTokens`) for the token window, and the same
+worst-case-across-every-fallback figure `maxCostMicrosPerRequest` uses for the
+spend window — so a request is never admitted against a budget concurrent
+requests have already committed. When the call finishes, the reservation is
+revised down (or up) to the tokens actually served and their catalog price.
+Settlement runs on every exit: success, upstream error, structured-output
+rejection, and client disconnect, with a streamed request settling when its
+body ends rather than when its route returns. A request that reported no usage
+at all releases its whole reservation. Two cases keep their hold instead,
+because what they consumed is real and unknown rather than absent: a stream
+abandoned mid-generation, whose token counts ride on a terminal frame the
+client is no longer there to receive, keeps its whole reserve, so disconnecting
+early is not a way around either window; and a request served by a model
+missing from the pricing catalog keeps its spend hold. In flight, a window can
+therefore be occupied by up to the sum of the outstanding reservations, and
+never by more.
+
+Because settlement revises entries downward rather than removing them, a token
+or spend window is not bounded by its own limit the way a request window is: a
+request window holds one entry per admitted request and so can never exceed
+`maxRequestsPerMinute`, while a settling window holds one entry per served
+request until that entry expires or settles to exactly zero.
+`MODEL_ROUTING_RATE_LIMIT_MAX_WINDOW_ENTRIES` caps how many reservations one
+*settling* window retains and is fail-closed: an admission that would exceed it
+is denied `rate_limit_state_capacity` (503). The cap applies to the token and
+spend windows in both scopes, and to request windows in neither — a signed
+`maxRequestsPerMinute` above the cap is still enforced at the number that was
+signed, in both scopes. A reservation settled to zero is removed outright
+rather than left dating the window.
+
+**Size the cap against the widest budget window on the deployment, not against
+the default.** The reachable load is one retained entry per served request per
+(policy, route, organization, tenant) for the length of that window, so a route
+carrying `budgetWindowSeconds: 86400` at the default 100 000 entries fails
+closed at roughly 1.2 requests per second sustained, however far under budget
+the actual spend is. Set the cap to at least the requests you expect one such
+route to serve in one window, and budget memory accordingly: an entry is a
+sorted-set member plus a hash field per window, order of a hundred bytes.
+Raising the cap costs memory, not latency: the shared script reclaims expired
+entries in bounded batches spread over successive admissions, so no single
+request pays for clearing a full window and no tenant waits behind one.
+`/metrics` carries `inference_engine_model_routing_rate_limit_window_entries_peak`,
+the most entries one window has held since the process started, alongside
+`..._max_window_entries` and a `..._state_capacity_denials_total` counter — the
+peak against the cap is the headroom signal, and the counter is the cliff.
+
+The dependency-free default remains `process-replica`. **`process-replica` is a
+per-replica budget, not a fleet budget**: every replica keeps its own windows,
+so a deployment of N replicas will admit up to N times each signed ceiling.
+Setting `MODEL_ROUTING_RATE_LIMIT_SCOPE=deployment-shared` uses a tenant-owned
+Redis-compatible service and one atomic server-time script for exact aggregate
+enforcement across replicas — one round trip to admit all three dimensions, one
+to settle the two that settle. Exactly one direct URL, URL file, or Sentinel
+config file must be selected. Store keys contain only a SHA-256 identity digest;
+request, route, tenant, and organization values are not stored in clear text.
+Remote connections require TLS unless the operator explicitly enables insecure
+transport for an isolated test profile. Startup and request-time store failures
+are fail-closed for every dimension alike, with no downgrade to the local
+limiter and no call to the Orchestra control plane. A failure while *settling*
+is the one exception: the request has already been served, so the failure is
+logged and the reservation stands at its admission value until its window
+slides past it — restrictive, never permissive. The admin reload swaps policy
+and pricing as one immutable runtime snapshot, so requests cannot observe a
+mixed revision.
+
+A route that leaves the v2 limit fields null, and every v1 policy, reserves
+nothing and touches no additional store keys. A route bounded by
+`maxCostMicrosPerWindow` cannot activate unless every signed candidate has
+pricing, exactly as `maxCostMicrosPerRequest` already required.
 
 The verifier accepts `policyVersion` 1 and 2. Version 2 adds
 `maxTokensPerMinute`, the `maxCostMicrosPerWindow` and `budgetWindowSeconds`
@@ -2005,9 +2085,11 @@ a v1 policy carrying any v2 key, or a v2 policy omitting one, is rejected as
 `invalid_routes` — including a `shadowModel` naming any live candidate of its
 own route, that is its `primaryModel` or any of its `fallbackModels`. The v1
 shape check runs before every claim-level check, so a v1 policy carrying a v2
-key reports `malformed_claims` whatever else is wrong with it. The v2 fields
-are parsed, bounded, and reported but not yet
-enforced at request time. `/v1/admin/model-routing-policy` and the model-plane
+key reports `malformed_claims` whatever else is wrong with it.
+`maxTokensPerMinute` and the `maxCostMicrosPerWindow`/`budgetWindowSeconds`
+pair are enforced at request time as described above; `candidateWeights` and
+`shadowModel` are parsed, bounded, and reported but not yet acted on.
+`/v1/admin/model-routing-policy` and the model-plane
 observation report `accepted_policy_versions` so the control plane can confirm
 fleet readiness before it starts signing v2.
 
@@ -2484,7 +2566,7 @@ Standard `llama` family models work on either local backend today.
 3. **Phase 4 — Prometa integration.** ✅ Real OTel exporter (OTLP/gRPC + Jaeger compose) · ✅ LLM-as-a-Judge eval harness · ✅ auto-judge attached to chat completions · ✅ server-side auto-eval policy (Prometa-authoritative) · ✅ tool-call audit logs (`gen_ai.tool_*` events with payload truncation).
 4. **Adapter coverage.** ✅ MLX-LM (Apple Silicon native) · ✅ vLLM for GPU-server workloads · ✅ Ollama-HTTP for architectures ahead of the llama.cpp wheel · ✅ OpenRouter for large open-weight models · SGLang · TensorRT-LLM for NVIDIA optimization.
 5. **Phase 5 — wire standardization.** ✅ `stream_options.include_usage` streaming usage trailer · ✅ OpenAI `error` envelope + `x-request-id` + `x-ratelimit-*` · ✅ `max_completion_tokens` · ✅ grammar-enforced Structured Outputs (`json_schema`) · ✅ logprobs, penalties, `logit_bias` · ✅ `usage.prompt_tokens_details.cached_tokens` · ✅ `/tokenize` + `/detokenize` · ✅ OTel GenAI semconv attrs + TTFT/TPOT metrics · `/v1/responses` (stateful; deferred) · batch/files/audio/moderations (deferred until a consumer needs them).
-6. **Phase 6 — model plane.** ✅ Signed Ed25519 routing policy, verified locally, with atomic LKG activation and offline lease · ✅ per-route input/output token, cost, and RPM ceilings with fail-closed pricing · ✅ exact `deployment-shared` RPM via Redis/Sentinel · ✅ asynchronous payload-free observation reporting (v1 + v2) · ✅ certified workload surface (`orchestra-model-plane-workload-v1`) · ✅ fail-closed TLS/mTLS listener · ✅ signed UBI images, SBOMs, and a standalone Helm chart with production + SNO-trial profiles · rerank, standalone eval, and chat-attached auto-eval under signed routing (today they fail closed in governed mode) · OpenShift lifecycle, backup/recovery, multi-replica load, and SLO certification.
+6. **Phase 6 — model plane.** ✅ Signed Ed25519 routing policy, verified locally, with atomic LKG activation and offline lease · ✅ per-route input/output token, cost, RPM, TPM, and window spend ceilings with fail-closed pricing and reserve-then-settle budgeting · ✅ exact `deployment-shared` rate and budget windows via Redis/Sentinel · ✅ asynchronous payload-free observation reporting (v1 + v2) · ✅ certified workload surface (`orchestra-model-plane-workload-v1`) · ✅ fail-closed TLS/mTLS listener · ✅ signed UBI images, SBOMs, and a standalone Helm chart with production + SNO-trial profiles · rerank, standalone eval, and chat-attached auto-eval under signed routing (today they fail closed in governed mode) · OpenShift lifecycle, backup/recovery, multi-replica load, and SLO certification.
 
 ## Constraints (as instructed)
 

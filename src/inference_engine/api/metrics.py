@@ -139,6 +139,29 @@ async def metrics() -> str:
         labels = f'{{resource="{_label_value(resource)}"}}'
         lines.append(f"inference_engine_scheduler_in_flight_by_resource{labels} {count}")
 
+    rate_limit = app_state.model_routing_rate_limiter.metrics_snapshot()
+    for metric, metric_type, help_text in (
+        (
+            "state_capacity_denials_total",
+            "counter",
+            "Requests denied because a budget window held its maximum reservations.",
+        ),
+        (
+            "window_entries_peak",
+            "gauge",
+            "Most reservations one budget window has held since process start.",
+        ),
+        (
+            "max_window_entries",
+            "gauge",
+            "Configured reservation ceiling for one budget window.",
+        ),
+    ):
+        name = f"inference_engine_model_routing_rate_limit_{metric}"
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {metric_type}")
+        lines.append(f"{name} {rate_limit[metric]}")
+
     ledger = usage_ledger.snapshot()
     lines.append(
         "# HELP inference_engine_usage_ledger_enabled Per-request usage ledger enabled flag."

@@ -285,72 +285,81 @@ async def chat_completions(
         input_token_upper_bound=input_token_upper_bound,
         output_token_budget=output_token_budget,
     )
-    active = await _model_routing.resolve_initial_candidate(
-        requested_model=req.model,
-        decision=decision,
-        identity=identity,
-        extra_span_attrs=intent_attrs,
-    )
-
-    # Resolve the effective auto-eval spec from server policy + request.
-    auto_eval, policy = _resolve_auto_eval(
-        req.auto_eval, tenant=identity.tenant, model_name=active.model_name
-    )
-    if decision is not None and auto_eval is not None:
-        _model_routing.reject_unsupported_governed_workload(
+    # A stream hands its reservation to the SSE generator, which settles it
+    # once real token counts exist; every other exit settles here, where the
+    # route returns.
+    settled_by_stream = False
+    try:
+        active = await _model_routing.resolve_initial_candidate(
+            requested_model=req.model,
+            decision=decision,
             identity=identity,
-            workload="chat.auto_eval",
+            extra_span_attrs=intent_attrs,
         )
 
-    if req.stream and auto_eval and auto_eval.mode == "blocking":
-        # Blocking auto-eval needs the full response in hand — incompatible
-        # with streaming by design. Reject before we start the stream.
-        raise HTTPException(
-            status_code=400,
-            detail="auto_eval.mode='blocking' is incompatible with stream=true",
+        auto_eval, policy = _resolve_auto_eval(
+            req.auto_eval, tenant=identity.tenant, model_name=active.model_name
         )
-
-    if req.stream:
-        lease = await acquire_slot(
-            identity=identity,
-            adapter=active.adapter,
-            model_name=active.model_name,
-            workload="chat.stream",
-            priority=30.0,
-            estimated_tokens=_estimated_chat_tokens(req.messages, params),
-        )
-        return EventSourceResponse(
-            _stream_response(
-                active.adapter,
-                active.model_name,
-                req.messages,
-                params,
-                identity,
-                request,
-                auto_eval,
-                policy,
-                intent_attrs,
-                lease,
-                active.fallback_info,
-                decision,
-                active.candidate_index,
-                bool(req.stream_options and req.stream_options.include_usage),
+        if decision is not None and auto_eval is not None:
+            _model_routing.reject_unsupported_governed_workload(
+                identity=identity,
+                workload="chat.auto_eval",
             )
-        )
 
-    return await _blocking_response(
-        active.adapter,
-        active.model_name,
-        req.messages,
-        params,
-        identity,
-        auto_eval,
-        policy,
-        intent_attrs,
-        decision,
-        active.candidate_index,
-        active.fallback_info,
-    )
+        if req.stream and auto_eval and auto_eval.mode == "blocking":
+            # Blocking auto-eval needs the full response in hand — incompatible
+            # with streaming by design. Reject before we start the stream.
+            raise HTTPException(
+                status_code=400,
+                detail="auto_eval.mode='blocking' is incompatible with stream=true",
+            )
+
+        if req.stream:
+            lease = await acquire_slot(
+                identity=identity,
+                adapter=active.adapter,
+                model_name=active.model_name,
+                workload="chat.stream",
+                priority=30.0,
+                estimated_tokens=_estimated_chat_tokens(req.messages, params),
+            )
+            stream = EventSourceResponse(
+                _stream_response(
+                    active.adapter,
+                    active.model_name,
+                    req.messages,
+                    params,
+                    identity,
+                    request,
+                    auto_eval,
+                    policy,
+                    intent_attrs,
+                    lease,
+                    active.fallback_info,
+                    decision,
+                    active.candidate_index,
+                    bool(req.stream_options and req.stream_options.include_usage),
+                )
+            )
+            settled_by_stream = True
+            return stream
+
+        return await _blocking_response(
+            active.adapter,
+            active.model_name,
+            req.messages,
+            params,
+            identity,
+            auto_eval,
+            policy,
+            intent_attrs,
+            decision,
+            active.candidate_index,
+            active.fallback_info,
+        )
+    finally:
+        if not settled_by_stream:
+            await _model_routing.settle_reservation(decision)
 
 
 def _prefix_cache_attrs(adapter: InferenceAdapter) -> dict:
@@ -676,6 +685,7 @@ async def _enforce_structured_output(
     params: GenerationParams,
     identity: Identity,
     intent_attrs: dict | None = None,
+    routing_decision: _model_routing.ModelRoutingDecision | None = None,
 ):
     """Validate-and-retry for backends that can't constrain decoding.
 
@@ -740,6 +750,12 @@ async def _enforce_structured_output(
         # is completed here. Both generations really ran: rejecting the
         # document does not un-spend the tokens they consumed.
         _usage.bind_error_type("structured_output_invalid")
+        _model_routing.observe_usage(
+            routing_decision,
+            model=model_name,
+            input_tokens=result.prompt_tokens + retried.prompt_tokens,
+            output_tokens=result.completion_tokens + retried.completion_tokens,
+        )
         _usage.bind_usage(
             input_tokens=result.prompt_tokens + retried.prompt_tokens,
             output_tokens=result.completion_tokens + retried.completion_tokens,
@@ -832,10 +848,17 @@ async def _blocking_response(
         params,
         identity,
         intent_attrs,
+        routing_decision,
     )
     # Bound here rather than inside _generate_blocking_once: the structured
     # output retry sums both attempts, and binding per-attempt would let the
     # retry's own smaller counts overwrite the total the caller is billed for.
+    _model_routing.observe_usage(
+        routing_decision,
+        model=active.model_name,
+        input_tokens=result.prompt_tokens,
+        output_tokens=result.completion_tokens,
+    )
     _usage.bind_usage(
         input_tokens=result.prompt_tokens,
         output_tokens=result.completion_tokens,
@@ -977,6 +1000,9 @@ async def _stream_response(
         chunks_emitted = 0
         role_emitted = False
         cancelled = False
+        # False while the adapter loop could still be producing; a teardown
+        # reached with it False is a caller that walked away mid-generation.
+        adapter_finished = False
         accumulated: list[str] = []
         # Token accounting for the usage trailer. Adapters report these on a
         # terminal, text-free StreamChunk — either from the upstream's own
@@ -1174,11 +1200,13 @@ async def _stream_response(
                     # what the adapter signalled.
                     if normalizer.has_tool_calls():
                         finish_reason = "tool_calls"
+                    adapter_finished = True
                 except ContextLengthExceededError as exc:
                     # The SSE response line may already be open, so we cannot
                     # reliably downgrade to a 400 here. Emit a typed terminal
                     # error event with the same payload shape as the blocking
                     # 400 body.
+                    adapter_finished = True
                     finish_reason = "error"
                     s.bind(**{"error.type": "context_length_exceeded"})
                     yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
@@ -1235,7 +1263,9 @@ async def _stream_response(
                                 include_usage,
                             ):
                                 yield chunk
+                            adapter_finished = True
                             return
+                    adapter_finished = True
                     finish_reason = "timeout"
                     s.bind(**_timeout_span_attrs(exc))
                     yield {"event": "error", "data": json.dumps({"error": exc.error_detail()})}
@@ -1292,7 +1322,9 @@ async def _stream_response(
                                 include_usage,
                             ):
                                 yield chunk
+                            adapter_finished = True
                             return
+                    adapter_finished = True
                     finish_reason = "error"
                     if isinstance(exc, UpstreamGenerationError):
                         error_detail = exc.error_detail()
@@ -1375,6 +1407,18 @@ async def _stream_response(
                             input_tokens=usage_prompt_tokens or None,
                             output_tokens=usage_completion_tokens or None,
                         )
+                    # Adapters report token counts on a terminal frame, so a
+                    # stream torn down before its adapter finished carries at
+                    # most a partial count, never the request total.
+                    if cancelled or not adapter_finished:
+                        _model_routing.retain_reservation(routing_decision)
+                    else:
+                        _model_routing.observe_usage(
+                            routing_decision,
+                            model=model_name,
+                            input_tokens=usage_prompt_tokens,
+                            output_tokens=usage_completion_tokens,
+                        )
                     _usage.bind_usage(
                         input_tokens=usage_prompt_tokens,
                         output_tokens=usage_completion_tokens,
@@ -1417,6 +1461,9 @@ async def _stream_response(
                 identity=identity,
             )
     finally:
+        # Runs on a clean close, an error, and a client disconnect alike,
+        # which is every way a stream that started its body can end.
+        await _model_routing.settle_reservation(routing_decision)
         # On the fallback path the inner generator has already flushed the
         # model that really served; flush() is idempotent, so this second call
         # cannot produce a duplicate invoice line.

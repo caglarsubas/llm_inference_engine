@@ -112,61 +112,70 @@ async def create_completion(
         input_token_upper_bound=input_token_upper_bound,
         output_token_budget=output_token_budget,
     )
-    active = await _model_routing.resolve_initial_candidate(
-        requested_model=req.model,
-        decision=decision,
-        identity=identity,
-    )
+    try:
+        active = await _model_routing.resolve_initial_candidate(
+            requested_model=req.model,
+            decision=decision,
+            identity=identity,
+        )
 
-    while True:
-        try:
-            choices, total_prompt_tokens, total_completion_tokens = await _complete_once(
-                active.adapter,
-                active.model_name,
-                prompts,
-                params,
-                identity,
-                active.fallback_info,
-                decision,
-                active.candidate_index,
-            )
-            break
-        except ContextLengthExceededError as exc:
-            _raise_generation_http_error(exc)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if decision is None and active.fallback_info is not None:
+        while True:
+            try:
+                choices, total_prompt_tokens, total_completion_tokens = await _complete_once(
+                    active.adapter,
+                    active.model_name,
+                    prompts,
+                    params,
+                    identity,
+                    active.fallback_info,
+                    decision,
+                    active.candidate_index,
+                )
+                break
+            except ContextLengthExceededError as exc:
                 _raise_generation_http_error(exc)
-            fallback = await _model_routing.resolve_next_fallback(
-                decision=decision,
-                current_candidate_index=active.candidate_index,
-                adapter=active.adapter,
-                model_name=active.model_name,
-                exc=exc,
-                identity=identity,
-            )
-            if fallback is None:
-                _raise_generation_http_error(exc)
-            active = fallback
+            except HTTPException:
+                raise
+            except Exception as exc:
+                if decision is None and active.fallback_info is not None:
+                    _raise_generation_http_error(exc)
+                fallback = await _model_routing.resolve_next_fallback(
+                    decision=decision,
+                    current_candidate_index=active.candidate_index,
+                    adapter=active.adapter,
+                    model_name=active.model_name,
+                    exc=exc,
+                    identity=identity,
+                )
+                if fallback is None:
+                    _raise_generation_http_error(exc)
+                active = fallback
 
-    _usage.bind_usage(
-        input_tokens=total_prompt_tokens,
-        output_tokens=total_completion_tokens,
-    )
-    return CompletionResponse(
-        id=f"cmpl-{uuid.uuid4().hex}",
-        created=int(time.time()),
-        model=active.model_name,
-        request_key_source=_request_key_source(active.adapter),
-        **_fallback.response_fields(active.fallback_info),
-        choices=choices,
-        usage=Usage(
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            total_tokens=total_prompt_tokens + total_completion_tokens,
-        ),
-    )
+        _model_routing.observe_usage(
+            decision,
+            model=active.model_name,
+            input_tokens=total_prompt_tokens,
+            output_tokens=total_completion_tokens,
+        )
+        _usage.bind_usage(
+            input_tokens=total_prompt_tokens,
+            output_tokens=total_completion_tokens,
+        )
+        return CompletionResponse(
+            id=f"cmpl-{uuid.uuid4().hex}",
+            created=int(time.time()),
+            model=active.model_name,
+            request_key_source=_request_key_source(active.adapter),
+            **_fallback.response_fields(active.fallback_info),
+            choices=choices,
+            usage=Usage(
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                total_tokens=total_prompt_tokens + total_completion_tokens,
+            ),
+        )
+    finally:
+        await _model_routing.settle_reservation(decision)
 
 
 def _raise_generation_http_error(exc: Exception) -> None:
