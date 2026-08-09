@@ -1,6 +1,5 @@
 import asyncio
 import time
-import uuid
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -38,6 +37,13 @@ from .model_routing_runtime import (
 from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
 from .registry import get_openrouter_probe, get_probe, get_vllm_probe
+from .request_identity import (
+    ENGINE_REQUEST_ID_HEADER,
+    USAGE_RECORD_ID_HEADER,
+    InvalidInvocationIdentity,
+    new_engine_request_id,
+    read_upstream_invocation_identity,
+)
 
 # Configure tracing at import time so the global TracerProvider is set before
 # any span is created or any FastAPI middleware is built. configure_tracing()
@@ -386,20 +392,25 @@ class _LedgerFlushOnSend:
 
 @app.middleware("http")
 async def model_usage_ledger(request: Request, call_next):
-    """Open and close the per-request ``prometa.model-usage.v1`` record.
+    """Open and close the per-request ``prometa.model-usage.v2`` record.
 
     Defined first so it ends up *innermost*: ``add_middleware`` inserts at
     position 0, which makes the last-defined middleware outermost. Innermost
-    means ``request.state.request_id`` is already stamped when this runs and
-    the status observed here is the route's, not the readiness gate's.
+    means the request identities are already stamped when this runs and the
+    status observed here is the route's, not the readiness gate's.
     """
     if request.url.path not in _USAGE_LEDGER_PATHS:
         return await call_next(request)
 
     record = usage_ledger.begin(
-        request_id=getattr(request.state, "request_id", ""),
+        engine_request_id=request.state.engine_request_id,
         route=request.url.path,
+        runtime_request_id=request.state.runtime_request_id,
+        model_invocation_id=request.state.model_invocation_id,
+        model_attempt_id=request.state.model_attempt_id,
     )
+    if record is not None:
+        request.state.usage_record = record
     try:
         response = await call_next(request)
     except Exception:
@@ -414,6 +425,8 @@ async def model_usage_ledger(request: Request, call_next):
     if record is None:
         return response
     record.http_status = response.status_code
+    if record.billable:
+        response.headers[USAGE_RECORD_ID_HEADER] = record.usage_record_id
     # A streaming response has not produced a token yet at this point, so the
     # SSE generator's own teardown owns the flush, with _LedgerFlushOnSend as
     # the backstop for the body that never runs. Everything rejected before the
@@ -426,30 +439,6 @@ async def model_usage_ledger(request: Request, call_next):
 
 
 @app.middleware("http")
-async def request_id_header(request: Request, call_next):
-    """Stamp ``x-request-id`` on every response.
-
-    An inbound id wins so a caller's correlation survives the hop — the
-    orchestra-python-sdk model gateway sends its own under
-    ``x-orchestra-runtime-request-id``, and generic clients use
-    ``x-request-id``. Otherwise we mint one, which is what makes a support
-    conversation about a single bad completion tractable at all.
-    """
-    incoming = (
-        request.headers.get("x-request-id")
-        or request.headers.get("x-orchestra-runtime-request-id")
-        or ""
-    ).strip()
-    # Bound it: this value is echoed back and lands in logs, so an unbounded
-    # caller-controlled string is not something we want to propagate.
-    request_id = incoming[:200] if incoming else f"req_{uuid.uuid4().hex}"
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["x-request-id"] = request_id
-    return response
-
-
-@app.middleware("http")
 async def startup_readiness_gate(request: Request, call_next):
     path = request.url.path
     guarded = (
@@ -458,6 +447,43 @@ async def startup_readiness_gate(request: Request, call_next):
     if guarded and not app_state.is_ready:
         return _readiness_error_response()
     return await call_next(request)
+
+
+@app.middleware("http")
+async def request_id_header(request: Request, call_next):
+    """Own the engine request id and preserve upstream identities separately.
+
+    This middleware is defined last and is therefore outermost. Every response
+    it can observe, including readiness and validation errors, receives the
+    server-owned ``x-request-id``. An inbound header with that name is accepted
+    for generic-client compatibility but never aliases or overrides the engine
+    id. Orchestra's three headers are exact correlation values, not candidate
+    request ids, and invalid values fail closed instead of being truncated.
+    """
+    engine_request_id = new_engine_request_id()
+    request.state.engine_request_id = engine_request_id
+
+    try:
+        upstream = read_upstream_invocation_identity(request.headers)
+    except InvalidInvocationIdentity as exc:
+        detail = {
+            "message": str(exc),
+            "type": "invalid_request_error",
+            "code": "invalid_model_invocation_identity",
+            "param": exc.header,
+        }
+        return error_response(
+            detail,
+            400,
+            headers={ENGINE_REQUEST_ID_HEADER: engine_request_id},
+        )
+
+    request.state.runtime_request_id = upstream.runtime_request_id
+    request.state.model_invocation_id = upstream.model_invocation_id
+    request.state.model_attempt_id = upstream.model_attempt_id
+    response = await call_next(request)
+    response.headers[ENGINE_REQUEST_ID_HEADER] = engine_request_id
+    return response
 
 
 app.include_router(health.router, tags=["health"])

@@ -1,4 +1,4 @@
-"""Per-request billing ledger — ``prometa.model-usage.v1``.
+"""Per-request billing ledger — ``prometa.model-usage.v2``.
 
 Exercised through the real ASGI app so the middleware, the ContextVar
 accumulator, and the SSE generator hand-off are all in the path. The governed
@@ -9,11 +9,14 @@ policy attribution rather than a hand-built stub.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 import sys
 import threading
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import fields
+from pathlib import Path
 
 import httpx
 import pytest
@@ -43,11 +46,11 @@ from inference_engine.model_routing_runtime import (
 from inference_engine.usage_ledger import UsageLedger
 
 from .test_model_routing_api import (
-    _RoutingAdapter,
     _active_policy,
     _install_models,
     _pricing,
     _replace_reasoning_limits,
+    _RoutingAdapter,
     _runtime_state,
 )
 
@@ -172,7 +175,8 @@ def test_ledger_is_off_by_default_and_emits_nothing(monkeypatch) -> None:
     response = TestClient(app).post(CHAT, json={"model": "reasoning", "messages": _MESSAGES})
 
     assert response.status_code == 200, response.text
-    assert usage_ledger.begin(request_id="req_x", route=CHAT) is None
+    assert "x-orchestra-usage-record-id" not in response.headers
+    assert usage_ledger.begin(engine_request_id="req_x", route=CHAT) is None
     assert _drain() == []
 
 
@@ -187,7 +191,13 @@ def test_blocking_chat_emits_one_fully_attributed_record(monkeypatch) -> None:
     assert response.status_code == 200, response.text
     record = _one()
     assert record["schema"] == usage_ledger.SCHEMA
-    assert record["request_id"] == response.headers["x-request-id"]
+    assert record["engine_request_id"] == response.headers["x-request-id"]
+    assert record["usage_record_id"] == response.headers["x-orchestra-usage-record-id"]
+    assert re.fullmatch(r"req_[0-9a-f]{32}", record["engine_request_id"])
+    assert re.fullmatch(r"usage_[0-9a-f]{32}", record["usage_record_id"])
+    assert record["runtime_request_id"] is None
+    assert record["model_invocation_id"] is None
+    assert record["model_attempt_id"] is None
     assert record["route"] == CHAT
     assert record["operation"] == "chat"
     assert record["stream"] is False
@@ -238,6 +248,51 @@ def test_record_contains_only_declared_metadata_fields(monkeypatch) -> None:
     assert "SENTINEL-COMPLETION-4c1b" not in encoded
 
 
+def test_same_runtime_request_keeps_distinct_invocation_and_attempt_identities(
+    monkeypatch,
+) -> None:
+    _install_models(monkeypatch, {"qwen3:32b": _RoutingAdapter("primary")})
+    client = TestClient(app)
+
+    first = client.post(
+        CHAT,
+        json={"model": "reasoning", "messages": _MESSAGES},
+        headers={
+            "x-orchestra-runtime-request-id": "runtime-constant",
+            "x-orchestra-model-invocation-id": "invocation-1",
+            "x-orchestra-model-attempt-id": "attempt-1",
+        },
+    )
+    second = client.post(
+        CHAT,
+        json={"model": "reasoning", "messages": _MESSAGES},
+        headers={
+            "x-orchestra-runtime-request-id": "runtime-constant",
+            "x-orchestra-model-invocation-id": "invocation-2",
+            "x-orchestra-model-attempt-id": "attempt-2",
+        },
+    )
+
+    assert first.status_code == second.status_code == 200
+    first_record, second_record = _drain()
+    assert [first_record["runtime_request_id"], second_record["runtime_request_id"]] == [
+        "runtime-constant",
+        "runtime-constant",
+    ]
+    assert [first_record["model_invocation_id"], second_record["model_invocation_id"]] == [
+        "invocation-1",
+        "invocation-2",
+    ]
+    assert [first_record["model_attempt_id"], second_record["model_attempt_id"]] == [
+        "attempt-1",
+        "attempt-2",
+    ]
+    assert first_record["usage_record_id"] != second_record["usage_record_id"]
+    assert first_record["engine_request_id"] != second_record["engine_request_id"]
+    assert first.headers["x-orchestra-usage-record-id"] == first_record["usage_record_id"]
+    assert second.headers["x-orchestra-usage-record-id"] == second_record["usage_record_id"]
+
+
 def test_blocking_fallback_records_the_model_that_served(monkeypatch) -> None:
     _install_models(
         monkeypatch,
@@ -272,10 +327,12 @@ def test_streaming_chat_is_flushed_by_the_generator_not_the_middleware(monkeypat
         json={"model": "reasoning", "messages": _MESSAGES, "stream": True},
     ) as response:
         assert response.status_code == 200
+        usage_record_id = response.headers["x-orchestra-usage-record-id"]
         body = "".join(response.iter_text())
 
     assert "[DONE]" in body
     record = _one()
+    assert record["usage_record_id"] == usage_record_id
     assert record["stream"] is True
     # http_status can only have come from the middleware and the token counts
     # only from the generator, so seeing both proves the deferred hand-off.
@@ -312,7 +369,10 @@ async def test_a_stream_whose_body_never_runs_is_still_emitted() -> None:
         "headers": [],
     }
     request = Request(scope)
-    request.state.request_id = "req-vanished"
+    request.state.engine_request_id = "req_00000000000000000000000000000000"
+    request.state.runtime_request_id = "runtime-vanished"
+    request.state.model_invocation_id = "invocation-vanished"
+    request.state.model_attempt_id = "attempt-vanished"
 
     response = await model_usage_ledger(request, _call_next)
 
@@ -329,7 +389,10 @@ async def test_a_stream_whose_body_never_runs_is_still_emitted() -> None:
     # the record is on the wire anyway.
     assert started is False
     record = _one()
-    assert record["request_id"] == "req-vanished"
+    assert record["engine_request_id"] == "req_00000000000000000000000000000000"
+    assert record["runtime_request_id"] == "runtime-vanished"
+    assert record["model_invocation_id"] == "invocation-vanished"
+    assert record["model_attempt_id"] == "attempt-vanished"
     assert record["stream"] is True
     assert record["http_status"] == 200
     assert record["outcome"] == "ok"
@@ -420,6 +483,7 @@ def test_bounds_denial_is_recorded_as_denied_without_token_fields(monkeypatch) -
     assert record["input_tokens"] is None
     assert record["output_tokens"] is None
     assert record["cost_micros"] is None
+    assert response.headers["x-orchestra-usage-record-id"] == record["usage_record_id"]
 
 
 def test_org_binding_denial_is_recorded_as_denied(monkeypatch) -> None:
@@ -492,6 +556,7 @@ def test_backend_error_is_recorded_as_error(monkeypatch) -> None:
     record = _one()
     assert record["outcome"] == "error"
     assert record["error_type"] == "upstream_error"
+    assert response.headers["x-orchestra-usage-record-id"] == record["usage_record_id"]
 
 
 def test_a_rejected_structured_output_still_bills_both_attempts(monkeypatch) -> None:
@@ -595,6 +660,8 @@ def test_an_unauthenticated_request_produces_no_record(monkeypatch) -> None:
     response = TestClient(app).post(CHAT, json={"model": "reasoning", "messages": _MESSAGES})
 
     assert response.status_code == 401
+    assert response.headers["x-request-id"].startswith("req_")
+    assert "x-orchestra-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -604,6 +671,8 @@ def test_a_body_the_schema_rejects_produces_no_record(monkeypatch) -> None:
     response = TestClient(app).post(CHAT, json={"model": "reasoning"})
 
     assert response.status_code == 422
+    assert response.headers["x-request-id"].startswith("req_")
+    assert "x-orchestra-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -615,6 +684,7 @@ def test_an_empty_prompt_list_is_rejected_before_the_seam_and_records_nothing(
     response = TestClient(app).post("/v1/completions", json={"model": "reasoning", "prompt": []})
 
     assert response.status_code == 400
+    assert "x-orchestra-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -626,6 +696,27 @@ def test_an_empty_input_list_is_rejected_before_the_seam_and_records_nothing(
     response = TestClient(app).post("/v1/embeddings", json={"model": "reasoning", "input": []})
 
     assert response.status_code == 400
+    assert "x-orchestra-usage-record-id" not in response.headers
+    assert _drain() == []
+
+
+def test_an_unhandled_pre_bind_failure_has_no_usage_record_header(monkeypatch) -> None:
+    async def _explode_before_bind():
+        raise RuntimeError("dependency crashed before bind_request")
+
+    app.dependency_overrides[auth_mod.require_identity] = _explode_before_bind
+    try:
+        response = TestClient(app, raise_server_exceptions=False).post(
+            CHAT,
+            json={"model": "reasoning", "messages": _MESSAGES},
+        )
+    finally:
+        app.dependency_overrides.pop(auth_mod.require_identity, None)
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_server_error"
+    assert response.headers["x-request-id"].startswith("req_")
+    assert "x-orchestra-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -670,7 +761,7 @@ def test_unbillable_traffic_cannot_evict_a_billed_record(monkeypatch) -> None:
             client.post(
                 CHAT,
                 json={"model": "reasoning", "messages": _MESSAGES},
-                headers={"x-request-id": f"billed-{index}"},
+                headers={"x-orchestra-runtime-request-id": f"billed-{index}"},
             ).status_code
             == 200
         )
@@ -678,7 +769,7 @@ def test_unbillable_traffic_cannot_evict_a_billed_record(monkeypatch) -> None:
         assert client.post(CHAT, json={"model": "reasoning"}).status_code == 422
 
     records = _drain()
-    assert [item["request_id"] for item in records] == ["billed-0", "billed-1"]
+    assert [item["runtime_request_id"] for item in records] == ["billed-0", "billed-1"]
     assert [item["outcome"] for item in records] == ["ok", "ok"]
     assert [item["tenant"] for item in records] == ["anonymous", "anonymous"]
     snapshot = usage_ledger.usage_ledger.snapshot()
@@ -697,7 +788,7 @@ def test_a_full_buffer_refuses_the_arriving_record_not_the_buffered_ones(monkeyp
             client.post(
                 CHAT,
                 json={"model": "reasoning", "messages": _MESSAGES},
-                headers={"x-request-id": f"billed-{index}"},
+                headers={"x-orchestra-runtime-request-id": f"billed-{index}"},
             ).status_code
             == 200
         )
@@ -705,7 +796,7 @@ def test_a_full_buffer_refuses_the_arriving_record_not_the_buffered_ones(monkeyp
     # The two oldest invoice lines are the ones the drain task still owes, so
     # they are the two that survive three billable arrivals hitting a full
     # buffer.
-    assert [item["request_id"] for item in _drain()] == ["billed-0", "billed-1"]
+    assert [item["runtime_request_id"] for item in _drain()] == ["billed-0", "billed-1"]
     assert usage_ledger.usage_ledger.snapshot()["dropped_total"] == 3
 
 
@@ -734,6 +825,9 @@ def test_an_unhandled_exception_records_the_status_the_client_got(monkeypatch) -
     record = _one()
     assert record["http_status"] == 500
     assert record["outcome"] == "error"
+    assert response.json()["error"]["code"] == "internal_server_error"
+    assert response.headers["x-request-id"] == record["engine_request_id"]
+    assert response.headers["x-orchestra-usage-record-id"] == record["usage_record_id"]
 
 
 # --- buffer, sink, and blast radius -----------------------------------------
@@ -743,7 +837,7 @@ def test_buffer_keeps_what_it_accepted_and_counts_what_it_refused() -> None:
     ledger = UsageLedger(2)
 
     for index in range(5):
-        ledger.submit({"request_id": f"req-{index}"})
+        ledger.submit({"usage_record_id": f"usage-{index}"})
 
     snapshot = ledger.snapshot()
     assert snapshot["emitted_total"] == 2
@@ -751,7 +845,7 @@ def test_buffer_keeps_what_it_accepted_and_counts_what_it_refused() -> None:
     assert snapshot["buffered"] == 2
     # Accepted records are owed to an invoice, so overflow refuses the arriving
     # record instead of evicting them.
-    assert [item["request_id"] for item in ledger.peek()] == ["req-0", "req-1"]
+    assert [item["usage_record_id"] for item in ledger.peek()] == ["usage-0", "usage-1"]
 
 
 def test_buffer_overflow_is_logged_once_per_episode(monkeypatch) -> None:
@@ -764,16 +858,16 @@ def test_buffer_overflow_is_logged_once_per_episode(monkeypatch) -> None:
     monkeypatch.setattr(usage_ledger, "log", _Recorder())
     ledger = UsageLedger(1)
 
-    ledger.submit({"request_id": "req-0"})
-    ledger.submit({"request_id": "req-1"})
-    ledger.submit({"request_id": "req-2"})
+    ledger.submit({"usage_record_id": "usage-0"})
+    ledger.submit({"usage_record_id": "usage-1"})
+    ledger.submit({"usage_record_id": "usage-2"})
 
     assert [event for event, _ in warnings] == ["usage_ledger.buffer_full"]
     assert warnings[0][1] == {"max_buffer": 1, "dropped_total": 1}
 
     ledger.commit(1)
-    ledger.submit({"request_id": "req-3"})
-    ledger.submit({"request_id": "req-4"})
+    ledger.submit({"usage_record_id": "usage-3"})
+    ledger.submit({"usage_record_id": "usage-4"})
 
     assert [event for event, _ in warnings] == ["usage_ledger.buffer_full"] * 2
     assert ledger.snapshot()["dropped_total"] == 3
@@ -781,6 +875,85 @@ def test_buffer_overflow_is_logged_once_per_episode(monkeypatch) -> None:
 
 def test_the_emitted_payload_is_exactly_the_declared_schema() -> None:
     assert set(usage_ledger._render(_record_stub())) == usage_ledger.SCHEMA_FIELDS
+
+
+def test_versioned_contract_fixture_matches_the_emitter_and_wire_identity_contract() -> None:
+    contract_path = (
+        Path(__file__).resolve().parents[1]
+        / "contracts"
+        / "prometa-model-usage-v2.schema.json"
+    )
+    raw = contract_path.read_bytes()
+    contract = json.loads(raw)
+
+    assert hashlib.sha256(raw).hexdigest() == (
+        "845f830df424f1626717e60a5dbd05e01187f84e2e96223527cceda521f3d55a"
+    )
+    assert contract["properties"]["schema"]["const"] == usage_ledger.SCHEMA
+    assert contract["properties"]["event"]["const"] == usage_ledger.EVENT
+    assert contract["required"] == list(usage_ledger._SCHEMA_FIELD_ORDER)
+    assert set(contract["properties"]) == usage_ledger.SCHEMA_FIELDS
+    assert "request_id" not in contract["properties"]
+    assert contract["x-prometa-identity-order"] == [
+        "usage_record_id",
+        "engine_request_id",
+        "runtime_request_id",
+        "model_invocation_id",
+        "model_attempt_id",
+    ]
+    assert contract["x-prometa-header-mapping"] == {
+        "request": {
+            "x-orchestra-runtime-request-id": "runtime_request_id",
+            "x-orchestra-model-invocation-id": "model_invocation_id",
+            "x-orchestra-model-attempt-id": "model_attempt_id",
+        },
+        "response": {
+            "x-request-id": "engine_request_id",
+            "x-orchestra-usage-record-id": "usage_record_id",
+        },
+        "inbound-x-request-id-alias": None,
+    }
+    assert contract["x-prometa-delivery"] == {
+        "mode": "best-effort-buffered",
+        "dedupeField": "usage_record_id",
+        "redeliveryWindow": {
+            "condition": "drain-cancelled-after-sink-acceptance-uncertain",
+            "retainsDedupeValue": True,
+        },
+    }
+    external_pattern = contract["$defs"]["externalIdentity"]["pattern"]
+    for value in ["runtime-1", "null-runtime", "none-1", "nil.value", "undefined/1"]:
+        assert re.fullmatch(external_pattern, value)
+    for value in [
+        "null",
+        "NULL",
+        "NuLl",
+        "none",
+        "NoNe",
+        "nil",
+        "NIL",
+        "undefined",
+        "UnDeFiNeD",
+    ]:
+        assert re.fullmatch(external_pattern, value) is None
+    assert contract["properties"]["fallback_from_model"]["type"] == [
+        "string",
+        "null",
+    ]
+    invocation_rule, attempt_rule = contract["allOf"]
+    assert invocation_rule["if"]["properties"] == {
+        "model_invocation_id": {"type": "string"}
+    }
+    assert invocation_rule["then"]["properties"] == {
+        "runtime_request_id": {"type": "string"}
+    }
+    assert attempt_rule["if"]["properties"] == {
+        "model_attempt_id": {"type": "string"}
+    }
+    assert attempt_rule["then"]["properties"] == {
+        "runtime_request_id": {"type": "string"},
+        "model_invocation_id": {"type": "string"},
+    }
 
 
 def test_a_schema_key_with_no_field_behind_it_is_refused_at_import() -> None:
@@ -812,7 +985,12 @@ def test_sink_renders_one_json_line_per_record(capsys) -> None:
 
 
 def _record_stub() -> usage_ledger.UsageRecord:
-    return usage_ledger.UsageRecord(request_id="req-1", route=CHAT, started_at=0.0)
+    return usage_ledger.UsageRecord(
+        engine_request_id="req_00000000000000000000000000000000",
+        route=CHAT,
+        started_at=0.0,
+        usage_record_id="usage_00000000000000000000000000000000",
+    )
 
 
 @pytest.mark.asyncio
@@ -821,7 +999,7 @@ async def test_a_failing_sink_is_counted_and_does_not_raise(monkeypatch) -> None
         raise OSError("stdout is gone")
 
     monkeypatch.setattr(usage_ledger, "_sink", _boom)
-    usage_ledger.usage_ledger.submit({"request_id": "req-1"})
+    usage_ledger.usage_ledger.submit({"usage_record_id": "usage-1"})
 
     await usage_ledger.drain_once(usage_ledger.usage_ledger)
 
@@ -846,9 +1024,9 @@ async def test_the_drain_loop_survives_a_sink_failure_and_stops_on_cancel(monkey
     ledger = UsageLedger(16)
     task = asyncio.create_task(usage_ledger.run_usage_ledger_drain(ledger, interval_seconds=0.001))
     try:
-        ledger.submit({"request_id": "req-1"})
+        ledger.submit({"usage_record_id": "usage-1"})
         assert await asyncio.to_thread(failed_once.wait, 5.0)
-        ledger.submit({"request_id": "req-2"})
+        ledger.submit({"usage_record_id": "usage-2"})
         assert await asyncio.to_thread(shipped_after_failure.wait, 5.0)
     finally:
         task.cancel()
@@ -856,7 +1034,7 @@ async def test_the_drain_loop_survives_a_sink_failure_and_stops_on_cancel(monkey
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert [item["request_id"] for item in shipped] == ["req-2"]
+    assert [item["usage_record_id"] for item in shipped] == ["usage-2"]
     assert ledger.snapshot()["sink_failures_total"] == 1
 
 
@@ -865,14 +1043,18 @@ async def test_a_cancel_mid_sink_keeps_the_batch_for_the_next_drain(monkeypatch)
     """The shutdown race: cancellation lands after the read, before the write."""
     entered = threading.Event()
     release = threading.Event()
+    completed = threading.Event()
+    first_delivery: list[dict] = []
 
     def _stalled_sink(batch: list[dict]) -> None:
+        first_delivery.extend(batch)
         entered.set()
         release.wait(5.0)
+        completed.set()
 
     monkeypatch.setattr(usage_ledger, "_sink", _stalled_sink)
     ledger = UsageLedger(4)
-    ledger.submit({"request_id": "req-1"})
+    ledger.submit({"usage_record_id": "usage-1"})
 
     task = asyncio.create_task(usage_ledger.drain_once(ledger))
     assert await asyncio.to_thread(entered.wait, 5.0)
@@ -880,6 +1062,7 @@ async def test_a_cancel_mid_sink_keeps_the_batch_for_the_next_drain(monkeypatch)
     with pytest.raises(asyncio.CancelledError):
         await task
     release.set()
+    assert await asyncio.to_thread(completed.wait, 5.0)
 
     # The batch is still owed, so it is still buffered — and it is not a sink
     # failure, which would have retired it.
@@ -894,7 +1077,8 @@ async def test_a_cancel_mid_sink_keeps_the_batch_for_the_next_drain(monkeypatch)
     monkeypatch.setattr(usage_ledger, "_sink", shipped.extend)
     await usage_ledger.drain_once(ledger)
 
-    assert [item["request_id"] for item in shipped] == ["req-1"]
+    assert [item["usage_record_id"] for item in shipped] == ["usage-1"]
+    assert first_delivery[0]["usage_record_id"] == shipped[0]["usage_record_id"]
     assert ledger.snapshot()["buffered"] == 0
 
 
@@ -903,13 +1087,13 @@ async def test_a_shipped_batch_is_retired_and_not_reshipped(monkeypatch) -> None
     shipped: list[dict] = []
     monkeypatch.setattr(usage_ledger, "_sink", shipped.extend)
     ledger = UsageLedger(4)
-    ledger.submit({"request_id": "req-1"})
+    ledger.submit({"usage_record_id": "usage-1"})
 
     await usage_ledger.drain_once(ledger)
-    ledger.submit({"request_id": "req-2"})
+    ledger.submit({"usage_record_id": "usage-2"})
     await usage_ledger.drain_once(ledger)
 
-    assert [item["request_id"] for item in shipped] == ["req-1", "req-2"]
+    assert [item["usage_record_id"] for item in shipped] == ["usage-1", "usage-2"]
     assert ledger.snapshot()["buffered"] == 0
 
 

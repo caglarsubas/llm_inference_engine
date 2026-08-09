@@ -26,6 +26,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ..request_identity import ENGINE_REQUEST_ID_HEADER, USAGE_RECORD_ID_HEADER
+
 # Status → OpenAI error ``type``, used when a raiser passed a bare string and
 # there is no richer typed payload to read a code off.
 _STATUS_ERROR_TYPES: dict[int, str] = {
@@ -124,6 +126,31 @@ async def validation_exception_handler(
     return error_response(_jsonable_errors(exc.errors()), 422)
 
 
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:  # noqa: ARG001
+    """Keep server identities on the 500 response built outside middleware.
+
+    Starlette's server-error boundary lives outside application middleware, so
+    an exception re-raised after the ledger flush never travels back through
+    the middleware code that normally stamps response headers. The ids already
+    exist on request state; carrying them here makes the caller's failure
+    report joinable without exposing the exception message.
+    """
+    headers: dict[str, str] = {}
+    engine_request_id = getattr(request.state, "engine_request_id", None)
+    usage_record = getattr(request.state, "usage_record", None)
+    if engine_request_id is not None:
+        headers[ENGINE_REQUEST_ID_HEADER] = engine_request_id
+    if usage_record is not None and usage_record.billable:
+        headers[USAGE_RECORD_ID_HEADER] = usage_record.usage_record_id
+    detail = {
+        "message": "The inference engine encountered an internal error.",
+        "type": "api_error",
+        "code": "internal_server_error",
+        "param": None,
+    }
+    return error_response(detail, 500, headers=headers)
+
+
 def _jsonable_errors(errors: list) -> list:
     """Strip non-serialisable payloads out of pydantic validation errors.
 
@@ -150,6 +177,7 @@ def _jsonable_errors(errors: list) -> list:
 def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
 
 
 __all__ = [
@@ -157,4 +185,5 @@ __all__ = [
     "error_response",
     "error_type_for_status",
     "install_error_handlers",
+    "unhandled_exception_handler",
 ]

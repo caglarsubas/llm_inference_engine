@@ -1,4 +1,4 @@
-"""Per-request billing ledger — one ``prometa.model-usage.v1`` record per call.
+"""Per-request billing ledger — one ``prometa.model-usage.v2`` record per call.
 
 Chargeback needs a record that exists for *every* priced request, including the
 ones that never reach a model: a policy denial opens no ``chat.generate`` span,
@@ -41,7 +41,7 @@ import threading
 import time
 from collections import deque
 from contextvars import ContextVar
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any
 
@@ -50,10 +50,11 @@ import structlog
 from .config import settings
 from .observability import get_logger
 from .otel import current_trace_context
+from .request_identity import new_usage_record_id
 
 log = get_logger("usage_ledger")
 
-SCHEMA = "prometa.model-usage.v1"
+SCHEMA = "prometa.model-usage.v2"
 EVENT = "prometa.model-usage"
 
 # The exact, reviewed key set of an emitted record, in emission order. Anything
@@ -64,7 +65,11 @@ _SCHEMA_FIELD_ORDER: tuple[str, ...] = (
     "schema",
     "event",
     "timestamp",
-    "request_id",
+    "usage_record_id",
+    "engine_request_id",
+    "runtime_request_id",
+    "model_invocation_id",
+    "model_attempt_id",
     "route",
     "operation",
     "stream",
@@ -135,21 +140,25 @@ class UsageRecord:
     says *some* request happened is worth more than silence. Only the fields
     that failed are missing — everything bound later, including
     ``resolved_model``, the token counts, and ``cost_micros``, is intact, and
-    ``request_id`` is always set.
+    ``usage_record_id`` and ``engine_request_id`` are always set.
 
     Reconciliation must therefore treat ``tenant is None`` as *unattributed*,
     never as a tenant named ``null`` and never as absent traffic: the call was
     served and cost real capacity. Route those records to an exceptions queue
-    keyed by ``request_id``, which correlates back to the request logs that do
-    carry the caller. They should be rare enough to alarm on; a non-zero rate
-    means a bug in the attribution binder, not a billing edge case, and the
-    ``usage_ledger.bind_failed`` warning naming ``_bind_attribution`` is emitted
-    at the same moment.
+    keyed by ``usage_record_id``. ``engine_request_id`` correlates the line
+    back to the request logs that do carry the caller. They should be rare
+    enough to alarm on; a non-zero rate means a bug in the attribution binder,
+    not a billing edge case, and the ``usage_ledger.bind_failed`` warning
+    naming ``_bind_attribution`` is emitted at the same moment.
     """
 
-    request_id: str
+    engine_request_id: str
     route: str
     started_at: float
+    usage_record_id: str = field(default_factory=new_usage_record_id)
+    runtime_request_id: str | None = None
+    model_invocation_id: str | None = None
+    model_attempt_id: str | None = None
     flushed: bool = False
     billable: bool = False
     operation: str | None = None
@@ -236,7 +245,14 @@ def _report(operation: str, exc: BaseException) -> None:
     )
 
 
-def begin(*, request_id: str, route: str) -> UsageRecord | None:
+def begin(
+    *,
+    engine_request_id: str,
+    route: str,
+    runtime_request_id: str | None = None,
+    model_invocation_id: str | None = None,
+    model_attempt_id: str | None = None,
+) -> UsageRecord | None:
     """Open a record for this request, or ``None`` when the ledger is off."""
     if not settings.usage_ledger_enabled:
         # Clear rather than leave whatever the surrounding context held: a
@@ -245,9 +261,12 @@ def begin(*, request_id: str, route: str) -> UsageRecord | None:
         return None
     try:
         record = UsageRecord(
-            request_id=request_id,
+            engine_request_id=engine_request_id,
             route=route,
             started_at=time.perf_counter(),
+            runtime_request_id=runtime_request_id,
+            model_invocation_id=model_invocation_id,
+            model_attempt_id=model_attempt_id,
         )
     except Exception as exc:  # noqa: BLE001 - the ledger must not fail a request
         _report("begin", exc)
@@ -489,16 +508,18 @@ async def drain_once(ledger: UsageLedger) -> None:
     Shutdown cancels this task, and a cancellation landing between the read and
     the sink used to lose the batch with nothing counting it — the one loss path
     ``dropped_total`` could not see. Holding the records until the sink returns
-    turns that window into a *duplicate* window instead: the worker thread the
-    cancellation abandons may still complete its writes, and the post-cancel
-    drain in the lifespan then ships the same records again. The channel is
-    therefore at-least-once at a shutdown cancellation, and ``request_id`` is
-    the dedupe key. A duplicated invoice line is detectable; a missing one is
-    not, which is the trade taken here.
+    turns that window into a *possible duplicate* window instead: the worker
+    thread the cancellation abandons may still complete its writes, and the
+    post-cancel drain in the lifespan then ships the same records again.
+    ``usage_record_id`` is the sole dedupe key for that uncertain-acceptance
+    window. It is generated when the accumulator is constructed and the same
+    rendered dict remains buffered across the retry, so a duplicate retains
+    the same value.
 
-    A sink *failure* is different and still discards: retrying a batch a broken
-    sink refuses would wedge the buffer and starve every record behind it, so
-    the failure is counted in ``sink_failures_total`` and the batch retired.
+    This is not a durable outbox or a general at-least-once channel. Buffer
+    overflow refuses the arriving record, and a sink *failure* discards the
+    failed batch: retrying a batch a broken sink refuses would wedge the buffer
+    and starve every record behind it. Both loss paths are counted.
     """
     batch = ledger.peek()
     if not batch:

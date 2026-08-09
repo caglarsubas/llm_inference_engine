@@ -359,9 +359,51 @@ and the admin tooling. Typed extras like `context_window` and
 `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, and
 `x-ratelimit-reset-requests` alongside `Retry-After`.
 
-Every response carries `x-request-id`. An inbound `x-request-id` — or the
-orchestra-python-sdk's `x-orchestra-runtime-request-id` — is echoed so a
-caller's correlation survives the hop.
+Every response the application can observe carries a server-owned
+`x-request-id` (`engine_request_id`). Inbound `x-request-id` is accepted for
+generic-client compatibility but never echoed or used as a server identity.
+The orchestra-python-sdk instead sends three independent, optional correlation
+headers: `x-orchestra-runtime-request-id`,
+`x-orchestra-model-invocation-id`, and `x-orchestra-model-attempt-id`. Each must
+be 1-256 visible-ASCII characters, excluding the case-insensitive flattened-null
+sentinels `null`, `none`, `nil`, and `undefined`, and is rejected, never
+truncated or normalized, when invalid. Those spellings are reserved because an
+OTLP attribute carrier cannot distinguish them from a JSON null after collector
+flattening. The headers form an ordered prefix: runtime may appear alone;
+invocation requires runtime; attempt requires both runtime and invocation.
+
+These caller-owned values are copied verbatim into billing stdout, so producers
+must use opaque, non-PII, non-secret identifiers: never embed an email address,
+user name, credential, token, prompt fragment, or business payload. For this
+identity contract the only tracing propagation metadata in scope is W3C
+`traceparent` / `tracestate`; do not put correlation data in `baggage`, and
+`baggage` is never copied into the usage ledger.
+
+With `USAGE_LEDGER_ENABLED=true`, priced routes return
+`x-orchestra-usage-record-id` only when that request has an actual billable
+ledger record after crossing the bind seam. Ledger-disabled responses and
+pre-bind 401, 422, early 400, or unhandled failures do not advertise a record
+that will never be emitted. The exact v2 field and header contract is
+`contracts/prometa-model-usage-v2.schema.json`.
+
+After the platform dual-reader is deployed, roll out the engine before the SDK
+**only after an identity preflight passes**. Inventory every configured or
+caller-supplied legacy runtime-request-id source and verify representative live
+requests use 1-256 visible-ASCII characters, do not use the reserved sentinel
+spellings above, and do not depend on trimming or Unicode normalization. Migrate
+any nonconforming producer before engine activation; do not silently rewrite an
+identity, because that can create a correlation collision. A contract-conformant
+old SDK + new engine is compatible because its runtime-only header is a valid
+prefix. This statement does not cover older/custom kernels that admitted spaces,
+Unicode, or the reserved sentinel spellings: the new engine deliberately rejects
+those values with 400 before priced execution.
+
+New SDK + old engine is a safe partial-rollout or rollback state: the old engine
+echoes the runtime id as `x-request-id`, but the new SDK accepts an engine id only
+when it matches the canonical `req_` plus 32-lowercase-hex pattern, so that
+noncanonical echo degrades to an absent `engine_request_id` instead of becoming
+a false identity. The old engine has no usage-record response header, which
+likewise remains absent.
 
 #### Structured Outputs
 
@@ -705,7 +747,7 @@ common ones, so a var missing from that file is still settable:
 | `TOOL_AUDIT_MAX_PAYLOAD_CHARS` | `1024`                                                                             | Per-event truncation cap for arguments / result content             |
 | `TOOL_TIMING_TTL_SECONDS` | `300`                                                                                  | TTL for the call_id → emit-timestamp store; older entries swept on insert |
 | `TOOL_TIMING_MAX_ENTRIES` | `10000`                                                                                | Hard cap on the timing store; oldest entries LRU-evicted past this        |
-| `USAGE_LEDGER_ENABLED`   | `false`                                                                                  | Emit one `prometa.model-usage.v1` billing record per priced request    |
+| `USAGE_LEDGER_ENABLED`   | `false`                                                                                  | Emit one `prometa.model-usage.v2` billing record per priced request    |
 | `USAGE_LEDGER_MAX_BUFFER` | `10000`                                                                                 | Bounded hand-off buffer; arriving records refused (counted + logged) past this |
 | `USAGE_LEDGER_DRAIN_INTERVAL_SECONDS` | `1.0`                                                                       | How often the background task ships buffered records, 0 < n <= 60      |
 
@@ -785,14 +827,15 @@ before failing. TPOT excludes the first token by definition. Metric export is
 **scrape-only** — `otel.py` installs a TracerProvider, not a MeterProvider, so
 these do not go out over OTLP.
 
-### Per-request usage ledger — `prometa.model-usage.v1`
+### Per-request usage ledger — `prometa.model-usage.v2`
 
 Spans answer "what did this request do"; an invoice needs "what is this request
 owed". Those are different artefacts, because the records billing cares about
 most are the ones tracing is worst at keeping: a policy denial never opens a
 `chat.generate` span at all, and sampling drops whichever spans it likes. So
-`USAGE_LEDGER_ENABLED=true` turns on a dedicated channel that emits **exactly
-one record per priced request**, whatever the outcome.
+`USAGE_LEDGER_ENABLED=true` turns on a dedicated channel that constructs
+**exactly one record per priced request**, whatever the outcome. Delivery is a
+best-effort bounded buffer, described below; it is not a durable outbox.
 
 "Priced request" means one that reached the `_usage.bind_request` seam in a
 handler for `/v1/chat/completions`, `/v1/completions`, or `/v1/embeddings` —
@@ -807,16 +850,20 @@ well-formed body that still names no work to price. None of those reach a
 model. A *denial* is on the other side of the line: it was answered against a
 real identity, so it is recorded with `outcome: "denied"`.
 
-Past the seam the record is guaranteed, not best-effort. The binders that
-enrich it are individually failure-isolated, so a bug in any one of them costs
-that binder's fields and leaves the rest of the line intact.
+Past the seam, record construction and flush eligibility are guaranteed. The
+binders that enrich it are individually failure-isolated, so a bug in any one
+of them costs that binder's fields and leaves the rest of the line intact.
+Acceptance into the bounded buffer and delivery to stdout remain best-effort:
+overflow refuses the arriving line, and a sink failure retires the failed
+batch after counting it.
 
-Records are JSON lines on stdout, written by a background drain task and made
-durable by whatever log pipeline the deployment already runs (the collector in
-`docker-compose.observability.yml`, or your cluster's log shipper). There is no
-file sink on purpose: a billing artefact written to a long-lived handle and
-rotated with `copytruncate` loses records silently, and log shipping is the path
-every supported deployment shape already has.
+Accepted records are JSON lines on stdout, written by a background drain task
+and handed to whatever log pipeline the deployment already runs for durability
+and retention (the collector in `docker-compose.observability.yml`, or your
+cluster's log shipper). There is no file sink on purpose: a billing artefact
+written to a long-lived handle and rotated with `copytruncate` loses records
+silently, and log shipping is the path every supported deployment shape
+already has.
 
 Not an OTLP log record, deliberately. Every `opentelemetry-*` package lives
 behind the optional `otel` extra — `make install` is a plain `uv sync` — so an
@@ -829,7 +876,7 @@ seam to add an OTLP-logs sink later without touching a single call site.
 
 | Group | Fields |
 |-------|--------|
-| Identity | `request_id`, `route`, `operation`, `stream`, `tenant`, `org_id`, `key_id` |
+| Identity | `usage_record_id`, `engine_request_id`, `runtime_request_id`, `model_invocation_id`, `model_attempt_id`, `route`, `operation`, `stream`, `tenant`, `org_id`, `key_id` |
 | Outcome | `outcome` (`ok` / `error` / `timeout` / `denied`), `finish_reason`, `http_status`, `error_type`, `denial_code` |
 | Model | `requested_model`, `resolved_model`, `backend`, `request_key_source` |
 | Policy | `policy_id`, `policy_digest`, `route_id`, `pricing_digest` |
@@ -847,7 +894,10 @@ module if any accumulator attribute is neither an emitted field nor declared
 control state, or if any schema key has nothing behind it. Adding a field to one
 and forgetting the other fails the process at startup, not silently on an
 invoice. No prompt, completion, tool argument, or embedding input is reachable
-from any field above, and a test asserts that directly.
+from any field above, and a test asserts that directly. This structural
+guarantee does not inspect the semantic content of caller-owned correlation IDs:
+their metadata-only status depends on producers following the opaque, non-PII,
+non-secret requirement above.
 
 Things worth knowing before you reconcile against it:
 
@@ -866,10 +916,11 @@ Things worth knowing before you reconcile against it:
   degrade, never drop. Reconciliation must treat `tenant: null` as
   **unattributed**, not as a tenant literally named `null` and not as absent
   traffic: the call was served and consumed capacity. Route those lines to an
-  exceptions queue keyed by `request_id`, which joins back to the request logs
-  that do carry the caller; `resolved_model`, the token counts, and `cost_micros`
-  are still intact on the record, so the cost is recoverable once the identity
-  is. This should be rare enough to alarm on — every occurrence also logs
+  exceptions queue keyed by `usage_record_id`; `engine_request_id` joins back
+  to the request logs that do carry the caller. `resolved_model`, the token
+  counts, and `cost_micros` are still intact on the record, so the cost is
+  recoverable once the identity is. This should be rare enough to alarm on —
+  every occurrence also logs
   `usage_ledger.bind_failed` with `binder=_bind_attribution`, and a non-zero rate
   is an engine bug, not a billing edge case.
 * **Buffered, best-effort, and never blocking.** The request path does a dict
@@ -880,13 +931,14 @@ Things worth knowing before you reconcile against it:
   once, so the loss is never silent: alarm on
   `inference_engine_usage_ledger_dropped_total` and
   `inference_engine_usage_ledger_sink_failures_total` on `/v1/metrics`.
-* **At-least-once, and `request_id` is the dedupe key.** A batch stays buffered
-  until the sink accepts it, so shutdown cancelling the drain task mid-write
-  cannot lose it — but the worker thread that cancellation abandons may still
-  have completed those writes, and the final post-cancel drain then ships them
-  again. A duplicate is detectable at reconciliation; a silent hole is not, which
-  is why the trade goes this way. Deduplicate on `request_id` (one record per
-  request, per worker) rather than assuming exactly-once.
+* **Best-effort buffered, with one narrow redelivery window.** This is not a
+  durable outbox and does not promise at-least-once delivery: overflow and sink
+  failure can lose records and are surfaced by the counters above. A batch
+  stays buffered until the sink accepts it, so cancellation while sink
+  acceptance is uncertain may result in the final drain shipping it again.
+  The server mints `usage_record_id` once when the record opens and retains it
+  across that redelivery window. Deduplicate on that field, never on
+  `engine_request_id` or an upstream runtime/invocation/attempt id.
 * **Streaming records are flushed by the SSE generator**, not the middleware, so
   they carry real token counts and TTFT. A streamed response whose body never
   runs at all — the client vanished before the first byte — is flushed by the
