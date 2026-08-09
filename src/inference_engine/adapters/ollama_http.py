@@ -111,6 +111,9 @@ class OllamaHttpAdapter(InferenceAdapter):
     # than skipping them, so the demotion happens on that same request instead
     # of a later one.
     supports_structured_outputs = True
+    # httpx-backed: cancelling the await closes the upstream request, so a
+    # deadline here really does end the work rather than just stop waiting.
+    generation_is_cancellable = True
 
     def deployment_id(self) -> str:
         # The endpoint is load-bearing here: two Ollama hosts behind the same

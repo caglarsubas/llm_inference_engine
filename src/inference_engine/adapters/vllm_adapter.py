@@ -107,6 +107,9 @@ class VLLMAdapter(InferenceAdapter):
     descriptor_format = "vllm"
     # vLLM enforces json_schema upstream via guided decoding (xgrammar).
     supports_structured_outputs = True
+    # httpx-backed: cancelling the await closes the upstream request, so a
+    # deadline here really does end the work rather than just stop waiting.
+    generation_is_cancellable = True
     request_key_source = "local-inference"
 
     def __init__(self) -> None:

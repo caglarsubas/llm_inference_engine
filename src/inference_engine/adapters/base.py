@@ -275,6 +275,19 @@ class InferenceAdapter(ABC):
     # Nothing promotes: a lucky conforming answer is not evidence of a grammar.
     supports_structured_outputs: bool = False
 
+    # Can an in-flight generation actually be STOPPED by cancelling the await?
+    #
+    # True for adapters that await a socket: cancellation closes the upstream
+    # request and the work really ends. False for adapters that run blocking
+    # native code in a worker thread — cancelling the await abandons the
+    # RESULT, but the thread keeps computing, so the resource stays busy and a
+    # timeout raised on its behalf would be a claim the mechanism cannot back.
+    #
+    # The route uses this to decide whether it may impose a total-elapsed
+    # deadline. Conservative default: an adapter opts in only when its own
+    # implementation makes the promise true.
+    generation_is_cancellable: bool = False
+
     def deployment_id(self) -> str:
         """Identify this DEPLOYMENT for capability observations.
 
