@@ -262,12 +262,28 @@ class InferenceAdapter(ABC):
 
     backend_name: str = "abstract"
     request_key_source: str = "local-inference"
-    # True when the backend constrains decoding to a JSON Schema rather than
-    # merely being asked for JSON — llama.cpp via GBNF, vLLM via guided
-    # decoding, and the HTTP upstreams that implement Structured Outputs
-    # themselves. When False the chat route validates the document and retries,
-    # because nothing else in the path would catch a schema violation.
+    # A PRIOR, not a guarantee. True when the backend SOFTWARE constrains
+    # decoding to a JSON Schema rather than merely being asked for JSON —
+    # llama.cpp via GBNF, vLLM via guided decoding, and HTTP upstreams that
+    # implement Structured Outputs themselves.
+    #
+    # It is a claim about a backend CLASS, and a class cannot know which
+    # RELEASE a given endpoint is running: an Ollama older than the shim's
+    # json_schema support accepts the key, ignores it, and answers in prose.
+    # `structured_output_capability` therefore treats this as the starting
+    # belief and demotes a deployment that is observed emitting non-JSON.
+    # Nothing promotes: a lucky conforming answer is not evidence of a grammar.
     supports_structured_outputs: bool = False
+
+    def deployment_id(self) -> str:
+        """Identify this DEPLOYMENT for capability observations.
+
+        Defaults to the backend name, which is right for adapters that serve a
+        single in-process model. Adapters talking to a remote server must
+        include the endpoint: two hosts can run different releases with
+        different capabilities behind one adapter class.
+        """
+        return self.backend_name
 
     @abstractmethod
     async def load(self, descriptor: ModelDescriptor) -> None: ...

@@ -30,10 +30,12 @@ from ..evals import PolicyEntry
 from ..genai_metrics import genai_metrics
 from ..observability import get_logger, span
 from ..structured_outputs import (
+    ResponseNotJson,
     SchemaViolation,
     repair_instruction,
     validate_json_document,
 )
+from .. import structured_output_capability as capability
 from ..schemas import (
     AutoEvalSpec,
     ChatCompletionChoice,
@@ -677,33 +679,71 @@ async def _enforce_structured_output(
     identity: Identity,
     intent_attrs: dict | None = None,
 ):
-    """Validate-and-retry for backends that can't constrain decoding.
+    """Validate the document, and decide who to blame when it is wrong.
 
-    A no-op unless the caller asked for a JSON Schema *and* the backend has no
-    grammar hook (MLX today). Backends that enforce in the sampler are trusted:
-    re-validating them here would risk rejecting a valid document over a gap in
-    our own schema-subset checker, which is a worse failure than the one it
-    would catch.
+    A no-op unless the caller asked for a JSON Schema. Beyond that, the old
+    shape of this function was "skip entirely for backends that constrain
+    decoding", which rested on a class-level claim. The claim is now a PRIOR
+    (see structured_output_capability): every response is checked, and the
+    belief about the backend decides only what to DO with a failure.
+
+    * Backend believed to constrain decoding, document violates a keyword —
+      AMBIGUOUS. This module checks a subset of JSON Schema, so the fault may
+      be a gap in the checker. Log and pass the document through: rejecting a
+      valid document over our own gap is the worse failure, which is what the
+      previous skip existed to avoid, and passing through preserves exactly the
+      outcome those backends had before.
+    * Backend believed to constrain decoding, response is NOT JSON — PROOF the
+      belief is wrong, because no grammar-constrained sampler emits prose. Demote
+      the deployment permanently and repair this request like any other.
+    * Backend not believed to constrain decoding — repair, as before.
 
     One retry, with the validation error fed back to the model. If the second
     attempt is still invalid we surface a typed 502 rather than handing back a
     document that silently violates the contract the caller asked for — a
     strict-mode client has no way to tell the difference otherwise.
     """
-    if not params.json_schema or adapter.supports_structured_outputs:
+    if not params.json_schema:
         return result
     if result.tool_calls:
         # The model chose to call a tool instead of answering; there is no
         # document to validate against the schema.
         return result
 
+    trusted = capability.constrains_decoding(adapter, model_name)
+
     try:
         validate_json_document(result.text, params.json_schema)
         return result
-    except SchemaViolation as exc:
-        # Bind the message before the except block ends — Python deletes the
-        # ``as`` name on exit, so it is not readable further down.
+    except ResponseNotJson as exc:
+        # Subclass first: `except SchemaViolation` below would swallow it.
         first_error = str(exc)
+        if trusted:
+            if not (result.text or "").strip():
+                # Truncation or a stop token, not an unconstrained sampler.
+                # Demoting here would punish a correctly configured backend
+                # that ran out of max_tokens, so the belief is left alone and
+                # the repair path handles the empty document.
+                log.warning(
+                    "structured_output.empty_from_trusted_backend",
+                    model=model_name,
+                    backend=adapter.backend_name,
+                )
+            else:
+                capability.record_unenforced(
+                    adapter, model_name, evidence="response_not_json"
+                )
+    except SchemaViolation as exc:
+        first_error = str(exc)
+        if trusted:
+            # Ambiguous, so no demotion and no rejection — see the docstring.
+            log.warning(
+                "structured_output.trusted_backend_violation",
+                model=model_name,
+                backend=adapter.backend_name,
+                error=first_error,
+            )
+            return result
 
     log.warning(
         "structured_output.invalid",

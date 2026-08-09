@@ -95,30 +95,28 @@ def _prepend_json_retry_prompt(messages: list[dict]) -> list[dict]:
 
 class OllamaHttpAdapter(InferenceAdapter):
     backend_name = "ollama_http"
-    # NOT TRUSTED TO CONSTRAIN DECODING, and this is a measurement rather than
-    # a judgement about Ollama.
+    # DECLARED, then checked. Recent Ollama does implement structured outputs
+    # in its own sampler, so True is the right PRIOR — but the OpenAI shim
+    # silently ignores `response_format` on releases that predate it, and this
+    # adapter cannot tell which release an endpoint is running.
     #
-    # The adapter does send `response_format: {"type": "json_schema", ...}`
-    # below, and recent Ollama releases do honour it. But the OpenAI shim
-    # SILENTLY IGNORES the key on releases that do not — see the comment at the
-    # request-building site, which has always said so — and this flag is what
-    # `_enforce_structured_output` in api/chat.py consults to decide whether to
-    # skip its validate-and-repair net. Claiming enforcement therefore turns
-    # OFF the only thing that would notice the schema was ignored.
+    # Measured on one such deployment (gemma4:26b): a strict json_schema
+    # request for an object with a single integer key returned HTTP 200 and
+    # "Mars has **two** moons: Phobos and Deimos." — prose, no error, no
+    # repair. Under the old class-constant scheme that claim also switched OFF
+    # the gateway's validate-and-repair net, so the caller received it.
     #
-    # Measured against a live deployment (Ollama backend, gemma4:26b): a strict
-    # `json_schema` request asking for an object with one integer key returned
-    # HTTP 200 and the body "Mars has **two** moons: Phobos and Deimos." —
-    # prose, not JSON, no error, no repair. A strict-mode client cannot tell
-    # that from a conforming answer.
-    #
-    # False costs one validation pass on a backend that DOES enforce, and the
-    # docstring of `_enforce_structured_output` weighs exactly that trade: "a
-    # typed 502 rather than handing back a document that silently violates the
-    # contract the caller asked for". Detecting the capability per deployment,
-    # instead of asserting it per backend class, is the better long-term fix
-    # and is tracked separately.
-    supports_structured_outputs = False
+    # `structured_output_capability` now demotes a deployment the first time it
+    # emits non-JSON, and the chat route validates trusted backends too rather
+    # than skipping them, so the demotion happens on that same request instead
+    # of a later one.
+    supports_structured_outputs = True
+
+    def deployment_id(self) -> str:
+        # The endpoint is load-bearing here: two Ollama hosts behind the same
+        # adapter can be different releases with different capabilities, and a
+        # demotion earned by one must not silence the other.
+        return f"{self.backend_name}:{self._endpoint or 'unbound'}"
 
     def __init__(self) -> None:
         self._descriptor: ModelDescriptor | None = None

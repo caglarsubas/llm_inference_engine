@@ -1,8 +1,12 @@
-"""Validate-and-retry for backends with no grammar-constrained decoding.
+"""Validate-and-retry, and the per-deployment capability belief behind it.
 
-Backends that enforce a schema in the sampler are trusted and skipped; only
-MLX-shaped adapters (``supports_structured_outputs = False``) go through the
-retry loop.
+Every response carrying a JSON Schema is validated. What differs is the
+consequence: a backend BELIEVED to constrain decoding has an ambiguous keyword
+violation passed through (our checker covers a subset of JSON Schema, so the
+fault may be ours), while a backend not so believed goes through the retry loop.
+
+Non-JSON is the exception, because it is not ambiguous — a grammar-constrained
+sampler cannot emit prose. That demotes the deployment and repairs the request.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from fastapi import HTTPException
 
 from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
 from inference_engine.adapters.base import GenerationResult
+from inference_engine import structured_output_capability as capability
 from inference_engine.api.chat import _enforce_structured_output
 from inference_engine.auth import Identity
 from inference_engine.cancellation import Cancellation
@@ -136,12 +141,79 @@ async def test_second_failure_raises_a_typed_502() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grammar_capable_backend_is_not_revalidated() -> None:
-    """A false negative in our schema subset must not break a working backend."""
+async def test_keyword_violation_from_a_trusted_backend_is_passed_through() -> None:
+    """A false negative in our schema subset must not break a working backend.
+
+    The fixture is JSON that VIOLATES a keyword — the previous version of this
+    test used the prose "this would never validate", which cannot exercise the
+    stated intent: prose is not a checker false-negative, it is proof the
+    backend never constrained anything, and it is now handled by demotion.
+    """
+    capability.reset_for_tests()
     adapter = _ScriptedAdapter([], supports_structured_outputs=True)
-    result = await _run(adapter, "this would never validate")
-    assert result.text == "this would never validate"
+    # Valid JSON; `answer` is required and absent, so our checker rejects it.
+    result = await _run(adapter, '{"unexpected": 1}')
+    assert result.text == '{"unexpected": 1}'
     assert adapter.prompts == []
+    # Ambiguous evidence must not move the belief.
+    assert capability.observed_unenforced() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_non_json_from_a_trusted_backend_demotes_the_deployment() -> None:
+    """Prose is proof, so the belief changes and the request is repaired."""
+    capability.reset_for_tests()
+    adapter = _ScriptedAdapter(['{"answer": "ok"}'], supports_structured_outputs=True)
+    result = await _run(adapter, "Mars has **two** moons: Phobos and Deimos.")
+
+    # Repaired rather than handed back.
+    assert result.text == '{"answer": "ok"}'
+    assert len(adapter.prompts) == 1
+    # And the deployment is no longer believed, so the NEXT request does not
+    # have to re-learn it.
+    assert capability.constrains_decoding(adapter, "fake:1") is False
+    assert ("scripted", "fake:1") in capability.observed_unenforced()
+
+
+@pytest.mark.asyncio
+async def test_blank_output_from_a_trusted_backend_does_not_demote() -> None:
+    """Truncation is not evidence about grammars.
+
+    An empty completion means max_tokens or a stop token. Demoting on it would
+    punish a correctly configured backend for a length problem, and the belief
+    would then be wrong in the direction that costs a retry on every later
+    request.
+    """
+    capability.reset_for_tests()
+    adapter = _ScriptedAdapter(['{"answer": "ok"}'], supports_structured_outputs=True)
+    await _run(adapter, "   ")
+    assert capability.observed_unenforced() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_demotion_is_per_deployment_not_per_backend_class() -> None:
+    """The whole point: one bad endpoint must not condemn a good one.
+
+    Two adapters of the SAME class, different deployments. One is proven not to
+    constrain decoding; the other keeps the class-level belief.
+    """
+    capability.reset_for_tests()
+
+    class _Endpoint(_ScriptedAdapter):
+        def __init__(self, host: str, replies: list[str]) -> None:
+            super().__init__(replies, supports_structured_outputs=True)
+            self._host = host
+
+        def deployment_id(self) -> str:
+            return f"scripted:{self._host}"
+
+    stale = _Endpoint("old-host", ['{"answer": "ok"}'])
+    modern = _Endpoint("new-host", [])
+
+    await _run(stale, "prose, not a document")
+
+    assert capability.constrains_decoding(stale, "fake:1") is False
+    assert capability.constrains_decoding(modern, "fake:1") is True
 
 
 @pytest.mark.asyncio

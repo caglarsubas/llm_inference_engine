@@ -125,22 +125,34 @@ async def test_text_only_blank_json_response_does_not_retry() -> None:
     assert len(captured) == 1
 
 
-def test_ollama_is_not_trusted_to_constrain_decoding() -> None:
-    """The gateway's validate-and-repair net must stay ON for this backend.
+def test_ollama_declares_enforcement_as_a_prior_not_a_guarantee() -> None:
+    """Recent Ollama does constrain decoding, so True is the right starting belief.
 
-    Regression for a silent contract violation, not a style preference.
-    `_enforce_structured_output` (api/chat.py) returns early for any adapter
-    claiming `supports_structured_outputs`, so claiming it here disables the
-    only check that would notice Ollama's OpenAI shim ignoring
-    `response_format`. Measured against a live deployment: a STRICT json_schema
-    request returned HTTP 200 with the prose body "Mars has **two** moons:
-    Phobos and Deimos." — a strict-mode client cannot distinguish that from a
-    conforming document.
-
-    If a future Ollama enforces schemas in its sampler, the honest change is to
-    DETECT that per deployment, not to re-assert it per backend class.
+    An earlier fix asserted False here, which was a blunt instrument: it made
+    every Ollama deployment pay a retry, including modern ones that honour the
+    schema. Its own docstring said the honest change was to DETECT the
+    capability per deployment, which `structured_output_capability` now does —
+    so the class-level value goes back to being a claim about the SOFTWARE, and
+    the runtime demotes the endpoints where the claim does not hold.
     """
-    assert OllamaHttpAdapter.supports_structured_outputs is False
+    assert OllamaHttpAdapter.supports_structured_outputs is True
+
+
+def test_ollama_deployment_id_distinguishes_endpoints() -> None:
+    """Two hosts behind one adapter class can be different releases.
+
+    A demotion earned by a stale endpoint must not silence a modern one, so the
+    endpoint has to be part of the observation key.
+    """
+    stale = OllamaHttpAdapter()
+    stale._endpoint = "http://old-host:11434"
+    modern = OllamaHttpAdapter()
+    modern._endpoint = "http://new-host:11434"
+
+    assert stale.deployment_id() != modern.deployment_id()
+    assert "old-host" in stale.deployment_id()
+    # An adapter that never loaded still yields a stable, non-colliding key.
+    assert OllamaHttpAdapter().deployment_id() == "ollama_http:unbound"
 
 
 def test_ollama_still_sends_the_schema_it_was_given() -> None:
