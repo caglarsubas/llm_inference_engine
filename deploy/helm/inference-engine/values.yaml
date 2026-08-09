@@ -73,6 +73,7 @@ routing:
   clockSkewSeconds: 30
   inputTokenReserve: 1024
   rateLimitMaxBuckets: 10000
+  rateLimitMaxWindowEntries: 100000
   rateLimitScope: process-replica # process-replica | deployment-shared
   sharedRateLimit:
     backend: direct # direct | sentinel

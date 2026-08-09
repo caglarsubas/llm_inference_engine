@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +29,8 @@ from inference_engine.model_routing_runtime import (
     enforce_model_routing_request,
     load_model_routing_pricing_catalog,
     model_routing_span_attrs,
+    observe_model_routing_usage,
+    settle_model_routing_reservation,
 )
 
 
@@ -336,7 +340,7 @@ def test_policy_evidence_attributes_are_complete_and_payload_free() -> None:
     assert "signed_payload" not in attrs
 
 
-def test_v2_policy_enforces_only_v1_limits_at_request_time() -> None:
+def test_v2_policy_reserves_tokens_and_window_spend_on_admission() -> None:
     state = _state(active=_active_policy(FIXTURE_V2_PATH))
 
     decision = _enforce(state=state, input_tokens=100, output_tokens=10)
@@ -346,22 +350,32 @@ def test_v2_policy_enforces_only_v1_limits_at_request_time() -> None:
     assert decision.route.shadow_model == "llama3.2:3b"
     assert decision.candidate_models == ("qwen3:32b", "llama3.3:70b:openrouter")
     assert decision.estimated_max_cost_micros == 460
+    assert decision.reserved_tokens == 110
+    assert decision.reserved_cost_micros == 460
+    assert decision.reservation is not None
+    # The token reserve is the input estimate plus this request's own output
+    # budget, not the route's 4096-token maxOutputTokens ceiling.
+    assert decision.route.limits.max_output_tokens == 4_096
+    assert decision.reservation.tokens is not None
+    assert decision.reservation.tokens.amount == 110
+    assert decision.reservation.spend is not None
+    assert decision.reservation.spend.amount == 460
 
     attrs = model_routing_span_attrs(decision)
     assert attrs["model_routing.limit.max_requests_per_minute"] == 120
-    for absent in (
-        "model_routing.limit.max_tokens_per_minute",
-        "model_routing.limit.max_cost_micros_per_window",
-        "model_routing.limit.budget_window_seconds",
-    ):
-        assert absent not in attrs
+    assert attrs["model_routing.limit.max_tokens_per_minute"] == 240_000
+    assert attrs["model_routing.limit.max_cost_micros_per_window"] == 5_000_000
+    assert attrs["model_routing.limit.budget_window_seconds"] == 3_600
+    assert attrs["model_routing.reserved_tokens"] == 110
+    assert attrs["model_routing.reserved_cost_micros"] == 460
 
 
-def test_v2_token_rate_and_window_budget_are_not_yet_enforced() -> None:
+def test_token_rate_limit_denies_before_the_request_ceiling_is_reached() -> None:
     state = _state(active=_active_policy(FIXTURE_V2_PATH))
     limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
 
-    for _ in range(120):
+    # 240_000 tokens per minute against a 36_864-token reservation admits six.
+    for _ in range(6):
         decision = _enforce(
             state=state,
             limiter=limiter,
@@ -372,8 +386,197 @@ def test_v2_token_rate_and_window_budget_are_not_yet_enforced() -> None:
 
     with pytest.raises(ModelRoutingEnforcementError) as raised:
         _enforce(state=state, limiter=limiter, input_tokens=32_768, output_tokens=4_096)
-    assert raised.value.code == "rate_limit_exceeded"
-    assert raised.value.limit_requests == 120
+    assert raised.value.code == "token_rate_limit_exceeded"
+    assert raised.value.limit_tokens == 240_000
+    assert raised.value.limit_requests is None
+    assert raised.value.retry_after_seconds == 60
+
+
+def test_settling_real_usage_frees_the_over_reserved_token_budget() -> None:
+    state = _state(active=_active_policy(FIXTURE_V2_PATH))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+
+    for _ in range(6):
+        decision = _enforce(
+            state=state,
+            limiter=limiter,
+            input_tokens=32_768,
+            output_tokens=4_096,
+        )
+        assert decision is not None
+        observe_model_routing_usage(decision.reservation, tokens=64, cost_micros=7)
+        settle_model_routing_reservation(limiter, decision.reservation)
+
+    # 6 * 64 real tokens, not 6 * 36_864 reserved ones, so the window is open.
+    assert _enforce(state=state, limiter=limiter, input_tokens=32_768, output_tokens=4_096)
+
+
+def test_settling_is_idempotent_so_a_double_exit_cannot_double_credit() -> None:
+    state = _state(active=_active_policy(FIXTURE_V2_PATH))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+
+    decision = _enforce(state=state, limiter=limiter, input_tokens=32_768, output_tokens=4_096)
+    assert decision is not None
+    observe_model_routing_usage(decision.reservation, tokens=100, cost_micros=10)
+    settle_model_routing_reservation(limiter, decision.reservation)
+    observe_model_routing_usage(decision.reservation, tokens=1, cost_micros=1)
+    settle_model_routing_reservation(limiter, decision.reservation)
+
+    window = limiter._buckets[("tpm", decision.active.digest, "reasoning", "org-golden", "runtime")]
+    assert window.total == 100
+
+
+def test_a_request_that_never_reported_usage_releases_its_whole_reservation() -> None:
+    state = _state(active=_active_policy(FIXTURE_V2_PATH))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+
+    for _ in range(6):
+        decision = _enforce(
+            state=state,
+            limiter=limiter,
+            input_tokens=32_768,
+            output_tokens=4_096,
+        )
+        assert decision is not None
+        settle_model_routing_reservation(limiter, decision.reservation)
+
+    assert _enforce(state=state, limiter=limiter, input_tokens=32_768, output_tokens=4_096)
+
+
+def test_served_but_unpriced_usage_keeps_its_window_spend_hold() -> None:
+    state = _state(active=_active_policy(FIXTURE_V2_PATH))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+
+    decision = _enforce(state=state, limiter=limiter, input_tokens=100, output_tokens=10)
+    assert decision is not None
+    observe_model_routing_usage(decision.reservation, tokens=64, cost_micros=None)
+    settle_model_routing_reservation(limiter, decision.reservation)
+
+    key = (decision.active.digest, "reasoning", "org-golden", "runtime")
+    assert limiter._buckets[("tpm", *key)].total == 64
+    assert limiter._buckets[("spend", *key)].total == 460
+
+
+def test_window_spend_budget_denies_once_the_window_is_exhausted() -> None:
+    active = _active_policy(FIXTURE_V2_PATH)
+    limits = active.verified.claims.routes[0].limits.model_copy(
+        update={
+            "max_requests_per_minute": None,
+            "max_tokens_per_minute": None,
+            "max_cost_micros_per_request": None,
+            "max_cost_micros_per_window": 1_000,
+            "budget_window_seconds": 3_600,
+        }
+    )
+    state = _state(active=_replace_reasoning_route(active, limits=limits))
+    clock = [10.0]
+    limiter = ModelRoutingRateLimiter(clock=lambda: clock[0])
+
+    for _ in range(2):
+        assert _enforce(state=state, limiter=limiter, input_tokens=100, output_tokens=10)
+    with pytest.raises(ModelRoutingEnforcementError) as raised:
+        _enforce(state=state, limiter=limiter, input_tokens=100, output_tokens=10)
+
+    assert raised.value.code == "budget_exceeded"
+    assert raised.value.retry_after_seconds == 3_600
+    assert raised.value.limit_tokens is None
+    assert raised.value.limit_requests is None
+
+    # The budget window is an hour, not the RPM minute.
+    clock[0] = 100.0
+    with pytest.raises(ModelRoutingEnforcementError, match="budget_exceeded"):
+        _enforce(state=state, limiter=limiter, input_tokens=100, output_tokens=10)
+    clock[0] = 3_610.1
+    assert _enforce(state=state, limiter=limiter, input_tokens=100, output_tokens=10)
+
+
+def test_window_budget_needs_pricing_and_an_input_estimate() -> None:
+    active = _active_policy(FIXTURE_V2_PATH)
+    unpriced = ModelRoutingRuntimeState(policy=active, pricing=None)
+    with pytest.raises(ModelRoutingEnforcementError, match="pricing_catalog_unavailable"):
+        _enforce(state=unpriced)
+    with pytest.raises(ModelRoutingEnforcementError, match="input_token_estimate_unavailable"):
+        _enforce(state=_state(active=active), input_tokens=None)
+
+
+def test_a_costed_window_route_cannot_activate_without_pricing() -> None:
+    active = _active_policy(FIXTURE_V2_PATH)
+    limits = active.verified.claims.routes[0].limits.model_copy(
+        update={"max_cost_micros_per_request": None}
+    )
+    with pytest.raises(ModelRoutingRuntimeConfigError) as raised:
+        build_model_routing_runtime_state(
+            _replace_reasoning_route(active, limits=limits),
+            None,
+            auth_enabled=True,
+            expected_org_id="org-golden",
+        )
+    assert raised.value.code == "pricing_catalog_required"
+
+
+def test_denial_on_one_dimension_leaves_the_others_uncharged() -> None:
+    active = _active_policy(FIXTURE_V2_PATH)
+    limits = active.verified.claims.routes[0].limits.model_copy(
+        update={"max_requests_per_minute": 10, "max_tokens_per_minute": 200}
+    )
+    state = _state(active=_replace_reasoning_route(active, limits=limits))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+
+    with pytest.raises(ModelRoutingEnforcementError, match="token_rate_limit_exceeded"):
+        _enforce(state=state, limiter=limiter, input_tokens=300, output_tokens=0)
+
+    key = (state.policy.digest, "reasoning", "org-golden", "runtime")
+    # Windows are evaluated in order and the first denial ends the admission, so
+    # spend is never reached. The two that were reached carry no charge.
+    for dimension in ("rpm", "tpm"):
+        assert limiter._buckets[(dimension, *key)].total == 0
+    assert ("spend", *key) not in limiter._buckets
+
+
+def test_v1_policies_and_null_v2_fields_reserve_nothing() -> None:
+    decision = _enforce()
+
+    assert decision is not None
+    assert decision.reservation is None
+    assert decision.reserved_tokens is None
+    assert decision.reserved_cost_micros is None
+
+    wildcard = _enforce(state=_state(active=_active_policy(FIXTURE_V2_PATH)), requested_model="chat")
+    assert wildcard is not None
+    assert wildcard.reservation is None
+    assert wildcard.reserved_tokens is None
+
+
+def test_parallel_admissions_never_overshoot_the_token_window() -> None:
+    active = _active_policy(FIXTURE_V2_PATH)
+    limits = active.verified.claims.routes[0].limits.model_copy(
+        update={
+            "max_requests_per_minute": None,
+            "max_cost_micros_per_request": None,
+            "max_cost_micros_per_window": None,
+            "budget_window_seconds": None,
+            "max_tokens_per_minute": 1_000,
+        }
+    )
+    state = _state(active=_replace_reasoning_route(active, limits=limits))
+    limiter = ModelRoutingRateLimiter(clock=lambda: 10.0)
+    barrier = threading.Barrier(16)
+
+    def attempt(_: int) -> str:
+        barrier.wait()
+        try:
+            _enforce(state=state, limiter=limiter, input_tokens=90, output_tokens=10)
+            return "accepted"
+        except ModelRoutingEnforcementError as exc:
+            assert exc.code == "token_rate_limit_exceeded"
+            return "denied"
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(attempt, range(16)))
+
+    assert results.count("accepted") == 10
+    key = ("tpm", state.policy.digest, "reasoning", "org-golden", "runtime")
+    assert limiter._buckets[key].total == 1_000
 
 
 def test_policy_evidence_reports_deployment_shared_rate_limit_scope() -> None:

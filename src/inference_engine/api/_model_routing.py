@@ -18,8 +18,12 @@ from ..model_routing_runtime import (
     enforce_model_routing_request,
     model_routing_policy_identity_attrs,
     model_routing_span_attrs,
+    observe_model_routing_usage,
+    retain_model_routing_reservation,
+    settle_model_routing_reservation,
+    usage_cost_micros,
 )
-from ..observability import span
+from ..observability import get_logger, span
 from ..schemas import (
     ChatCompletionRequest,
     ChatImageUrlContentPart,
@@ -27,6 +31,9 @@ from ..schemas import (
 )
 from . import _fallback, _usage
 from .state import app_state
+
+
+log = get_logger("api.model_routing")
 
 
 @dataclass(frozen=True)
@@ -98,7 +105,11 @@ def embedding_input_token_upper_bound(inputs: list[str]) -> int:
 
 
 def _enforcement_http_error(exc: ModelRoutingEnforcementError) -> HTTPException:
-    if exc.code == "rate_limit_exceeded":
+    if exc.code in {
+        "rate_limit_exceeded",
+        "token_rate_limit_exceeded",
+        "budget_exceeded",
+    }:
         status_code = 429
     elif exc.code in {
         "org_identity_missing",
@@ -129,14 +140,24 @@ def _enforcement_http_error(exc: ModelRoutingEnforcementError) -> HTTPException:
     if exc.retry_after_seconds is not None:
         detail["retry_after_seconds"] = exc.retry_after_seconds
         headers["Retry-After"] = str(exc.retry_after_seconds)
-        # OpenAI's SDKs read these to schedule their own backoff instead of
-        # retrying blind. ``remaining`` is 0 by construction — we only get here
-        # because the window is full.
-        headers["x-ratelimit-reset-requests"] = f"{exc.retry_after_seconds}s"
-    if status_code == 429:
+    # OpenAI's SDKs read these to schedule their own backoff instead of
+    # retrying blind. ``remaining`` is 0 by construction — we only get here
+    # because that window is full. Each trio is emitted only for a denial on
+    # the window it describes: the spend window has no OpenAI header dimension,
+    # so a budget denial carries Retry-After and nothing else, rather than
+    # telling an SDK that a request window it never exhausted has closed.
+    if exc.code == "rate_limit_exceeded":
         headers["x-ratelimit-remaining-requests"] = "0"
         if exc.limit_requests is not None:
             headers["x-ratelimit-limit-requests"] = str(exc.limit_requests)
+        if exc.retry_after_seconds is not None:
+            headers["x-ratelimit-reset-requests"] = f"{exc.retry_after_seconds}s"
+    elif exc.code == "token_rate_limit_exceeded":
+        headers["x-ratelimit-remaining-tokens"] = "0"
+        if exc.limit_tokens is not None:
+            headers["x-ratelimit-limit-tokens"] = str(exc.limit_tokens)
+        if exc.retry_after_seconds is not None:
+            headers["x-ratelimit-reset-tokens"] = f"{exc.retry_after_seconds}s"
     return HTTPException(
         status_code=status_code, detail=detail, headers=headers or None
     )
@@ -199,6 +220,67 @@ async def enforce_generation_request(
         raise _enforcement_http_error(exc) from exc
     _usage.bind_decision(decision)
     return decision
+
+
+def observe_usage(
+    decision: ModelRoutingDecision | None,
+    *,
+    model: str | None,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    """Hand the request's real usage to its admission reservation.
+
+    Purely local — no store round trip — so it is safe to call from inside a
+    generation span. ``settle_reservation`` is what commits it.
+    """
+    if decision is None or decision.reservation is None:
+        return
+    observe_model_routing_usage(
+        decision.reservation,
+        tokens=input_tokens + output_tokens,
+        cost_micros=usage_cost_micros(
+            app_state.model_routing_pricing,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        ),
+    )
+
+
+def retain_reservation(decision: ModelRoutingDecision | None) -> None:
+    """Keep the admission reserve for a request that vanished mid-flight.
+
+    Also purely local; ``settle_reservation`` is still what commits it.
+    """
+    if decision is None or decision.reservation is None:
+        return
+    retain_model_routing_reservation(decision.reservation)
+
+
+async def settle_reservation(decision: ModelRoutingDecision | None) -> None:
+    """Close out the admission reservation. Idempotent, and never raises.
+
+    Call it from a ``finally`` on every path that reached enforcement. A store
+    failure here is logged and swallowed: the request has already been served,
+    and the unsettled reservation stands at its conservative admission value
+    until its window slides past it — restrictive, never permissive.
+    """
+    if decision is None or decision.reservation is None:
+        return
+    try:
+        await asyncio.to_thread(
+            settle_model_routing_reservation,
+            app_state.model_routing_rate_limiter,
+            decision.reservation,
+        )
+    except Exception as exc:  # noqa: BLE001 - settling must not fail a served request
+        log.warning(
+            "model_routing.reservation_settle_failed",
+            policy_id=decision.active.policy_id,
+            route_id=decision.route.route_id,
+            error_type=type(exc).__name__,
+        )
 
 
 def reject_unsupported_governed_workload(
@@ -426,7 +508,10 @@ __all__ = [
     "embedding_input_token_upper_bound",
     "enforce_generation_request",
     "model_routing_span_attrs",
+    "observe_usage",
     "reject_unsupported_governed_workload",
+    "retain_reservation",
     "resolve_initial_candidate",
     "resolve_next_fallback",
+    "settle_reservation",
 ]

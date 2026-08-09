@@ -135,6 +135,8 @@ spec:
               value: {{ .Values.routing.inputTokenReserve | quote }}
             - name: MODEL_ROUTING_RATE_LIMIT_MAX_BUCKETS
               value: {{ .Values.routing.rateLimitMaxBuckets | quote }}
+            - name: MODEL_ROUTING_RATE_LIMIT_MAX_WINDOW_ENTRIES
+              value: {{ .Values.routing.rateLimitMaxWindowEntries | quote }}
             - name: MODEL_ROUTING_RATE_LIMIT_SCOPE
               value: {{ $rateLimitScope | quote }}
             - name: MODEL_PLANE_WORKLOAD_SURFACE

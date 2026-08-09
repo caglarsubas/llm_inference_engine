@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import replace
@@ -20,7 +21,7 @@ from inference_engine.adapters import (
 )
 from inference_engine.adapters.base import GenerationResult, GenerationTimeoutError
 from inference_engine.api import _model_routing
-from inference_engine.api.chat import _stream_response
+from inference_engine.api.chat import _stream_response, chat_completions
 from inference_engine.api.state import app_state
 from inference_engine.auth import Identity
 from inference_engine.cancellation import Cancellation
@@ -44,7 +45,8 @@ from inference_engine.model_routing_runtime import (
     build_model_routing_runtime_state,
 )
 from inference_engine.registry import ModelDescriptor
-from inference_engine.schemas import ChatMessage
+from inference_engine.scheduler import TenantScheduler
+from inference_engine.schemas import ChatCompletionRequest, ChatMessage
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model-routing-policy-v1.json"
@@ -220,7 +222,7 @@ class _RoutingAdapter(InferenceAdapter):
         self.stream_calls += 1
         self._raise_if_failed()
         yield StreamChunk(text=self.text)
-        yield StreamChunk(text="", finish_reason="stop")
+        yield StreamChunk(text="", finish_reason="stop", prompt_tokens=7, completion_tokens=3)
 
     async def embed(self, inputs: list[str]) -> EmbeddingResult:
         self.embed_calls += 1
@@ -867,3 +869,371 @@ def test_shared_rate_limit_outage_denies_before_model_acquire(monkeypatch) -> No
     assert response.json()["detail"]["type"] == "rate_limit_backend_unavailable"
     assert calls == []
     assert adapter.generate_calls == 0
+
+
+def _tpm_window(tenant: str = "anonymous"):
+    return app_state.model_routing_rate_limiter._buckets[
+        (
+            "tpm",
+            app_state.model_routing_runtime.policy.digest,
+            "reasoning",
+            "org-golden",
+            tenant,
+        )
+    ]
+
+
+def test_token_rate_limit_denies_before_model_acquire(monkeypatch) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=1)
+    )
+    adapter = _RoutingAdapter("must-not-run")
+    calls = _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        json={"model": "reasoning", "messages": [{"role": "user", "content": "one"}]},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["type"] == "token_rate_limit_exceeded"
+    assert response.headers["Retry-After"] == "60"
+    assert response.headers["x-ratelimit-limit-tokens"] == "1"
+    assert response.headers["x-ratelimit-remaining-tokens"] == "0"
+    assert response.headers["x-ratelimit-reset-tokens"] == "60s"
+    assert "x-ratelimit-limit-requests" not in response.headers
+    assert calls == []
+    assert adapter.generate_calls == 0
+
+
+def test_window_spend_budget_denies_before_model_acquire(monkeypatch) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(
+            _active_policy(),
+            max_cost_micros_per_window=1,
+            budget_window_seconds=60,
+        )
+    )
+    adapter = _RoutingAdapter("must-not-run")
+    calls = _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    response = TestClient(app).post(
+        "/v1/completions",
+        json={"model": "reasoning", "prompt": "one"},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["type"] == "budget_exceeded"
+    assert response.headers["Retry-After"] == "60"
+    # 119 of the route's 120 requests a minute are still available, so none of
+    # the request-window headers may claim otherwise, and no token window was
+    # signed at all.
+    assert "x-ratelimit-limit-tokens" not in response.headers
+    assert "x-ratelimit-remaining-tokens" not in response.headers
+    assert "x-ratelimit-limit-requests" not in response.headers
+    assert "x-ratelimit-remaining-requests" not in response.headers
+    assert "x-ratelimit-reset-requests" not in response.headers
+    assert calls == []
+    assert adapter.complete_calls == 0
+
+
+def test_a_request_denial_still_carries_the_request_window_headers(monkeypatch) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_requests_per_minute=1)
+    )
+    adapter = _RoutingAdapter("ok")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+    client = TestClient(app)
+    body = {"model": "reasoning", "messages": [{"role": "user", "content": "one"}]}
+
+    assert client.post("/v1/chat/completions", json=body).status_code == 200
+    response = client.post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["type"] == "rate_limit_exceeded"
+    assert response.headers["x-ratelimit-limit-requests"] == "1"
+    assert response.headers["x-ratelimit-remaining-requests"] == "0"
+    assert response.headers["x-ratelimit-reset-requests"] == response.headers["Retry-After"] + "s"
+    assert "x-ratelimit-limit-tokens" not in response.headers
+
+
+def test_settled_usage_and_not_the_admission_reserve_fills_the_token_window(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=1_000)
+    )
+    adapter = _RoutingAdapter("ok")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+    client = TestClient(app)
+
+    for _ in range(20):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "reasoning", "messages": [{"role": "user", "content": "one"}]},
+        )
+        assert response.status_code == 200, response.text
+
+    # The conservative reserve is well over 40 tokens a call, so 20 of them fit
+    # only because each settles down to the 7 + 3 it really used.
+    assert adapter.generate_calls == 20
+    assert _tpm_window().total == 200
+
+
+def test_a_streamed_request_settles_its_reservation_when_the_body_ends(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=1_000)
+    )
+    adapter = _RoutingAdapter("streamed")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    with TestClient(app).stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "reasoning",
+            "stream": True,
+            "messages": [{"role": "user", "content": "one"}],
+        },
+    ) as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    assert "streamed" in body
+    assert _tpm_window().total == 10
+
+
+def test_a_request_that_never_reached_a_model_returns_its_reservation(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=1_000)
+    )
+    adapter = _RoutingAdapter("ok")
+    models: dict[str, _RoutingAdapter] = {}
+    _install_models(monkeypatch, models)
+    client = TestClient(app)
+    body = {"model": "reasoning", "messages": [{"role": "user", "content": "one"}]}
+
+    for _ in range(10):
+        unavailable = client.post("/v1/chat/completions", json=body)
+        assert unavailable.status_code == 503
+        assert unavailable.json()["detail"]["type"] == "model_route_unavailable"
+    assert _tpm_window().total == 0
+
+    # Ten leaked reservations would have closed the window well before here.
+    models["qwen3:32b"] = adapter
+    served = client.post("/v1/chat/completions", json=body)
+    assert served.status_code == 200, served.text
+
+
+class _AbandonableAdapter(_RoutingAdapter):
+    """Streams indefinitely, reporting token counts only on a terminal frame.
+
+    On a cancel it stops without that frame, which is what a backend does when
+    the generation it was relaying is aborted part-way.
+    """
+
+    async def stream(
+        self,
+        messages: Iterable,
+        params: GenerationParams,
+        cancel: Cancellation | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        del messages, params
+        self.stream_calls += 1
+        for index in range(100):
+            if cancel is not None and bool(cancel):
+                return
+            await asyncio.sleep(0.02)
+            yield StreamChunk(text=f"{self.text}{index} ")
+        yield StreamChunk(text="", finish_reason="stop", prompt_tokens=7, completion_tokens=3)
+
+
+async def _reserved_stream(adapter, request, tenant: str = "runtime"):
+    identity = Identity(tenant=tenant, key_id="sk-test", org_id="org-golden")
+    decision = await _model_routing.enforce_generation_request(
+        identity=identity,
+        requested_model="reasoning",
+        input_token_upper_bound=10,
+        output_token_budget=512,
+    )
+    assert decision is not None
+    assert decision.reserved_tokens == 522
+    return decision, _stream_response(
+        adapter,
+        "qwen3:32b",
+        [ChatMessage(role="user", content="hi")],
+        GenerationParams(),
+        identity,
+        request,
+        routing_decision=decision,
+        candidate_index=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stream_abandoned_mid_flight_keeps_its_whole_reservation(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=10_000)
+    )
+    adapter = _AbandonableAdapter("tok")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    class _Connected:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    decision, events = await _reserved_stream(adapter, _Connected())
+    assert await anext(events) is not None
+    assert await anext(events) is not None
+    await events.aclose()
+
+    assert decision.reservation is not None
+    assert decision.reservation.settled
+    # The terminal usage frame never arrived, so settling to the counts on hand
+    # would have released the full 522-token reserve for a stream that really
+    # generated.
+    assert _tpm_window("runtime").total == 522
+
+
+@pytest.mark.asyncio
+async def test_a_stream_the_client_dropped_keeps_its_whole_reservation(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=10_000)
+    )
+    adapter = _AbandonableAdapter("tok")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    class _Drops:
+        _start = 0.0
+
+        async def is_disconnected(self) -> bool:
+            if self._start == 0.0:
+                self._start = asyncio.get_running_loop().time()
+            return asyncio.get_running_loop().time() - self._start >= 0.15
+
+    decision, events = await _reserved_stream(adapter, _Drops())
+    emitted = [event async for event in events]
+
+    assert len(emitted) > 1
+    assert decision.reservation is not None
+    assert decision.reservation.settled
+    # The adapter stopped on the cancel flag, so this generator's own loop ended
+    # normally and only the usage frame is missing — still an abandoned
+    # generation, and the one shape a real client disconnect produces.
+    assert _tpm_window("runtime").total == 522
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_reports_usage_still_settles_down_to_it(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=10_000)
+    )
+    adapter = _RoutingAdapter("done")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    class _Connected:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    decision, events = await _reserved_stream(adapter, _Connected())
+    emitted = [event async for event in events]
+
+    assert emitted[-1]["data"] == "[DONE]"
+    assert decision.reservation is not None
+    assert not decision.reservation.retained
+    assert _tpm_window("runtime").total == 10
+
+
+class _EarlyCountAdapter(_RoutingAdapter):
+    """Reports a prompt-token count on a frame that is not the terminal one."""
+
+    async def stream(
+        self,
+        messages: Iterable,
+        params: GenerationParams,
+        cancel: Cancellation | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        del messages, params
+        self.stream_calls += 1
+        yield StreamChunk(text=f"{self.text} ", prompt_tokens=9)
+        for index in range(100):
+            if cancel is not None and bool(cancel):
+                return
+            await asyncio.sleep(0.02)
+            yield StreamChunk(text=f"{self.text}{index} ")
+        yield StreamChunk(text="", finish_reason="stop", prompt_tokens=9, completion_tokens=120)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_abandoned_after_a_partial_count_keeps_its_whole_reservation(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=10_000)
+    )
+    adapter = _EarlyCountAdapter("tok")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+
+    class _Connected:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    decision, events = await _reserved_stream(adapter, _Connected())
+    assert await anext(events) is not None
+    assert await anext(events) is not None
+    await events.aclose()
+
+    assert decision.reservation is not None
+    assert decision.reservation.settled
+    # A count reported before the adapter finished covers part of a generation
+    # that went on without it, so 522 rather than the 9 that were on hand.
+    assert _tpm_window("runtime").total == 522
+
+
+@pytest.mark.asyncio
+async def test_a_stream_whose_body_is_never_read_keeps_its_whole_reservation(
+    monkeypatch,
+) -> None:
+    app_state.model_routing_runtime = _runtime_state(
+        _replace_reasoning_limits(_active_policy(), max_tokens_per_minute=10_000)
+    )
+    adapter = _RoutingAdapter("unread")
+    _install_models(monkeypatch, {"qwen3:32b": adapter})
+    # A body that is never read never releases its scheduler slot either, and
+    # that slot is per model: a throwaway scheduler keeps it out of every test
+    # that runs after this one.
+    monkeypatch.setattr(app_state, "scheduler", TenantScheduler())
+
+    class _Connected:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    response = await chat_completions(
+        ChatCompletionRequest(
+            model="reasoning",
+            messages=[ChatMessage(role="user", content="hi")],
+            stream=True,
+            max_tokens=512,
+        ),
+        _Connected(),
+        Identity(tenant="runtime", key_id="sk-test", org_id="org-golden"),
+    )
+
+    # Closing a generator that never started skips its body, so this is the
+    # response Starlette drops when the client is gone before the first byte.
+    await response.body_iterator.aclose()
+
+    # 138 estimated input tokens plus the 512-token output budget: the whole
+    # admission reserve, held until the window slides past it.
+    assert adapter.stream_calls == 0
+    assert _tpm_window("runtime").total == 650
