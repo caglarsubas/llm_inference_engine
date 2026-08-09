@@ -75,8 +75,8 @@ async def test_metrics_expose_usage_ledger_pressure(monkeypatch) -> None:
     monkeypatch.setattr(settings, "usage_ledger_max_buffer", 1)
     usage_ledger._reset_for_tests()
     try:
-        usage_ledger.usage_ledger.submit({"request_id": "req-1"})
-        usage_ledger.usage_ledger.submit({"request_id": "req-2"})
+        usage_ledger.usage_ledger.submit({"usage_record_id": "usage-1"})
+        usage_ledger.usage_ledger.submit({"usage_record_id": "usage-2"})
         body = await metrics()
     finally:
         usage_ledger._reset_for_tests()

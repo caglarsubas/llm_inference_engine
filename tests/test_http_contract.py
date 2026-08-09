@@ -1,6 +1,6 @@
 """HTTP-level standardization contract.
 
-The ``error`` envelope, ``x-request-id`` propagation, the root ``/metrics``
+The ``error`` envelope, server-owned ``x-request-id``, the root ``/metrics``
 alias, and the tokenizer routes — all exercised through the real ASGI app so
 middleware and exception handlers are in the path.
 """
@@ -76,6 +76,7 @@ def test_startup_503_also_carries_the_error_envelope(client: TestClient) -> None
     assert body["detail"]["type"] == "engine_starting"
     assert body["error"]["type"] == "engine_starting"
     assert response.headers["retry-after"] == "5"
+    assert response.headers["x-request-id"].startswith("req_")
 
 
 # --- request id --------------------------------------------------------------
@@ -86,30 +87,122 @@ def test_response_always_carries_a_request_id(client: TestClient) -> None:
     assert response.headers["x-request-id"].startswith("req_")
 
 
-def test_inbound_request_id_is_echoed(client: TestClient) -> None:
+def test_inbound_request_id_cannot_override_the_server_owned_id(client: TestClient) -> None:
     response = client.get("/v1/health", headers={"x-request-id": "caller-abc"})
-    assert response.headers["x-request-id"] == "caller-abc"
+    assert response.headers["x-request-id"].startswith("req_")
+    assert response.headers["x-request-id"] != "caller-abc"
 
 
-def test_orchestra_runtime_request_id_is_honoured(client: TestClient) -> None:
-    """The SDK's model gateway sends its correlation id under its own header."""
+def test_orchestra_runtime_request_id_does_not_alias_the_engine_id(client: TestClient) -> None:
     response = client.get(
         "/v1/health", headers={"x-orchestra-runtime-request-id": "run-42"}
     )
-    assert response.headers["x-request-id"] == "run-42"
+    assert response.headers["x-request-id"].startswith("req_")
+    assert response.headers["x-request-id"] != "run-42"
 
 
-def test_explicit_request_id_wins_over_the_orchestra_header(client: TestClient) -> None:
+def test_repeated_caller_request_id_gets_a_distinct_engine_id_per_request(
+    client: TestClient,
+) -> None:
+    first = client.get("/v1/health", headers={"x-request-id": "same-caller-id"})
+    second = client.get("/v1/health", headers={"x-request-id": "same-caller-id"})
+
+    assert first.headers["x-request-id"] != second.headers["x-request-id"]
+
+
+def test_oversized_orchestra_identity_is_rejected_without_truncating(
+    client: TestClient,
+) -> None:
     response = client.get(
         "/v1/health",
-        headers={"x-request-id": "primary", "x-orchestra-runtime-request-id": "secondary"},
+        headers={"x-orchestra-model-attempt-id": "z" * 257},
     )
-    assert response.headers["x-request-id"] == "primary"
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_model_invocation_identity"
+    assert response.json()["error"]["param"] == "x-orchestra-model-attempt-id"
+    assert response.headers["x-request-id"].startswith("req_")
 
 
-def test_oversized_request_id_is_truncated(client: TestClient) -> None:
-    response = client.get("/v1/health", headers={"x-request-id": "z" * 5000})
-    assert len(response.headers["x-request-id"]) == 200
+def test_duplicate_orchestra_identity_header_is_rejected(client: TestClient) -> None:
+    response = client.get(
+        "/v1/health",
+        headers=[
+            ("x-orchestra-model-invocation-id", "invocation-1"),
+            ("x-orchestra-model-invocation-id", "invocation-2"),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "x-orchestra-model-invocation-id"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "x-orchestra-runtime-request-id",
+        "x-orchestra-model-invocation-id",
+        "x-orchestra-model-attempt-id",
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    ["null", "NULL", "NoNe", "nil", "NIL", "undefined", "UnDeFiNeD"],
+)
+def test_flattened_null_identity_sentinels_fail_before_priced_execution(
+    client: TestClient,
+    header: str,
+    value: str,
+) -> None:
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "unused", "messages": [{"role": "user", "content": "hi"}]},
+        headers={header: value},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_model_invocation_identity"
+    assert response.json()["error"]["param"] == header
+    assert response.headers["x-request-id"].startswith("req_")
+    assert "x-orchestra-usage-record-id" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("headers", "invalid_header"),
+    [
+        (
+            {"x-orchestra-model-invocation-id": "invocation-1"},
+            "x-orchestra-model-invocation-id",
+        ),
+        (
+            {"x-orchestra-model-attempt-id": "attempt-1"},
+            "x-orchestra-model-attempt-id",
+        ),
+        (
+            {
+                "x-orchestra-runtime-request-id": "runtime-1",
+                "x-orchestra-model-attempt-id": "attempt-1",
+            },
+            "x-orchestra-model-attempt-id",
+        ),
+    ],
+)
+def test_orchestra_identity_hierarchy_fails_before_priced_execution(
+    client: TestClient,
+    headers: dict[str, str],
+    invalid_header: str,
+) -> None:
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "unused", "messages": [{"role": "user", "content": "hi"}]},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_model_invocation_identity"
+    assert response.json()["error"]["param"] == invalid_header
+    assert response.headers["x-request-id"].startswith("req_")
+    assert "x-orchestra-usage-record-id" not in response.headers
 
 
 def test_error_responses_also_carry_a_request_id(client: TestClient) -> None:

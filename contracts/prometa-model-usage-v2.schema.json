@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometa.ai/contracts/prometa-model-usage-v2.schema.json",
+  "title": "Prometa model usage ledger record v2",
+  "description": "Metadata-only, best-effort buffered model usage record. usage_record_id is the sole delivery dedupe identity; upstream Orchestra identities are correlation fields only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event",
+    "timestamp",
+    "usage_record_id",
+    "engine_request_id",
+    "runtime_request_id",
+    "model_invocation_id",
+    "model_attempt_id",
+    "route",
+    "operation",
+    "stream",
+    "tenant",
+    "org_id",
+    "key_id",
+    "outcome",
+    "finish_reason",
+    "http_status",
+    "error_type",
+    "denial_code",
+    "requested_model",
+    "resolved_model",
+    "backend",
+    "request_key_source",
+    "policy_id",
+    "policy_digest",
+    "route_id",
+    "pricing_digest",
+    "input_token_upper_bound",
+    "output_token_budget",
+    "input_tokens",
+    "output_tokens",
+    "cached_tokens",
+    "cost_micros",
+    "fallback",
+    "fallback_from_model",
+    "fallback_from_backend",
+    "fallback_reason",
+    "duration_ms",
+    "ttft_ms",
+    "trace_id",
+    "span_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "prometa.model-usage.v2"
+    },
+    "event": {
+      "const": "prometa.model-usage"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "usage_record_id": {
+      "type": "string",
+      "pattern": "^usage_[0-9a-f]{32}$"
+    },
+    "engine_request_id": {
+      "type": "string",
+      "pattern": "^req_[0-9a-f]{32}$"
+    },
+    "runtime_request_id": {
+      "$ref": "#/$defs/nullableExternalIdentity"
+    },
+    "model_invocation_id": {
+      "$ref": "#/$defs/nullableExternalIdentity"
+    },
+    "model_attempt_id": {
+      "$ref": "#/$defs/nullableExternalIdentity"
+    },
+    "route": {
+      "type": "string"
+    },
+    "operation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stream": {
+      "type": "boolean"
+    },
+    "tenant": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "org_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "key_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "ok",
+        "error",
+        "timeout",
+        "denied",
+        null
+      ]
+    },
+    "finish_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "http_status": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "denial_code": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requested_model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "resolved_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "backend": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request_key_source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "route_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pricing_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "input_token_upper_bound": {
+      "$ref": "#/$defs/nullableNonNegativeInteger"
+    },
+    "output_token_budget": {
+      "$ref": "#/$defs/nullableNonNegativeInteger"
+    },
+    "input_tokens": {
+      "$ref": "#/$defs/nullableNonNegativeInteger"
+    },
+    "output_tokens": {
+      "$ref": "#/$defs/nullableNonNegativeInteger"
+    },
+    "cached_tokens": {
+      "$ref": "#/$defs/nullableNonNegativeInteger"
+    },
+    "cost_micros": {
+      "$ref": "#/$defs/nullableNonNegativeInteger"
+    },
+    "fallback": {
+      "type": "boolean"
+    },
+    "fallback_from_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fallback_from_backend": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fallback_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "duration_ms": {
+      "$ref": "#/$defs/nullableNonNegativeNumber"
+    },
+    "ttft_ms": {
+      "$ref": "#/$defs/nullableNonNegativeNumber"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "model_invocation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_invocation_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "runtime_request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "model_attempt_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_attempt_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "runtime_request_id": {
+            "type": "string"
+          },
+          "model_invocation_id": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "externalIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!(?:[Nn][Uu][Ll][Ll]|[Nn][Oo][Nn][Ee]|[Nn][Ii][Ll]|[Uu][Nn][Dd][Ee][Ff][Ii][Nn][Ee][Dd])$)[!-~]+$"
+    },
+    "nullableExternalIdentity": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/externalIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableNonNegativeInteger": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableNonNegativeNumber": {
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "x-prometa-identity-order": [
+    "usage_record_id",
+    "engine_request_id",
+    "runtime_request_id",
+    "model_invocation_id",
+    "model_attempt_id"
+  ],
+  "x-prometa-header-mapping": {
+    "request": {
+      "x-orchestra-runtime-request-id": "runtime_request_id",
+      "x-orchestra-model-invocation-id": "model_invocation_id",
+      "x-orchestra-model-attempt-id": "model_attempt_id"
+    },
+    "response": {
+      "x-request-id": "engine_request_id",
+      "x-orchestra-usage-record-id": "usage_record_id"
+    },
+    "inbound-x-request-id-alias": null
+  },
+  "x-prometa-identity-ownership": {
+    "usage_record_id": "inference-engine",
+    "engine_request_id": "inference-engine",
+    "runtime_request_id": "tenant-runtime",
+    "model_invocation_id": "tenant-runtime",
+    "model_attempt_id": "tenant-runtime"
+  },
+  "x-prometa-delivery": {
+    "mode": "best-effort-buffered",
+    "dedupeField": "usage_record_id",
+    "redeliveryWindow": {
+      "condition": "drain-cancelled-after-sink-acceptance-uncertain",
+      "retainsDedupeValue": true
+    }
+  },
+  "x-prometa-metadata-only": true
+}

@@ -1,4 +1,4 @@
-"""Bind API-layer objects onto the request's ``prometa.model-usage.v1`` record.
+"""Bind API-layer objects onto the request's ``prometa.model-usage.v2`` record.
 
 Mirrors the ``_fallback.span_attrs()`` idiom: routes hand over the objects they
 already hold and this module owns the mapping onto ledger fields. Keeping it
