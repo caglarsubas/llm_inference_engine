@@ -364,6 +364,54 @@ class Settings(BaseSettings):
         le=0.5,
     )
 
+    # Guardrail call-out (orchestra-guardrail-evaluate-v1). Off is the default:
+    # the engine builds no client, takes no branch, and behaves exactly as it
+    # did before the seam existed. Turn it on and the generation routes gain
+    # pre-dispatch and post-generation evaluation. The two settings must agree
+    # in both directions — an endpoint set while this is false is a startup
+    # error, not a silently inert deployment.
+    guardrail_enabled: bool = Field(default=False)
+    guardrail_endpoint: str = Field(
+        default="",
+        description=(
+            "Bare origin of the guardrail service, e.g. "
+            "'http://127.0.0.1:8099'. The evaluate path is fixed by the "
+            "contract and appended by the engine. Required when enabled."
+        ),
+    )
+    guardrail_profile: str = Field(
+        default="default",
+        description="Profile id the service resolves thresholds and detector parameters from.",
+    )
+    guardrail_names: str = Field(
+        default="",
+        description=(
+            "Comma-separated guardrail names sent on every evaluation. The "
+            "caller names the guardrail set; the profile parameterises it. "
+            "Required when enabled — an enabled endpoint with no names would "
+            "ask the service to check nothing."
+        ),
+    )
+    guardrail_api_key: str = Field(default="", repr=False, exclude=True)
+    guardrail_api_key_file: str = Field(default="")
+    guardrail_timeout_seconds: float = Field(
+        default=0.05,
+        gt=0.0,
+        le=5.0,
+        description=(
+            "Client deadline for one evaluation. The contract's largest in-band "
+            "stage budget is 40 ms plus 10 ms of transport slack, and the "
+            "server budget sent on the wire is derived back from this value so "
+            "tightening it also tightens what the service is asked to promise."
+        ),
+    )
+    # Fail-closed matches every other decision point on the governed surface,
+    # and the failure a fail-open would tolerate is exactly the one an attacker
+    # induces to disable enforcement.
+    guardrail_fail_mode: Literal["closed", "open"] = Field(default="closed")
+    guardrail_fail_open_max_consecutive: int = Field(default=20, ge=1)
+    guardrail_fail_open_window_seconds: float = Field(default=60.0, gt=0.0)
+
     # LLM-as-a-Judge default. Override per-request via EvalRequest.judge_model.
     default_judge_model: str = Field(default="llama3.2:3b")
 

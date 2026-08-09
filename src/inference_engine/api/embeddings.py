@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..adapters import EmbeddingResult, EmbeddingsNotSupportedError, InferenceAdapter
 from ..auth import Identity, require_identity
@@ -34,7 +34,7 @@ from ..schemas import (
     EmbeddingResponse,
     Usage,
 )
-from . import _fallback, _model_routing, _usage
+from . import _fallback, _guardrail, _model_routing, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -127,6 +127,7 @@ async def _embed_once(
 @router.post("/v1/embeddings", response_model=EmbeddingResponse)
 async def create_embeddings(
     req: EmbeddingRequest,
+    request: Request,
     identity: Identity = Depends(require_identity),
 ) -> EmbeddingResponse:
     inputs = [req.input] if isinstance(req.input, str) else list(req.input)
@@ -149,6 +150,13 @@ async def create_embeddings(
         output_token_budget=0,
     )
     try:
+        # ``llm_input`` only: an embedding response is a vector, and there is
+        # no completion for the output stage to inspect.
+        inputs = await _guardrail.guard_string_inputs(
+            identity=identity,
+            request_id=_guardrail.new_request_id(request),
+            inputs=inputs,
+        )
         active = await _model_routing.resolve_initial_candidate(
             requested_model=req.model,
             decision=decision,

@@ -56,12 +56,20 @@ from ..schemas import (
     chat_content_text,
 )
 from .. import usage_ledger
-from . import _auto_eval, _fallback, _model_routing, _tool_audit, _usage
+from . import _auto_eval, _fallback, _guardrail, _model_routing, _tool_audit, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
 log = get_logger("api.chat")
+
+# Marks a delta that has not cleared the streaming output guard yet. The keys
+# never reach the wire: ``_guarded`` replaces every marker with a real chunk
+# built from the text the guard released. Answer text and reasoning text are
+# separate channels with separate windows, so a pattern is never assembled out
+# of two channels that the client renders apart.
+_GUARDED_TEXT = "__guarded_text__"
+_GUARDED_REASONING = "__guarded_reasoning__"
 
 # SSE answers 200 even when the stream ends in an ``{"event": "error"}`` frame,
 # so the ledger outcome has to come from the resolved finish reason rather than
@@ -292,6 +300,23 @@ async def chat_completions(
     # route returns.
     settled_by_stream = False
     try:
+        # Ahead of candidate resolution: a denied prompt must not acquire a
+        # model, and the caller must not pay the load latency of one.
+        request_id = _guardrail.new_request_id(request)
+        # Tool output first, over the same inbound ``role="tool"`` messages
+        # ``_tool_audit.emit_tool_results`` walks below, so a transform lands
+        # before the prompt those messages are part of is evaluated — and so a
+        # deny costs no model load.
+        messages = await _guardrail.guard_tool_results(
+            identity=identity,
+            request_id=request_id,
+            messages=req.messages,
+        )
+        messages = await _guardrail.guard_chat_messages(
+            identity=identity,
+            request_id=request_id,
+            messages=messages,
+        )
         active = await _model_routing.resolve_initial_candidate(
             requested_model=req.model,
             decision=decision,
@@ -323,13 +348,13 @@ async def chat_completions(
                 model_name=active.model_name,
                 workload="chat.stream",
                 priority=30.0,
-                estimated_tokens=_estimated_chat_tokens(req.messages, params),
+                estimated_tokens=_estimated_chat_tokens(messages, params),
             )
             stream = EventSourceResponse(
                 _stream_response(
                     active.adapter,
                     active.model_name,
-                    req.messages,
+                    messages,
                     params,
                     identity,
                     request,
@@ -341,6 +366,7 @@ async def chat_completions(
                     decision,
                     active.candidate_index,
                     bool(req.stream_options and req.stream_options.include_usage),
+                    request_id=request_id,
                 )
             )
             settled_by_stream = True
@@ -349,7 +375,7 @@ async def chat_completions(
         return await _blocking_response(
             active.adapter,
             active.model_name,
-            req.messages,
+            messages,
             params,
             identity,
             auto_eval,
@@ -358,6 +384,7 @@ async def chat_completions(
             decision,
             active.candidate_index,
             active.fallback_info,
+            request_id=request_id,
         )
     finally:
         if not settled_by_stream:
@@ -840,6 +867,7 @@ async def _blocking_response(
     routing_decision: _model_routing.ModelRoutingDecision | None = None,
     candidate_index: int | None = None,
     initial_fallback_info: _fallback.FallbackInfo | None = None,
+    request_id: str | None = None,
 ) -> ChatCompletionResponse:
     active = _model_routing.ResolvedRoutingCandidate(
         adapter=adapter,
@@ -908,6 +936,28 @@ async def _blocking_response(
         cached_tokens=result.cached_tokens,
         finish_reason=result.finish_reason,
     )
+
+    # After the usage bind on purpose: a blocked completion still consumed the
+    # tokens that produced it, and the caller is billed for them either way.
+    guard_request_id = request_id or _guardrail.new_request_id()
+    if result.text:
+        guarded_text = await _guardrail.guard_completion_text(
+            identity=identity,
+            request_id=guard_request_id,
+            text=result.text,
+        )
+        if guarded_text != result.text:
+            result = replace(result, text=guarded_text)
+    # Reasoning content is model output the caller receives on its own channel,
+    # so it is guarded on its own rather than riding on the answer's verdict.
+    if result.reasoning_content:
+        guarded_reasoning = await _guardrail.guard_completion_text(
+            identity=identity,
+            request_id=guard_request_id,
+            text=result.reasoning_content,
+        )
+        if guarded_reasoning != result.reasoning_content:
+            result = replace(result, reasoning_content=guarded_reasoning)
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
 
@@ -997,9 +1047,19 @@ async def _stream_response(
     routing_decision: _model_routing.ModelRoutingDecision | None = None,
     candidate_index: int | None = None,
     include_usage: bool = False,
+    request_id: str | None = None,
 ) -> AsyncIterator[dict]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
+    guard_request_id = request_id or _guardrail.new_request_id(request)
+    stream_guard = _guardrail.stream_output_guard(
+        identity=identity,
+        request_id=guard_request_id,
+    )
+    reasoning_guard = _guardrail.stream_output_guard(
+        identity=identity,
+        request_id=guard_request_id,
+    )
 
     def _chunk(
         delta: ChatCompletionDelta,
@@ -1082,12 +1142,20 @@ async def _stream_response(
             out: list[dict] = []
             for d in deltas:
                 if d.content:
-                    chunks_emitted += 1
-                    accumulated.append(d.content)
-                    out.append(_chunk(ChatCompletionDelta(content=d.content)))
+                    if stream_guard is None:
+                        chunks_emitted += 1
+                        accumulated.append(d.content)
+                        out.append(_chunk(ChatCompletionDelta(content=d.content)))
+                    else:
+                        out.append({_GUARDED_TEXT: d.content})
                 if d.reasoning_content:
-                    chunks_emitted += 1
-                    out.append(_chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content)))
+                    if reasoning_guard is None:
+                        chunks_emitted += 1
+                        out.append(
+                            _chunk(ChatCompletionDelta(reasoning_content=d.reasoning_content))
+                        )
+                    else:
+                        out.append({_GUARDED_REASONING: d.reasoning_content})
                 if d.tool_call:
                     tc = d.tool_call
                     fn = tc.get("function") or {}
@@ -1128,6 +1196,50 @@ async def _stream_response(
                         )
                     )
             return out
+
+        def _released_chunk(step, *, reasoning: bool) -> list[dict]:
+            nonlocal chunks_emitted
+            if not step.released:
+                return []
+            chunks_emitted += 1
+            if reasoning:
+                return [_chunk(ChatCompletionDelta(reasoning_content=step.released))]
+            accumulated.append(step.released)
+            return [_chunk(ChatCompletionDelta(content=step.released))]
+
+        async def _guarded(events: list[dict]) -> tuple[list[dict], dict | None]:
+            """Resolve held-back markers into wire chunks.
+
+            Pass-through when no guard is configured, so the unguarded stream
+            emits exactly the chunk sequence it always did. A frame that is not
+            a marker — role, logprobs, a tool-call delta — goes out as it
+            arrives and never forces a guarded channel to release early.
+            Releasing it to preserve the interleaving would put text on the wire
+            that the guard has not yet seen the following
+            ``STREAM_HOLDBACK_CHARS`` of, and would cost a round trip per frame
+            on a channel a logprobs-requesting caller interrupts every token.
+            Content and tool calls reassemble into separate fields, so the
+            client's message is the same either way.
+            """
+            if stream_guard is None or reasoning_guard is None:
+                return events, None
+            out: list[dict] = []
+            for event in events:
+                channels = (
+                    (stream_guard, False, event.get(_GUARDED_TEXT)),
+                    (reasoning_guard, True, event.get(_GUARDED_REASONING)),
+                )
+                if all(feed is None for _, _, feed in channels):
+                    out.append(event)
+                    continue
+                for guard, is_reasoning, feed in channels:
+                    if feed is None:
+                        continue
+                    step = await guard.feed(feed)
+                    if step.blocked is not None:
+                        return out, step.blocked
+                    out.extend(_released_chunk(step, reasoning=is_reasoning))
+            return out, None
 
         async with watch_disconnect(request) as cancel:
             reassembler = _tool_audit.ToolCallReassembler()
@@ -1226,18 +1338,45 @@ async def _stream_response(
                     except StopAsyncIteration:
                         first_piece = None
 
+                    blocked: dict | None = None
                     if first_piece is not None:
-                        for chunk in _piece_events(first_piece):
+                        chunks, blocked = await _guarded(_piece_events(first_piece))
+                        for chunk in chunks:
                             yield chunk
-                    async for piece in pieces:
-                        for chunk in _piece_events(piece):
+                    if blocked is None:
+                        async for piece in pieces:
+                            chunks, blocked = await _guarded(_piece_events(piece))
+                            for chunk in chunks:
+                                yield chunk
+                            if blocked is not None:
+                                break
+                    if blocked is None:
+                        if not role_emitted:
+                            yield _chunk(ChatCompletionDelta(role="assistant"))
+                            role_emitted = True
+                        # Drain any held-back text now that the adapter is done.
+                        chunks, blocked = await _guarded(_ingest(normalizer.flush()))
+                        for chunk in chunks:
                             yield chunk
-                    if not role_emitted:
-                        yield _chunk(ChatCompletionDelta(role="assistant"))
-                        role_emitted = True
-                    # Drain any held-back text now that the adapter is done.
-                    for chunk in _ingest(normalizer.flush()):
-                        yield chunk
+                    if blocked is None and stream_guard is not None and reasoning_guard is not None:
+                        # The final window is always guarded, holdback included,
+                        # on both channels.
+                        for guard, is_reasoning in (
+                            (reasoning_guard, True),
+                            (stream_guard, False),
+                        ):
+                            step = await guard.flush()
+                            blocked = step.blocked
+                            if blocked is not None:
+                                break
+                            for chunk in _released_chunk(step, reasoning=is_reasoning):
+                                yield chunk
+                    if blocked is not None:
+                        adapter_finished = True
+                        finish_reason = "error"
+                        s.bind(**{"error.type": blocked["type"]})
+                        yield {"event": "error", "data": json.dumps({"error": blocked})}
+                        return
                     # If the normalizer parsed tool calls out of the text stream,
                     # the canonical finish_reason is ``tool_calls`` regardless of
                     # what the adapter signalled.

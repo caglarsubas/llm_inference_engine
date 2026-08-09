@@ -13,6 +13,7 @@ from threading import RLock
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..guardrail import GuardrailClient
     from ..model_plane_observer import ModelPlaneObservationReporter
 
 from ..adapters import InferenceAdapter
@@ -144,6 +145,9 @@ class AppState:
             max_buckets=settings.model_routing_rate_limit_max_buckets
         )
         self.model_plane_observer: ModelPlaneObservationReporter | None = None
+        # None is the unconfigured state and the off switch for every guardrail
+        # call-out; the lifespan builds a client only when an endpoint is set.
+        self.guardrail: GuardrailClient | None = None
 
         # Dynamic-batching coalescer for /v1/embeddings. Lazy: queues are
         # created per-adapter on first submit, automatically replaced when
