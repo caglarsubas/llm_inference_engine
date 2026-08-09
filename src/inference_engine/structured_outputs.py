@@ -46,6 +46,22 @@ class SchemaViolation(Exception):
     """The generated document does not satisfy the requested schema."""
 
 
+class ResponseNotJson(SchemaViolation):
+    """The text was not JSON at all.
+
+    A subclass, so every existing ``except SchemaViolation`` still catches it.
+    It is separated because the two carry very different WEIGHTS of evidence
+    about the backend, and the capability registry turns on that difference:
+
+    * A keyword violation is ambiguous. The document is JSON, and this module
+      checks a subset of JSON Schema, so the fault may be a gap in the checker
+      rather than in the backend.
+    * Non-JSON is decisive. A sampler constrained to a JSON grammar cannot emit
+      prose, so a backend that returns "Mars has two moons" to a schema request
+      demonstrably did not constrain anything.
+    """
+
+
 def _resolve_ref(schema: dict, root: dict) -> dict:
     """Follow a local ``$ref`` into ``$defs``/``definitions``; else pass through."""
     ref = schema.get("$ref")
@@ -143,7 +159,7 @@ def validate_json_document(text: str, schema: dict) -> Any:
     try:
         document = json.loads(text)
     except (TypeError, ValueError) as exc:
-        raise SchemaViolation(f"response is not valid JSON: {exc}") from exc
+        raise ResponseNotJson(f"response is not valid JSON: {exc}") from exc
     _validate(document, schema, schema, "")
     return document
 
@@ -159,4 +175,9 @@ def repair_instruction(schema: dict, error: str, name: str = "response") -> str:
     )
 
 
-__all__ = ["SchemaViolation", "repair_instruction", "validate_json_document"]
+__all__ = [
+    "ResponseNotJson",
+    "SchemaViolation",
+    "repair_instruction",
+    "validate_json_document",
+]

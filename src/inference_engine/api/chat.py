@@ -30,10 +30,12 @@ from ..evals import PolicyEntry
 from ..genai_metrics import genai_metrics
 from ..observability import get_logger, span
 from ..structured_outputs import (
+    ResponseNotJson,
     SchemaViolation,
     repair_instruction,
     validate_json_document,
 )
+from .. import structured_output_capability as capability
 from ..schemas import (
     AutoEvalSpec,
     ChatCompletionChoice,
@@ -687,33 +689,74 @@ async def _enforce_structured_output(
     intent_attrs: dict | None = None,
     routing_decision: _model_routing.ModelRoutingDecision | None = None,
 ):
-    """Validate-and-retry for backends that can't constrain decoding.
+    """Validate the document, and decide who to blame when it is wrong.
 
-    A no-op unless the caller asked for a JSON Schema *and* the backend has no
-    grammar hook (MLX today). Backends that enforce in the sampler are trusted:
-    re-validating them here would risk rejecting a valid document over a gap in
-    our own schema-subset checker, which is a worse failure than the one it
-    would catch.
+    A no-op unless the caller asked for a JSON Schema. Beyond that, this used
+    to skip entirely for backends that constrain decoding, resting on a
+    class-level claim. That claim is now a PRIOR (see
+    structured_output_capability): every response is checked, and the belief
+    about the backend decides only what to DO with a failure.
+
+    * Trusted backend, keyword violation — AMBIGUOUS, because this codebase
+      checks a subset of JSON Schema and the fault may be the checker's. Log
+      and pass through, which is the outcome those backends already had and
+      preserves the false-rejection safety the old skip provided.
+    * Trusted backend, response is not JSON — PROOF the belief is wrong, since
+      no grammar-constrained sampler emits prose. Demote the deployment and
+      repair this request.
+    * Untrusted backend — repair, as before.
 
     One retry, with the validation error fed back to the model. If the second
     attempt is still invalid we surface a typed 502 rather than handing back a
     document that silently violates the contract the caller asked for — a
     strict-mode client has no way to tell the difference otherwise.
     """
-    if not params.json_schema or adapter.supports_structured_outputs:
+    if not params.json_schema:
         return result
     if result.tool_calls:
         # The model chose to call a tool instead of answering; there is no
         # document to validate against the schema.
         return result
 
+    trusted = capability.constrains_decoding(adapter, model_name)
+
     try:
         validate_json_document(result.text, params.json_schema)
         return result
-    except SchemaViolation as exc:
-        # Bind the message before the except block ends — Python deletes the
-        # ``as`` name on exit, so it is not readable further down.
+    except ResponseNotJson as exc:
+        # Subclass first: `except SchemaViolation` below would swallow it.
+        # Bind the message before the block ends — Python deletes the ``as``
+        # name on exit, so it is not readable further down.
         first_error = str(exc)
+        if trusted:
+            if not (result.text or "").strip():
+                # Truncation or a stop token, not an unconstrained sampler.
+                # Demoting here would punish a correctly configured backend
+                # that ran out of max_tokens, so the belief is left alone and
+                # the repair path handles the empty document.
+                log.warning(
+                    "structured_output.empty_from_trusted_backend",
+                    model=model_name,
+                    backend=adapter.backend_name,
+                )
+            else:
+                capability.record_unenforced(
+                    adapter, model_name, evidence="response_not_json"
+                )
+    except SchemaViolation as exc:
+        first_error = str(exc)
+        if trusted:
+            # AMBIGUOUS: this module checks a subset of JSON Schema, so the
+            # fault may be the checker's. Passing the document through is the
+            # outcome trusted backends already had, and rejecting a valid
+            # document over our own gap is the worse failure.
+            log.warning(
+                "structured_output.trusted_backend_violation",
+                model=model_name,
+                backend=adapter.backend_name,
+                error=first_error,
+            )
+            return result
 
     log.warning(
         "structured_output.invalid",
