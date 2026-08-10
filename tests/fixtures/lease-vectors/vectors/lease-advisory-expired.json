@@ -1,0 +1,103 @@
+{
+  "vectorVersion": 1,
+  "id": "lease-advisory-expired",
+  "description": "An advisory lease that names a quarantine and asks for staleAction stop, evaluated long after it expired. Mode is checked first, so this refuses no traffic anywhere.",
+  "context": {
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "maxLeaseSeconds": 900,
+    "maxClockSkewSeconds": 60
+  },
+  "trust": [
+    {
+      "issuer": "prometa-platform/runtime-control-lease",
+      "keyId": "runtime-control-lease-key-1",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "allowedArtifactTypes": [
+        "orchestra.runtime-control-lease"
+      ],
+      "allowedOrgIds": [
+        "org-golden"
+      ],
+      "allowedEnvironments": [
+        "staging"
+      ]
+    }
+  ],
+  "runtimes": {
+    "engine": {
+      "enforceableScopes": [
+        "deployment",
+        "org",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden"
+      }
+    },
+    "sdk-host": {
+      "enforceableScopes": [
+        "agent",
+        "deployment",
+        "org",
+        "solution",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden",
+        "solution": "solution-golden",
+        "agent": "agent-golden"
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "apply",
+      "at": "2026-08-11T09:00:01.000Z",
+      "lease": {
+        "artifactType": "orchestra.runtime-control-lease",
+        "leaseVersion": 1,
+        "algorithm": "ed25519",
+        "canonicalization": "signed-payload-json-v1",
+        "issuer": "prometa-platform/runtime-control-lease",
+        "keyId": "runtime-control-lease-key-1",
+        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"reasonCode\":\"advisory-dry-run\",\"scope\":\"deployment\",\"state\":\"quarantined\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"prometa-platform/runtime-control-lease\",\"jti\":\"jti-lease-advisory-3\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-advisory\",\"leaseVersion\":1,\"mode\":\"advisory\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":3,\"staleAction\":\"stop\",\"targetEnvironment\":\"staging\"}",
+        "signature": "Rle/RUxBHUgKozpQ4T/u21W14gE5KqGhtldbnmpQ+h+olLb35nts9s+k6+e3RGx5rLz5DEHO4lzTWDDj8x4XAA==",
+        "signed": true
+      },
+      "expect": {
+        "outcome": "verified",
+        "digest": "sha256:69ec2af1a4a9afdbd4d64e9c97db62cc62f7a7d8ad488509182a41b392c0f5a8",
+        "leaseId": "lease-advisory",
+        "revision": 3,
+        "mode": "advisory",
+        "staleAction": "stop",
+        "controlCount": 1
+      }
+    },
+    {
+      "action": "evaluate",
+      "at": "2026-08-11T13:00:00.000Z",
+      "expectByRuntime": {
+        "engine": {
+          "admitting": true,
+          "state": "quarantined",
+          "stale": true,
+          "enforcement": "advisory",
+          "enforcedControlCount": 0
+        },
+        "sdk-host": {
+          "admitting": true,
+          "state": "quarantined",
+          "stale": true,
+          "enforcement": "advisory",
+          "enforcedControlCount": 0
+        }
+      }
+    }
+  ]
+}

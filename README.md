@@ -741,6 +741,11 @@ common ones, so a var missing from that file is still settable:
 | `MODEL_PLANE_OBSERVATION_INTERVAL_SECONDS` | `60`                                                                        | Report cadence, bounded to 10 seconds through 24 hours                       |
 | `MODEL_PLANE_OBSERVATION_TIMEOUT_SECONDS` | `5`                                                                          | Per-dispatch timeout, bounded to 100 ms through 30 seconds                   |
 | `MODEL_PLANE_OBSERVATION_JITTER_RATIO` | `0.1`                                                                          | Symmetric cadence jitter, from 0 through 0.5                                 |
+| `MODEL_PLANE_RUNTIME_CONTROL_ENABLED` | `false`                                                                     | Read signed quarantine leases off the observation reply; off leaves the reply body unread. Requires the observation reporter and `MODEL_ROUTING_EXPECTED_ORG_ID` |
+| `MODEL_PLANE_RUNTIME_CONTROL_TRUST_STORE_FILE` | `.model_routing_trust.json`                                        | Ed25519 trust store for leases; defaults to the routing trust store. The signing entry must name `orchestra.runtime-control-lease` in `allowedArtifactTypes` |
+| `MODEL_PLANE_RUNTIME_CONTROL_MAX_LEASE_SECONDS` | `900`                                                            | Ceiling on a lease's claimed window; a longer one is refused, not shortened |
+| `MODEL_PLANE_RUNTIME_CONTROL_STALE_ACTION` | `lease`                                                               | What a *matched* quarantine does after its lease expires: `lease` follows the signed `staleAction`, `continue` and `stop` override it |
+| `MODEL_PLANE_RUNTIME_CONTROL_MAX_RESPONSE_BYTES` | `65536`                                                         | Ceiling on the observation reply the lease is read from                     |
 | `GUARDRAIL_ENABLED`      | `false`                                                                                  | Master switch; off means no client is built and no route changes behaviour |
 | `GUARDRAIL_ENDPOINT`     | empty                                                                                    | Bare origin of an `orchestra-guardrail-evaluate-v1` service; required when enabled, and a startup error when set while disabled |
 | `GUARDRAIL_PROFILE`      | `default`                                                                                | Profile id the service resolves thresholds and detector parameters from |
@@ -2287,6 +2292,162 @@ task. A platform outage cannot change engine readiness, routing, or inference;
 the last-known-good policy continues to govern locally. Inspect delivery state
 at `/v1/admin/model-plane-observer` and through the
 `inference_engine_model_plane_observer_*` metrics on `/v1/metrics`.
+
+### Runtime control (quarantine) — a signed lease on the reply
+
+The engine has no inbound control channel and does not grow one for this. The
+observation POST above already leaves the engine on a timer; the control plane
+answers that POST with a `runtimeControls` delivery block, and the engine reads
+it off the reply. No new listener, no new connection, no polling, and nothing
+on the inference request path calls out.
+
+The state travels as an **Ed25519-signed, short-TTL lease**
+(`orchestra.runtime-control-lease`) verified locally against the same trust
+store the routing policy uses, through the same trust-resolution and Ed25519
+code path and the same `signed-payload-json-v1` canonicalization. The engine
+also checks the **signing key's purpose**: the trust entry must name
+`orchestra.runtime-control-lease` in its `allowedArtifactTypes`, so a routing,
+bundle or promotion key is refused here even though its signature verifies. The
+issuer is expected to refuse those keys as well, but a check performed only at
+issue is not a check: a misconfigured or compromised issuer is the case it
+exists for, which is why the verifier repeats it.
+
+`tests/fixtures/lease-vectors/` mirrors the cross-implementation vector set,
+run in full by `tests/test_model_plane_runtime_control.py`: nine lease-direction
+vectors and ten acknowledgement-direction cases, the same bytes the Python SDK
+host and the control plane run. They pin the envelope, the claim names, the
+canonicalization, the trust-entry purpose field, the expected digests and the
+acknowledgement's wire shape, so a divergence between this runtime and any
+other consumer of the same fixtures fails a test rather than a deployment.
+
+**Scope is typed, and this runtime says what it can enforce.** A control names
+its subject at one of five scopes. The engine holds three identities — the org
+and deployment it is configured as, and the tenant a request authenticated as —
+so it enforces `org`, `tenant` and `deployment`, and **ignores `solution` and
+`agent`**, which it has no way to resolve. Every acknowledgement declares that
+set in `enforceable_scopes` and counts ignored controls in
+`ignored_control_count`, so an agent-scoped quarantine issued into a fleet of
+engines renders as unenforced with a reason rather than as a green tick.
+Agent- and solution-granular refusal belongs to the SDK host, which knows which
+agent is running.
+
+`enforcedControlCount` is **not** the number of controls the lease names. It
+counts only controls that are at an enforceable scope, matched to a subject
+this replica holds, *and* in state `quarantined`. Its own org id and deployment
+id are matched the moment a lease is applied; a tenant is only matched once a
+request from that tenant arrives, so a quarantine naming a tenant this replica
+never serves counts for nothing here. A matched control in state `serving` is
+governed, not enforced, and counts for nothing either. A lease this replica
+enforces nothing under reports `enforcement: "advisory"` and
+`enforcedControlCount: 0`, whatever the lease asked for, because reporting
+otherwise would let the control plane count this replica towards a quarantine
+it does not apply.
+
+**Precedence is fixed, and `mode` is decided first.**
+
+```
+1. mode == "advisory"                          -> never refuse. Report only.
+2. no control matched this request             -> serve.
+3. matched quarantine, lease live              -> refuse.
+4. matched quarantine, lease expired           -> the stale action decides how
+                                                  much is refused, not whether.
+5. matched control in state "serving"          -> serve while the lease is live.
+```
+
+An advisory lease can therefore never refuse a request under any staleness
+condition, and a replica holding no lease at all matches nothing and so stops
+nothing. An enforced quarantine stops `/v1/chat/completions`, `/v1/completions`,
+`/v1/embeddings` and `/v1/rerank` with a typed, payload-free `503`:
+
+```json
+{"detail": {"message": "runtime control has quarantined this subject",
+            "type": "model_plane_quarantined",
+            "code": "model_plane_quarantined", "scope": "tenant"},
+ "error": {"message": "runtime control has quarantined this subject",
+           "type": "model_plane_quarantined",
+           "code": "model_plane_quarantined", "scope": "tenant", "param": null}}
+```
+
+`scope` names which scope matched, never which subject. The refusal happens
+before admission accounting, so a quarantined request takes no rate-limit
+reservation. The check itself reads a cached projection of the lease:
+signatures are verified when a lease arrives on the observer's cadence, never
+per request.
+
+**The trade, stated plainly.** `MODEL_PLANE_RUNTIME_CONTROL_MAX_LEASE_SECONDS`
+(default 900s) is a ceiling on how long any one lease may claim to be valid: a
+lease whose `expiresAt` is further than that from its `notBefore` is refused
+rather than silently shortened. When controls actually go stale is set by the
+lease's own window, which this ceiling only bounds.
+What a *matched* quarantine does once its lease expires with no refresh is a
+deployment choice. All three settings decide what happens to **enforcement**,
+never to traffic directly, and none of them ever resumes serving a quarantined
+subject: a quarantine that lapsed on expiry could be lifted by cutting this
+replica off from the issuer, which would make a network partition a kill-switch
+override.
+
+| `MODEL_PLANE_RUNTIME_CONTROL_STALE_ACTION` | After a matched quarantine's lease expires |
+|---|---|
+| `lease` (default) | Whichever the lease's own signed `staleAction` asks for, `continue` or `stop`. The claim is inside the signature precisely because it decides behaviour when the issuer is unreachable. |
+| `continue` | Keep *enforcing* the last verified lease: the quarantine that was in force stays in force, refusing with `503 model_plane_quarantined`, and the subjects that lease named `serving` keep being served. |
+| `stop` | The wider opt-in: every subject that lease governed here stops with `503 model_plane_control_lease_stale`, the ones it named `serving` included. The cost is that traffic which was never quarantined also fails during an outage. |
+
+None of the three touches a request no control matched, so no setting here can
+turn a control-plane outage into a fleet-wide inference outage.
+
+**Desired is not enforced.** Every surface reports both, so neither the operator
+nor the control plane has to guess which one it is looking at:
+
+- The observation payload carries a `runtimeControlAck` object. It is an
+  **additive field on the existing observation version** — no version bump, so
+  a control plane that predates this contract ignores the key instead of
+  rejecting the whole payload. Its shape is pinned to nine camelCase members:
+  `leaseId`, `revision`, `enforcement`, `enforceableScopes`,
+  `enforcedControlCount`, `ignoredControlCount`, `stale`, `leaseExpiresAt` and
+  `leaseParseFailed`. There is deliberately no `mode` — that is the issuer's
+  instruction and already travels in the lease, while this object reports what
+  the replica did. It is emitted on every observation, not only on a state
+  change, and while a lease is stale it still reports what is still being
+  enforced rather than zero.
+- `GET /v1/admin/model-plane-runtime-control` returns that acknowledgement plus
+  the local policy: `enforceable_scopes` and `ignored_scopes`, `matched_state`,
+  the control counts, `stale_action_policy` and the `effective_stale_action` it
+  resolves to, the lease's own `lease_stale_action` and `lease_mode`, the
+  delivery status of the last reply, and the last refresh error.
+- `/v1/metrics` — `inference_engine_model_plane_runtime_control_lease_held`,
+  `…_enforcing`, `…_stale`, `…_stopping_while_stale`, `…_controls`,
+  `…_matched_controls`, `…_ignored_controls`, `…_enforced_controls`,
+  `…_revision`, `…_lease_seconds_remaining`, `…_leases_accepted_total`,
+  `…_leases_rejected_total`, `…_refusals_total`.
+
+Counts and flags are the whole of it. Neither `/v1/metrics` nor `/v1/ready`
+renders a subject id, a reason code, a lease id or any operator free text, and
+neither does the `503` a refused caller receives — `/v1/ready` says nothing
+about runtime control at all. The lease id and its revision appear only on the
+admin status and in this replica's own log.
+
+A refresh that fails to verify — wrong signature, a key not provisioned for
+this artifact type, wrong org or environment, a revision below the highest this
+replica has accepted, or a replay of an older instance of the revision it holds
+— is counted and logged, and the lease already held keeps governing until its
+own clock runs out. Revisions are ordered globally per `(orgId,
+targetEnvironment)` rather than per `leaseId`, so an authentic older `serving`
+lease cannot lift a live quarantine by arriving under a different `leaseId`.
+An identical redelivery of the lease already held is not a replay: it is the
+ordinary case on every observation tick, and it is accepted rather than
+counted as a rejection. A lease that cannot be parsed is recorded as `lease_parse_failed` and is
+never read as "no quarantine". A reply whose delivery block reports `disabled`
+or `unavailable` is the control plane declining to deliver, not a release:
+nothing is lifted, the status is recorded for the operator, and the held lease
+still expires on schedule.
+
+Off is the default and it is a real off: `MODEL_PLANE_RUNTIME_CONTROL_ENABLED`
+false means the reply body is never read and the request path takes no branch.
+Enabling it requires the observation reporter — that reply is the only channel
+it uses — plus `MODEL_ROUTING_EXPECTED_ORG_ID`, without which an org-scoped
+control would have no subject to match, and a readable trust store at startup.
+Anything missing is a startup failure rather than a deployment that looks
+controlled and is not.
 
 ## Auth + tenant attribution
 

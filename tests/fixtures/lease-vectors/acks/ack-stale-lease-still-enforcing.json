@@ -1,0 +1,40 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-stale-lease-still-enforcing",
+  "description": "An expired lease under staleAction `continue`: the replica is still refusing, and says so. Intake must not read `stale` as `not enforcing` \u2014 that would make an unreachable issuer look like a lifted quarantine on the operator surface too.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": "rcl:org-golden:staging:deployment-golden",
+    "revision": 9,
+    "enforcement": "enforcing",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 1,
+    "ignoredControlCount": 0,
+    "stale": true,
+    "leaseExpiresAt": "2026-08-11T08:59:00.000Z",
+    "leaseParseFailed": false
+  },
+  "expect": {
+    "outcome": "accepted",
+    "normalized": {
+      "leaseId": "rcl:org-golden:staging:deployment-golden",
+      "revision": 9,
+      "enforcement": "enforcing",
+      "enforceableScopes": [
+        "org",
+        "tenant",
+        "deployment"
+      ],
+      "enforcedControlCount": 1,
+      "ignoredControlCount": 0,
+      "stale": true,
+      "leaseExpiresAt": "2026-08-11T08:59:00.000Z",
+      "leaseParseFailed": false
+    }
+  }
+}

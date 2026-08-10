@@ -1,0 +1,11 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-missing-object",
+  "description": "\u00a77b.18: an observation with no `runtimeControlAck` at all. This replica said nothing, which is not the same as reporting compliance and must never be counted as any.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": null,
+  "expect": {
+    "outcome": "absent"
+  }
+}

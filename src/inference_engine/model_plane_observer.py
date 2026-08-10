@@ -27,6 +27,10 @@ import httpx
 from pydantic import BaseModel
 
 from . import __version__
+from .model_plane_control import (
+    RUNTIME_CONTROL_ACK_KEY,
+    ModelPlaneRuntimeControl,
+)
 from .model_routing_runtime import (
     ModelRoutingRateLimiterProtocol,
     ModelRoutingRuntimeState,
@@ -302,6 +306,7 @@ def build_model_plane_observation(
     inventory_provider: Callable[[], ModelList],
     *,
     candidate_availability: Callable[[str], bool] | None = None,
+    runtime_control: ModelPlaneRuntimeControl | None = None,
     observation_id: str | None = None,
     now: datetime | None = None,
 ) -> dict:
@@ -331,6 +336,7 @@ def build_model_plane_observation(
     else:
         health_status = "ready"
 
+    observed_at = now or datetime.now(UTC)
     payload = {
         "artifactType": MODEL_PLANE_OBSERVATION_TYPE,
         "observationVersion": config.observation_version,
@@ -346,7 +352,7 @@ def build_model_plane_observation(
         "inventoryDigest": inventory_digest,
         "availableModelCount": available_count,
         "unavailableModelCount": unavailable_count,
-        "observedAt": _canonical_observed_at(now or datetime.now(UTC)),
+        "observedAt": _canonical_observed_at(observed_at),
         "routingPolicy": routing.model_dump(mode="json"),
     }
     if config.observation_version == MODEL_PLANE_OBSERVATION_VERSION_V2:
@@ -359,6 +365,18 @@ def build_model_plane_observation(
             state,
             candidate_availability,
         )
+    if runtime_control is not None:
+        # Additive, at whatever observation version is configured. A control
+        # plane that predates this contract ignores the extra key; bumping the
+        # observation version instead would make an older intake reject the
+        # whole payload and take the deployment to "stale".
+        #
+        # ``by_alias`` is what the intake actually reads: the acknowledgement's
+        # keys are pinned in camelCase by the contract, and a snake_case
+        # spelling of the same data is a shape the control plane skips.
+        payload[RUNTIME_CONTROL_ACK_KEY] = runtime_control.acknowledgement(
+            observed_at=observed_at
+        ).model_dump(mode="json", by_alias=True)
     return payload
 
 
@@ -403,11 +421,13 @@ class ModelPlaneObservationReporter:
         state: _ObservationState,
         inventory_provider: Callable[[], ModelList],
         candidate_availability: Callable[[str], bool] | None = None,
+        runtime_control: ModelPlaneRuntimeControl | None = None,
     ) -> None:
         self.config = config
         self._state = state
         self._inventory_provider = inventory_provider
         self._candidate_availability = candidate_availability
+        self._runtime_control = runtime_control
         self._running = False
         self._attempts_total = 0
         self._successes_total = 0
@@ -484,6 +504,7 @@ class ModelPlaneObservationReporter:
                     self._state,
                     self._inventory_provider,
                     candidate_availability=self._candidate_availability,
+                    runtime_control=self._runtime_control,
                 )
             except ModelPlaneObservationConfigError as exc:
                 self._mark_failure(exc.code, retain_pending=False)
@@ -515,6 +536,14 @@ class ModelPlaneObservationReporter:
             return False
 
         if 200 <= response.status_code < 300:
+            if self._runtime_control is not None:
+                # The accepted reply is the engine's only control channel. It
+                # is read off-loop and can never fail the delivery it rode in
+                # on: the runtime keeps whatever lease it already holds.
+                await asyncio.to_thread(
+                    self._runtime_control.apply_observation_response,
+                    response.content,
+                )
             self._mark_success(response.status_code)
             return True
 

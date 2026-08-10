@@ -364,6 +364,49 @@ class Settings(BaseSettings):
         le=0.5,
     )
 
+    # Signed runtime-control leases, read off the observation reply. Off by
+    # default: a deployment that leaves this alone never reads the reply body
+    # and its request path is unchanged. Enabling it needs the observation
+    # reporter, because that reply is the only channel it uses, and works at
+    # every observation version — the acknowledgement rides along as an
+    # additive field. The engine grows no inbound control endpoint either way.
+    model_plane_runtime_control_enabled: bool = Field(default=False)
+    model_plane_runtime_control_trust_store_file: Path = Field(
+        default=Path(".model_routing_trust.json"),
+        description=(
+            "Ed25519 trust store used to verify runtime-control leases. "
+            "Defaults to the model-routing trust store so one trust decision "
+            "covers both artifacts; the entry that signs leases must name "
+            "'orchestra.runtime-control-lease' in its allowedArtifactTypes."
+        ),
+    )
+    # A ceiling on how long a single lease may claim to be valid, not a timer:
+    # a lease whose expiresAt is more than this after its notBefore is refused
+    # rather than silently shortened. When controls actually go stale is set by
+    # the lease's own window, which this value only bounds.
+    model_plane_runtime_control_max_lease_seconds: int = Field(
+        default=900,
+        ge=30,
+        le=86_400,
+    )
+    # What a matched quarantine does once its lease expires with no refresh.
+    # "lease" follows the lease's own signed staleAction; "continue" and "stop"
+    # override it locally. All three decide what happens to *enforcement*, never
+    # to traffic directly: "continue" continues enforcing the last verified
+    # lease, so a quarantine that was in force stays in force, and "stop" also
+    # refuses the subjects that lease named serving. Neither ever resumes
+    # serving a quarantined subject, because a quarantine that lapsed when the
+    # issuer became unreachable would make a network partition a way to lift
+    # one. Nothing here affects a request no control matched.
+    model_plane_runtime_control_stale_action: Literal["lease", "continue", "stop"] = (
+        Field(default="lease")
+    )
+    model_plane_runtime_control_max_response_bytes: int = Field(
+        default=65_536,
+        ge=1,
+        le=1_048_576,
+    )
+
     # Guardrail call-out (orchestra-guardrail-evaluate-v1). Off is the default:
     # the engine builds no client, takes no branch, and behaves exactly as it
     # did before the seam existed. Turn it on and the generation routes gain

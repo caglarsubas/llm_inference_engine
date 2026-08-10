@@ -38,6 +38,7 @@ from ..model_routing_runtime import (
     load_model_routing_pricing_catalog,
 )
 from ..model_routing_status import ModelRoutingPolicyStatus, build_model_routing_status
+from ..model_plane_control import ModelPlaneRuntimeControlStatus
 from ..model_plane_observer import ModelPlaneObserverStatus
 from ..observability import get_logger, span
 from .state import app_state
@@ -230,6 +231,31 @@ async def model_plane_observer_status(
     if observer is None:
         return ModelPlaneObserverStatus(enabled=False)
     return observer.status()
+
+
+@router.get(
+    "/v1/admin/model-plane-runtime-control",
+    response_model=ModelPlaneRuntimeControlStatus,
+)
+async def model_plane_runtime_control_status(
+    identity: Identity = Depends(require_identity),
+) -> ModelPlaneRuntimeControlStatus:
+    """What this replica is enforcing, as distinct from what was last desired.
+
+    ``acknowledgement`` is the exact object the observation reports, in the
+    same camelCase spelling the contract pins for it: ``revision`` is the
+    control-plane state this replica accepted, and ``enforcement`` plus
+    ``enforcedControlCount`` say what it is refusing for — which ``stale`` does
+    not reduce, because an expired quarantine stays in force here.
+    ``ignoredControlCount`` against ``enforceableScopes`` is how an operator
+    sees that a control was addressed to a scope this runtime cannot resolve.
+    A caller that renders quarantine must read all of them.
+    """
+    del identity
+    control = app_state.model_plane_runtime_control
+    if control is None:
+        return ModelPlaneRuntimeControlStatus(enabled=False)
+    return control.status()
 
 
 @router.post(

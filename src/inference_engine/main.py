@@ -25,6 +25,10 @@ from .auth import load_keys
 from .config import settings
 from .evals import load_policy
 from .guardrail import GuardrailClient, load_guardrail_config
+from .model_plane_control import (
+    ModelPlaneRuntimeControl,
+    load_model_plane_runtime_control_config,
+)
 from .model_plane_observer import (
     ModelPlaneObservationReporter,
     load_model_plane_observation_config,
@@ -163,6 +167,14 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
         "model_routing_pricing_digest": (
             routing_pricing.digest if routing_pricing is not None else None
         ),
+        "model_plane_runtime_control_enabled": (
+            app_state.model_plane_runtime_control is not None
+        ),
+        "model_plane_runtime_control_stale_action": (
+            app_state.model_plane_runtime_control.config.stale_action_policy
+            if app_state.model_plane_runtime_control is not None
+            else None
+        ),
         "startup_probe_duration_ms": round((time.perf_counter() - t0) * 1000, 2),
     }
 
@@ -249,12 +261,17 @@ async def lifespan(app: FastAPI):
     )
     guardrail_config = load_guardrail_config(settings)
     observer_config = load_model_plane_observation_config(settings)
+    control_config = load_model_plane_runtime_control_config(settings)
+    runtime_control = (
+        ModelPlaneRuntimeControl(control_config) if control_config is not None else None
+    )
     observer = (
         ModelPlaneObservationReporter(
             observer_config,
             app_state,
             models.collect_model_list,
             models.is_model_available,
+            runtime_control,
         )
         if observer_config is not None
         else None
@@ -268,6 +285,7 @@ async def lifespan(app: FastAPI):
         raise
     app_state.model_routing_rate_limiter = rate_limiter
     app_state.model_plane_observer = observer
+    app_state.model_plane_runtime_control = runtime_control
     app_state.guardrail = (
         GuardrailClient(guardrail_config) if guardrail_config is not None else None
     )
@@ -351,6 +369,7 @@ async def lifespan(app: FastAPI):
             finally:
                 app_state.model_routing_rate_limiter = previous_rate_limiter
                 app_state.model_plane_observer = None
+                app_state.model_plane_runtime_control = None
                 app_state.guardrail = None
                 shutdown_tracing()
 

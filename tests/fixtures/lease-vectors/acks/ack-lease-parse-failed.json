@@ -1,0 +1,40 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-lease-parse-failed",
+  "description": "\u00a75.11: a lease this replica could not read. It reports the failure and whatever it still holds; intake must record the failure rather than treating it as `no quarantine`.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": null,
+    "revision": null,
+    "enforcement": "advisory",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 0,
+    "ignoredControlCount": 0,
+    "stale": false,
+    "leaseExpiresAt": null,
+    "leaseParseFailed": true
+  },
+  "expect": {
+    "outcome": "accepted",
+    "normalized": {
+      "leaseId": null,
+      "revision": null,
+      "enforcement": "advisory",
+      "enforceableScopes": [
+        "org",
+        "tenant",
+        "deployment"
+      ],
+      "enforcedControlCount": 0,
+      "ignoredControlCount": 0,
+      "stale": false,
+      "leaseExpiresAt": null,
+      "leaseParseFailed": true
+    }
+  }
+}

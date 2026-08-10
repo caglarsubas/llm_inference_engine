@@ -1,0 +1,25 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-enforcing-without-lease-refused",
+  "description": "Enforcement claimed with no lease to enforce. \u00a71: a surface may only claim enforcement it can prove, and this one cannot name what it is enforcing.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": null,
+    "revision": null,
+    "enforcement": "enforcing",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 3,
+    "ignoredControlCount": 1,
+    "stale": false,
+    "leaseExpiresAt": null,
+    "leaseParseFailed": false
+  },
+  "expect": {
+    "outcome": "rejected"
+  }
+}

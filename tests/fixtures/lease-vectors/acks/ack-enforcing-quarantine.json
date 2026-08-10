@@ -1,0 +1,40 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-enforcing-quarantine",
+  "description": "The pinned shape from a replica refusing traffic for two matched quarantines while one control sits at a scope it cannot resolve.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": "rcl:org-golden:staging:deployment-golden",
+    "revision": 42,
+    "enforcement": "enforcing",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 2,
+    "ignoredControlCount": 1,
+    "stale": false,
+    "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+    "leaseParseFailed": false
+  },
+  "expect": {
+    "outcome": "accepted",
+    "normalized": {
+      "leaseId": "rcl:org-golden:staging:deployment-golden",
+      "revision": 42,
+      "enforcement": "enforcing",
+      "enforceableScopes": [
+        "org",
+        "tenant",
+        "deployment"
+      ],
+      "enforcedControlCount": 2,
+      "ignoredControlCount": 1,
+      "stale": false,
+      "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+      "leaseParseFailed": false
+    }
+  }
+}

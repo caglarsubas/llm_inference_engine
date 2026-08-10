@@ -99,6 +99,18 @@ observation:
   timeoutSeconds: 5
   jitterRatio: 0.1
 
+# Signed runtime-control (quarantine) leases read off the observation reply.
+# Off by default and outside the certified production profile. The
+# acknowledgement rides the existing observation version as an extra field, so
+# turning this on does not change the observation contract.
+runtimeControl:
+  enabled: false
+  # What a matched quarantine does once its lease expires with no refresh:
+  # lease | continue | stop. "lease" follows the lease's own signed staleAction;
+  # the other two override it locally. See the README's stale-action table.
+  staleAction: lease
+  maxLeaseSeconds: 900
+
 otel:
   enabled: false
   endpoint: ""

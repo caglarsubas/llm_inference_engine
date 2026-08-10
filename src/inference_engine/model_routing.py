@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, get_args
+from typing import Any, Literal, Protocol, get_args
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -46,7 +46,7 @@ MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _CANONICAL_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 
-class _ContractModel(BaseModel):
+class SignedContractModel(BaseModel):
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,
@@ -55,7 +55,7 @@ class _ContractModel(BaseModel):
     )
 
 
-class ModelRoutingLimits(_ContractModel):
+class ModelRoutingLimits(SignedContractModel):
     max_input_tokens: StrictInt | None
     max_output_tokens: StrictInt | None
     max_requests_per_minute: StrictInt | None
@@ -65,7 +65,7 @@ class ModelRoutingLimits(_ContractModel):
     budget_window_seconds: StrictInt | None = None
 
 
-class ModelRoutingRoute(_ContractModel):
+class ModelRoutingRoute(SignedContractModel):
     route_id: StrictStr
     requested_model: StrictStr
     primary_model: StrictStr
@@ -165,7 +165,7 @@ _SHAPE_GATED_LIMIT_FIELDS: frozenset[str] = frozenset().union(
 )
 
 
-class ModelRoutingPolicyClaims(_ContractModel):
+class ModelRoutingPolicyClaims(SignedContractModel):
     artifact_type: Literal[MODEL_ROUTING_POLICY_TYPE]
     policy_version: ModelRoutingPolicyVersion
     issuer: StrictStr
@@ -187,7 +187,7 @@ class ModelRoutingPolicyClaims(_ContractModel):
     revocation_ref: StrictStr
 
 
-class ModelRoutingPolicyEnvelope(_ContractModel):
+class ModelRoutingPolicyEnvelope(SignedContractModel):
     policy_id: StrictStr
     policy_version: ModelRoutingPolicyVersion
     algorithm: Literal["ed25519"]
@@ -199,15 +199,24 @@ class ModelRoutingPolicyEnvelope(_ContractModel):
     signed: Literal[True]
 
 
-class ModelRoutingTrustEntry(_ContractModel):
+class ModelRoutingTrustEntry(SignedContractModel):
     issuer: StrictStr
     key_id: StrictStr
     public_key_spki_der_base64: StrictStr
-    allowed_org_ids: list[StrictStr]
-    allowed_environments: list[Literal["dev", "test", "staging", "prod"]]
+    # An entry that allows no org or no environment can verify nothing, which
+    # is how one store carries keys for artifact families this engine does not
+    # scope by org and environment at all.
+    allowed_org_ids: list[StrictStr] = Field(default_factory=list)
+    allowed_environments: list[Literal["dev", "test", "staging", "prod"]] = Field(
+        default_factory=list
+    )
+    # Which artifact types this key may sign. Absent means the entry makes no
+    # claim, so only verifiers that do not consult it will accept the key;
+    # every verifier that does consult it fails closed on an absent list.
+    allowed_artifact_types: list[StrictStr] | None = None
 
 
-class ModelRoutingTrustStore(_ContractModel):
+class ModelRoutingTrustStore(SignedContractModel):
     trust_version: Literal[1]
     entries: list[ModelRoutingTrustEntry]
     revoked_key_ids: list[StrictStr] = Field(default_factory=list)
@@ -290,13 +299,13 @@ def model_routing_policy_digest(signed_payload: str) -> str:
     return f"sha256:{hashlib.sha256(signed_payload.encode('utf-8')).hexdigest()}"
 
 
-def _non_empty(value: str, *, code: str) -> str:
+def require_non_empty(value: str, *, code: str) -> str:
     if not value or value != value.strip():
         raise ModelRoutingPolicyError(code)
     return value
 
 
-def _parse_timestamp(value: str) -> datetime:
+def parse_canonical_timestamp(value: str) -> datetime:
     if not _CANONICAL_TIMESTAMP.fullmatch(value):
         raise ModelRoutingPolicyError("invalid_validity_window")
     try:
@@ -337,9 +346,9 @@ def _validate_routes(routes: list[ModelRoutingRoute]) -> None:
     selectors: set[str] = set()
     wildcard_seen = False
     for index, route in enumerate(routes):
-        route_id = _non_empty(route.route_id, code="invalid_routes")
-        requested_model = _non_empty(route.requested_model, code="invalid_routes")
-        primary_model = _non_empty(route.primary_model, code="invalid_routes")
+        route_id = require_non_empty(route.route_id, code="invalid_routes")
+        requested_model = require_non_empty(route.requested_model, code="invalid_routes")
+        primary_model = require_non_empty(route.primary_model, code="invalid_routes")
         if route_id in route_ids or requested_model in selectors or wildcard_seen:
             raise ModelRoutingPolicyError("invalid_routes")
         route_ids.add(route_id)
@@ -350,7 +359,7 @@ def _validate_routes(routes: list[ModelRoutingRoute]) -> None:
         if len(route.fallback_models) > MAX_MODEL_ROUTING_FALLBACKS:
             raise ModelRoutingPolicyError("invalid_routes")
         fallbacks = [
-            _non_empty(fallback, code="invalid_routes") for fallback in route.fallback_models
+            require_non_empty(fallback, code="invalid_routes") for fallback in route.fallback_models
         ]
         if len(set(fallbacks)) != len(fallbacks) or primary_model in fallbacks:
             raise ModelRoutingPolicyError("invalid_routes")
@@ -382,7 +391,7 @@ def _validate_routes(routes: list[ModelRoutingRoute]) -> None:
             if not 0 < sum(weights) <= MAX_SAFE_INTEGER:
                 raise ModelRoutingPolicyError("invalid_routes")
         if route.shadow_model is not None:
-            shadow_model = _non_empty(route.shadow_model, code="invalid_routes")
+            shadow_model = require_non_empty(route.shadow_model, code="invalid_routes")
             if shadow_model == primary_model or shadow_model in fallbacks:
                 raise ModelRoutingPolicyError("invalid_routes")
 
@@ -391,37 +400,40 @@ def _validate_trust_store(trust_store: ModelRoutingTrustStore) -> None:
     identities: set[tuple[str, str]] = set()
     for entry in trust_store.entries:
         identity = (
-            _non_empty(entry.issuer, code="malformed_trust_store"),
-            _non_empty(entry.key_id, code="malformed_trust_store"),
+            require_non_empty(entry.issuer, code="malformed_trust_store"),
+            require_non_empty(entry.key_id, code="malformed_trust_store"),
         )
         if identity in identities:
             raise ModelRoutingPolicyError("malformed_trust_store")
         identities.add(identity)
-        if (
-            not entry.allowed_org_ids
-            or not entry.allowed_environments
-            or len(set(entry.allowed_org_ids)) != len(entry.allowed_org_ids)
-            or len(set(entry.allowed_environments)) != len(entry.allowed_environments)
-        ):
+        if len(set(entry.allowed_org_ids)) != len(entry.allowed_org_ids) or len(
+            set(entry.allowed_environments)
+        ) != len(entry.allowed_environments):
             raise ModelRoutingPolicyError("malformed_trust_store")
         for org_id in entry.allowed_org_ids:
-            _non_empty(org_id, code="malformed_trust_store")
+            require_non_empty(org_id, code="malformed_trust_store")
+        if entry.allowed_artifact_types is not None:
+            types = entry.allowed_artifact_types
+            if not types or len(set(types)) != len(types):
+                raise ModelRoutingPolicyError("malformed_trust_store")
+            for artifact_type in types:
+                require_non_empty(artifact_type, code="malformed_trust_store")
     if len(set(trust_store.revoked_key_ids)) != len(trust_store.revoked_key_ids):
         raise ModelRoutingPolicyError("malformed_trust_store")
     if len(set(trust_store.revoked_jtis)) != len(trust_store.revoked_jtis):
         raise ModelRoutingPolicyError("malformed_trust_store")
     for value in (*trust_store.revoked_key_ids, *trust_store.revoked_jtis):
-        _non_empty(value, code="malformed_trust_store")
+        require_non_empty(value, code="malformed_trust_store")
 
 
 def _load_json_model(
     path: Path,
-    model_type: type[_ContractModel],
+    model_type: type[SignedContractModel],
     *,
     max_bytes: int,
     missing_code: str,
     malformed_code: str,
-) -> _ContractModel:
+) -> SignedContractModel:
     if not path.exists():
         raise ModelRoutingPolicyError(missing_code)
     try:
@@ -476,8 +488,23 @@ def load_model_routing_envelope(
     return model
 
 
-def _resolve_trust_entry(
-    envelope: ModelRoutingPolicyEnvelope,
+class SignedEnvelope(Protocol):
+    """The envelope fields the trust store and Ed25519 check actually read.
+
+    Every Orchestra artifact this engine verifies — routing policy today,
+    runtime-control lease alongside it — carries these four fields under the
+    same canonicalization, so one trust resolution and one signature check
+    serve all of them.
+    """
+
+    issuer: str
+    key_id: str
+    signed_payload: str
+    signature: str
+
+
+def resolve_trust_entry(
+    envelope: SignedEnvelope,
     trust_store: ModelRoutingTrustStore,
 ) -> ModelRoutingTrustEntry:
     if envelope.key_id in trust_store.revoked_key_ids:
@@ -488,8 +515,8 @@ def _resolve_trust_entry(
     raise ModelRoutingPolicyError("untrusted_key")
 
 
-def _verify_signature(
-    envelope: ModelRoutingPolicyEnvelope,
+def verify_signed_envelope(
+    envelope: SignedEnvelope,
     entry: ModelRoutingTrustEntry,
 ) -> None:
     try:
@@ -518,8 +545,8 @@ def verify_model_routing_policy(
 ) -> VerifiedModelRoutingPolicy:
     if clock_skew_seconds < 0:
         raise ModelRoutingPolicyError("invalid_clock_skew")
-    entry = _resolve_trust_entry(envelope, trust_store)
-    _verify_signature(envelope, entry)
+    entry = resolve_trust_entry(envelope, trust_store)
+    verify_signed_envelope(envelope, entry)
 
     try:
         raw_claims = json.loads(envelope.signed_payload)
@@ -553,7 +580,7 @@ def verify_model_routing_policy(
         claims.jti,
         claims.revocation_ref,
     ):
-        _non_empty(value, code="malformed_claims")
+        require_non_empty(value, code="malformed_claims")
     if (
         envelope.policy_id != claims.policy_id
         or envelope.policy_version != claims.policy_version
@@ -578,10 +605,10 @@ def verify_model_routing_policy(
         raise ModelRoutingPolicyError("invalid_revision")
     _validate_routes(claims.routes)
 
-    issued_at = _parse_timestamp(claims.issued_at)
-    not_before = _parse_timestamp(claims.not_before)
-    expires_at = _parse_timestamp(claims.expires_at)
-    offline_lease_expires_at = _parse_timestamp(claims.offline_lease_expires_at)
+    issued_at = parse_canonical_timestamp(claims.issued_at)
+    not_before = parse_canonical_timestamp(claims.not_before)
+    expires_at = parse_canonical_timestamp(claims.expires_at)
+    offline_lease_expires_at = parse_canonical_timestamp(claims.offline_lease_expires_at)
     if (
         not_before < issued_at
         or expires_at <= not_before
