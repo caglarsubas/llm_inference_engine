@@ -1146,7 +1146,7 @@ def test_the_wire_request_matches_the_contract_shape(monkeypatch, no_model) -> N
     seen = _install(monkeypatch, _static(_response(verdict="deny")))
 
     client = TestClient(app)
-    client.post(
+    response = client.post(
         "/v1/chat/completions",
         json={"model": "stub:1", "messages": [{"role": "user", "content": "hi"}]},
         headers={"x-request-id": "req-abc"},
@@ -1154,7 +1154,12 @@ def test_the_wire_request_matches_the_contract_shape(monkeypatch, no_model) -> N
 
     body = seen[0]
     assert body["contractVersion"] == GUARDRAIL_CONTRACT_VERSION
-    assert body["requestId"] == "req-abc"
+    # The id sent is the engine's own — the one it returns to the caller —
+    # rather than a fresh uuid nobody else holds. Sending "req-abc" here is the
+    # point: #93 stopped honouring an inbound x-request-id, so it must not
+    # become the id the guardrail service is told either.
+    assert body["requestId"] == response.headers["x-request-id"]
+    assert body["requestId"] != "req-abc"
     assert body["stage"] == "llm_input"
     assert body["profile"] == "prod-strict"
     assert body["budgetMs"] == 25
@@ -1491,13 +1496,17 @@ def test_the_span_carries_the_request_id_and_the_server_skew_count(
     )
 
     client = TestClient(app)
-    client.post(
+    response = client.post(
         "/v1/chat/completions",
         json={"model": "stub:1", "messages": [{"role": "user", "content": "hi"}]},
         headers={"x-request-id": "req-join"},
     )
 
     attrs = _guardrail_spans(exporter)[0].attributes
-    # E4's join is on this value; the kernel binds the same key.
-    assert attrs["prometa.runtime.request_id"] == "req-join"
+    # The kernel binds the same key. What this pins is that the value is an id
+    # someone else actually holds — the engine id the caller got back — and not
+    # the per-evaluation uuid this used to mint. Which of the engine's two ids
+    # the kernel joins on is the open question in ``new_request_id``.
+    assert attrs["prometa.runtime.request_id"] == response.headers["x-request-id"]
+    assert attrs["prometa.runtime.request_id"] != "req-join"
     assert attrs["prometa.guardrail.request_fields_dropped_by_server"] == 3

@@ -31,6 +31,7 @@ from ..config import settings
 from ..evals import PolicyEntry
 from ..genai_metrics import genai_metrics
 from ..observability import get_logger, span
+from ..registry.breaker import breaker_span_attrs
 from ..structured_outputs import (
     ResponseNotJson,
     SchemaViolation,
@@ -675,6 +676,7 @@ async def _generate_blocking_once(
                 **_identity_attrs(identity),
                 **(intent_attrs or {}),
                 **_prefix_cache_attrs(adapter),
+                **breaker_span_attrs(adapter),
                 **_auto_eval_attrs(auto_eval, policy),
                 **_fallback.span_attrs(fallback_info),
                 **_model_routing.model_routing_span_attrs(
@@ -1374,6 +1376,7 @@ async def _stream_response(
                     **_request_key_attrs(adapter),
                     **_identity_attrs(identity),
                     **(intent_attrs or {}),
+                    **breaker_span_attrs(adapter),
                     **_auto_eval_attrs(auto_eval, policy),
                     **_fallback.span_attrs(fallback_info),
                     **_model_routing.model_routing_span_attrs(
