@@ -185,6 +185,70 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Upstream resilience — bounded retries on the SAME deployment, then a
+    # per-deployment breaker. Both apply only to HTTP-backed upstreams (vLLM,
+    # Ollama-HTTP, OpenRouter); in-process backends have no transport to retry.
+    upstream_retry_enabled: bool = Field(
+        default=True,
+        description=(
+            "Retry an idempotent HTTP upstream call on the same deployment "
+            "before candidate selection moves the request to a different "
+            "model. Disable to restore fallback-only resilience."
+        ),
+    )
+    upstream_retry_max_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description=(
+            "Total attempts per upstream call, retries included. 1 disables "
+            "retries. Attempts never outlive CHAT_COMPLETION_TIMEOUT_SECONDS."
+        ),
+    )
+    upstream_retry_base_delay_seconds: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=10.0,
+        description="First backoff delay before jitter; doubles per attempt.",
+    )
+    upstream_retry_max_delay_seconds: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=60.0,
+        description=(
+            "Ceiling for the computed backoff delay. An upstream-supplied "
+            "Retry-After is honoured above this ceiling, or not at all when it "
+            "does not fit the remaining request deadline."
+        ),
+    )
+    upstream_breaker_enabled: bool = Field(
+        default=True,
+        description=(
+            "Open a deployment after consecutive upstream failures so "
+            "candidate selection skips it until a half-open probe succeeds."
+        ),
+    )
+    upstream_breaker_failure_threshold: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Consecutive retryable failures on one deployment before it opens."
+        ),
+    )
+    upstream_breaker_cooldown_seconds: float = Field(
+        default=15.0,
+        ge=0.0,
+        description="Cooldown applied the first time a deployment opens.",
+    )
+    upstream_breaker_max_cooldown_seconds: float = Field(
+        default=120.0,
+        ge=0.0,
+        description=(
+            "Ceiling for the cooldown, which doubles each time the half-open "
+            "probe fails again."
+        ),
+    )
+
     # llama.cpp runtime
     n_gpu_layers: int = Field(default=-1, description="-1 = offload all layers to GPU (Metal).")
     # Context-window *ceiling*, not a fixed size. Each GGUF loads at

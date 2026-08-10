@@ -4,6 +4,13 @@ The vLLM registry is config-driven: an operator writes `.vllm_models.json`
 after starting a separate model server. A config entry alone is not enough to
 promise that the model is callable, so `/v1/models` checks the upstream's own
 `/v1/models` endpoint before moving the descriptor into `data`.
+
+The per-deployment breaker (``registry/breaker.py``) rides on this same
+answer. It is consulted *before* the TTL cache, so a deployment the hot path
+found broken drops out of candidate selection immediately rather than at the
+next cache expiry, and it is fed this probe's own outcome — which makes the
+post-cooldown re-probe the breaker's half-open trial instead of a second,
+parallel health check.
 """
 
 from __future__ import annotations
@@ -17,9 +24,16 @@ import httpx
 
 from ..config import settings
 from ..observability import get_logger
+from .breaker import HALF_OPEN, OPEN, deployment_key, get_upstream_breaker
 from .ollama import ModelDescriptor
 
 log = get_logger("registry.vllm_probe")
+
+# Probe outcomes that describe the upstream being unwell rather than the
+# configuration being wrong. Only these feed the breaker: a descriptor missing
+# its endpoint will not heal after a cooldown, and an upstream that answers 200
+# without listing the model is telling us something true about the config.
+TRANSIENT_PROBE_REASONS = frozenset({"upstream_timeout", "upstream_unreachable"})
 
 
 @dataclass(frozen=True)
@@ -28,6 +42,10 @@ class VLLMProbeResult:
     reason: str = ""
     detail: str = ""
     duration_ms: float = 0.0
+    # Status the upstream answered with, when it answered at all. Kept so the
+    # breaker can tell a 503 (the server is unwell, worth a cooldown) from a
+    # 404 (this configuration is wrong and a cooldown will not fix it).
+    upstream_status_code: int | None = None
 
 
 ClientFactory = Callable[[str, httpx.Timeout], httpx.Client]
@@ -74,16 +92,40 @@ class VLLMUpstreamProbe:
                 detail="vLLM descriptor must include endpoint and params['model_id']",
             )
 
+        breaker = get_upstream_breaker()
+        deployment = deployment_key("vllm", endpoint, model_id)
+        admission = breaker.begin_attempt(deployment)
+        if admission == OPEN:
+            remaining = breaker.cooldown_remaining(deployment)
+            return VLLMProbeResult(
+                loadable=False,
+                reason="upstream_cooldown",
+                detail=(
+                    f"deployment is in breaker cooldown for another "
+                    f"{remaining:.1f}s after consecutive upstream failures"
+                ),
+            )
+
         key = (endpoint, model_id)
         now = time.monotonic()
         cached = self._cache.get(key)
-        if cached is not None:
+        if cached is not None and admission != HALF_OPEN:
+            # A half-open trial has to reach the upstream: answering it from
+            # cache would neither close the breaker nor extend the cooldown,
+            # and the trial slot it claimed would stay held.
             created_at, result = cached
             if now - created_at < self.ttl_seconds:
                 return result
 
         result = self._probe_upstream(endpoint, model_id)
         self._cache[key] = (now, result)
+        self._report_to_breaker(
+            breaker,
+            deployment,
+            result,
+            endpoint=endpoint,
+            model_id=model_id,
+        )
 
         log_kwargs = {
             "model": descriptor.qualified_name,
@@ -101,6 +143,38 @@ class VLLMUpstreamProbe:
                 **log_kwargs,
             )
         return result
+
+    @staticmethod
+    def _report_to_breaker(
+        breaker,
+        deployment: str,
+        result: VLLMProbeResult,
+        *,
+        endpoint: str,
+        model_id: str,
+    ) -> None:
+        """Feed one probe outcome to the breaker, if it says anything about health.
+
+        A probe result that reflects configuration rather than health is left
+        out entirely — it neither opens the breaker nor closes one that a real
+        failure opened, because it is not evidence either way.
+        """
+        if result.loadable:
+            breaker.record_success(deployment)
+            return
+        transient = result.reason in TRANSIENT_PROBE_REASONS or (
+            result.upstream_status_code is not None and result.upstream_status_code >= 500
+        )
+        if not transient:
+            breaker.abandon_attempt(deployment)
+            return
+        breaker.record_failure(
+            deployment,
+            reason=result.reason,
+            backend="vllm",
+            endpoint=endpoint,
+            model_id=model_id,
+        )
 
     def _probe_upstream(self, endpoint: str, model_id: str) -> VLLMProbeResult:
         timeout = httpx.Timeout(self.timeout_seconds)
@@ -124,6 +198,7 @@ class VLLMUpstreamProbe:
                 reason="upstream_http_error",
                 detail=f"GET /v1/models returned HTTP {exc.response.status_code}",
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                upstream_status_code=exc.response.status_code,
             )
         except httpx.RequestError as exc:
             return VLLMProbeResult(

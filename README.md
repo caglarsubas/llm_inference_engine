@@ -599,12 +599,13 @@ scripts/
 ├── smoke_test.py             # blocking + streaming end-to-end check
 ├── vlm_request_matrix.py     # image-model request matrix across configured backends
 ├── vlm_strict_json_smoke.py  # strict image+JSON exposure gate
-└── stress_test.py            # concurrent-traffic harness with p50/p95/p99 + throughput
+└── stress_test.py            # concurrent-traffic harness; p50/p95/p99 + throughput, and
+                              #   --baseline-url/--baseline-model for measured proxy overhead
 docs/
 ├── PUBLIC_ENDPOINT.md        # shareable usage guide for the public Engine URL
 ├── CONTAINER_IMAGES.md       # image verification, relocation, air-gap, UBI/FIPS boundary
 └── MODEL_DEMAND_SHORTLIST.md # demanded-model backlog behind /v1/models.data unavailable[]
-tests/                          # 60 modules, all run by `make test`
+tests/                          # 67 modules, all run by `make test`
 ├── [registry + catalog]        # test_registry, test_mlx_registry, test_composite_registry,
 │                             #   test_openrouter, test_vllm_probe, test_models_snapshot,
 │                             #   test_manager, test_state_dispatch, test_promote_vllm_model
@@ -617,6 +618,8 @@ tests/                          # 60 modules, all run by `make test`
 │                             #   test_completions, test_chat_multimodal, test_embeddings, test_rerank
 ├── [streaming + concurrency]   # test_cancellation, test_chat_streaming, test_generation_timeout,
 │                             #   test_concurrency, test_scheduler, test_dynamic_batching
+├── [upstream resilience]       # test_upstream_resilience (retry classification, backoff, breaker),
+│                             #   test_upstream_retry_routing (retry-before-fallback, reservation, ledger)
 ├── [prefix caches]             # test_prefix_cache, test_mlx_prefix_cache
 ├── [evals]                     # test_evals, test_auto_eval, test_auto_eval_policy, test_pairwise,
 │                             #   test_per_rubric_judges, test_admin_policies
@@ -674,6 +677,14 @@ common ones, so a var missing from that file is still settable:
 | `DEFAULT_MODEL`          | `llama3.2:3b`                                                                            | Used by smoke test by default                            |
 | `MODELS_SNAPSHOT_REFRESH_SECONDS` | `15`                                                                            | Rebuild cadence for the background `/v1/models` snapshot, so discovery never blocks on probe-loads; `0` disables the background refresh |
 | `CHAT_COMPLETION_TIMEOUT_SECONDS` | `120`                                                                            | HTTP-backed chat deadline; `0` disables. Keep below public proxy caps. |
+| `UPSTREAM_RETRY_ENABLED` | `true`                                                                                   | Retry an idempotent HTTP upstream call on the same deployment before falling back to a different model; `false` restores fallback-only resilience |
+| `UPSTREAM_RETRY_MAX_ATTEMPTS` | `2`                                                                                 | Total attempts per upstream call, retries included; `1` disables retries. Attempts never outlive `CHAT_COMPLETION_TIMEOUT_SECONDS` |
+| `UPSTREAM_RETRY_BASE_DELAY_SECONDS` | `0.1`                                                                         | First backoff delay before jitter; doubles per attempt   |
+| `UPSTREAM_RETRY_MAX_DELAY_SECONDS` | `2.0`                                                                          | Ceiling for the computed backoff; an upstream `Retry-After` is honoured above it, or refused when it does not fit the remaining deadline |
+| `UPSTREAM_BREAKER_ENABLED` | `true`                                                                                 | Open a deployment after consecutive transient failures so candidate selection skips it until a half-open probe succeeds |
+| `UPSTREAM_BREAKER_FAILURE_THRESHOLD` | `3`                                                                          | Consecutive failed *requests* on one `(backend, endpoint, model_id)` before it opens. Counts logical calls, not upstream attempts — six failed round trips at the default attempt cap |
+| `UPSTREAM_BREAKER_COOLDOWN_SECONDS` | `15`                                                                          | Cooldown applied the first time a deployment opens       |
+| `UPSTREAM_BREAKER_MAX_COOLDOWN_SECONDS` | `120`                                                                     | Ceiling for the cooldown, which doubles each time the half-open probe fails again |
 | `N_GPU_LAYERS`           | `-1`                                                                                     | llama.cpp: `-1` = offload all layers to Metal            |
 | `N_CTX`                  | `32768`                                                                                  | Context-window **ceiling**, not a fixed size — each GGUF loads at `min(N_CTX, n_ctx_train)` |
 | `N_THREADS`              | `0`                                                                                      | `0` = auto                                               |
@@ -1577,7 +1588,10 @@ By default, the retry target is the same exposed model name with the
 `OPENROUTER_FALLBACK_MODEL` to force a single shared fallback. Context-window
 errors stay client-visible 400s and do not fallback. Streaming requests only
 fallback before the first assistant chunk is emitted, so clients never receive
-a response stitched across providers.
+a response stitched across providers. For HTTP-backed upstreams this is the
+*second* line of defence: bounded retries on the same deployment run first, so
+a transient upstream failure no longer changes which model answers. See
+[Upstream resilience](#upstream-resilience--retry-the-same-model-then-cool-the-deployment-down).
 
 `GET /v1/models.data` is the machine-readable model catalog for benchmark
 harnesses and internal UIs. It uses the same probe-aware live surface as
@@ -2677,6 +2691,79 @@ stress_test.py --stream        # streaming + watchdog stress
 
 The same-model run shows the lock at work — first batch of 8 fires together and queues, latencies cluster in two tiers. The cross-backend run proves MLX and llama.cpp don't contend. The streaming run validates that 8 simultaneous `watch_disconnect` watchdogs come and go cleanly without leaking asyncio tasks.
 
+### Proxy overhead — measured, including where it misses
+
+The blueprint budgets what this engine may **add** to a call: p50 < 5 ms and
+p99 < 20 ms of added latency on the cache-miss path, and < 10 ms of added
+time-to-first-token when streaming. Nothing here had ever been measured against
+those numbers, so `scripts/stress_test.py` now measures it and these are the
+real results.
+
+The harness fires the identical workload twice — once through the engine, once
+straight at the OpenAI-compatible upstream the engine proxies to — interleaved
+request by request so upstream drift lands on both series. Added latency is the
+difference between the two series **at each percentile**; it is a
+distribution-level statement, not a per-request delta, and it includes the
+client's own loopback hop to the engine (which a caller pays too).
+
+```bash
+# blocking, cache-miss path
+uv run python scripts/stress_test.py --base-url http://127.0.0.1:8080 \
+  --requests 200 --concurrency 1 --max-tokens 1 --models llama3.2:1b \
+  --baseline-url http://127.0.0.1:11434 --baseline-model llama3.2:1b --quiet
+```
+
+Measured on an M-series laptop, engine → `ollama_http` → local Ollama 0.22.1
+serving `llama3.2:1b` warm, 200 request pairs at concurrency 1, distinct prompt
+per request (so neither side is served from a prefix cache the other warmed):
+
+```
+blocking, max_tokens=1        upstream direct   p50= 57.55  p95= 67.99  p99= 73.11 ms
+                              through engine    p50= 61.79  p95= 73.91  p99= 87.96 ms
+                              ADDED             p50=  4.24  p95=  5.93  p99= 14.85 ms
+                              target p50 < 5 ms  → OK
+                              target p99 < 20 ms → OK
+
+streaming, max_tokens=16      upstream direct   p50=106.77  p95=117.19  p99=126.89 ms
+ (total latency)              through engine    p50=113.07  p95=125.60  p99=147.80 ms
+                              ADDED             p50=  6.30  p95=  8.41  p99= 20.91 ms
+                              target p50 < 5 ms  → MISS
+                              target p99 < 20 ms → MISS
+
+streaming (TTFT)              upstream direct   p50= 52.93  p95= 63.83  p99= 71.73 ms
+                              through engine    p50= 80.22  p95= 95.25  p99=109.45 ms
+                              ADDED             p50= 27.29  p95= 31.42  p99= 37.72 ms
+                              target p50 < 10 ms → MISS
+```
+
+Read those as one sample, not a specification. At n=200 on a laptop the p50
+rows move by 1–2 ms between runs and the p99 rows by considerably more (a
+re-run of the blocking case measured p50 6.13 ms and p99 15.68 ms against the
+4.24 / 14.85 above), which is enough to flip a row that sits near its target.
+Re-measure on the hardware you care about before treating any single row as a
+pass or a fail; what is stable across runs is the shape — blocking cheap,
+streaming TTFT expensive by tens of milliseconds.
+
+**The blocking path meets both targets on this sample. Streaming misses all
+three, and the TTFT miss is the large one.** It is not proxy plumbing: `StreamNormalizer`
+holds back the trailing 24 characters of the text stream so a vendor tag split
+across two chunks (`<think>`, `<tool_call>`) is never emitted as content it
+would have to retract. The first content chunk therefore cannot leave the
+engine until the upstream has produced 25 characters.
+
+That decomposition is measured, not assumed. Against the same upstream, the
+point at which 24 characters have arrived is p50 **78.40 ms**, versus **55.02
+ms** for the first content chunk — so of the 27.29 ms of added TTFT, about
+23 ms is the holdback and roughly 2 ms is everything else the request path
+does. The streaming total-latency miss is the same delay carried to the end of
+the stream.
+
+Buying the TTFT budget back means making the holdback conditional on a model
+that can actually emit those tags, not shortening it globally — the guarantee
+it buys (no retracted content) is worth more than 20 ms to a caller rendering
+tokens. That work is not in this round; the number above is what the engine
+does today.
+
 ### Judge latency and large-model guidance
 
 LLM-as-a-judge traffic has a much tighter SLO than general chat: target p95
@@ -2735,6 +2822,169 @@ Timeout behavior:
   cancellation hook. Use `stream=true` when clients need fast disconnect
   cancellation on local backends.
 
+It is a **total-elapsed** budget on both paths, which is not what
+`httpx.Timeout` gives you. httpx's read timeout is per read operation, so a
+response that keeps arriving — a slow model, or a stream dripping a token a
+second — resets it forever and never trips it. The blocking path is capped by
+the route (`asyncio.wait_for`); the streaming path is capped inside the HTTP
+adapters, which bound every await on the upstream by what is *left* of the
+budget and start no further read once it is gone.
+
+That matters beyond latency, because the scheduler lease is held for the whole
+call. `ollama_http` takes the default dispatch cap of
+`SCHEDULER_RESOURCE_MAX_IN_FLIGHT=1`, so while one call holds the slot no other
+request for that model dispatches: each waits in the tenant queue and is
+refused with a 503 `tenant_queue_timeout` once it has waited
+`SCHEDULER_QUEUE_TIMEOUT_SECONDS` (30 s by default). Bounding the stream bounds
+how long that costs — it does not change how the queue behaves while it lasts,
+and it does not address the separate leak in **Known issue: a leaked
+`ollama_http` dispatch slot** below.
+
+A streaming call that reaches the budget therefore ends with the same terminal
+SSE `error` event as any other timeout, mid-stream, instead of running on. If
+your workload legitimately streams for longer than 120 s, raise
+`CHAT_COMPLETION_TIMEOUT_SECONDS` — it now means what it says.
+
+### Known issue: a leaked `ollama_http` dispatch slot
+
+**Not fixed, and not caused by the resilience work above** — it reproduces on a
+pristine tree with none of that code present, which two of us confirmed
+separately before deferring it. Recorded here so the next person does not
+rediscover it from scratch.
+
+Observed signature: a single **streaming** request ends up holding an
+`ollama_http` dispatch slot indefinitely. With that backend's resource cap of 1
+(above), every subsequent request for the same model queues behind it and is
+then refused with `tenant_queue_timeout`, on an otherwise idle process — the
+model looks wedged while nothing is generating. Look for it in
+`inference_engine_scheduler_in_flight_by_resource{resource="ollama_http:<model>"}`
+staying at 1 with no generation running; only a restart clears it.
+
+What is *not* yet established: the trigger, and whether the lease is leaked
+before the response body starts (the route acquires the slot in
+`chat_completions()` before returning the `EventSourceResponse`, while the
+release lives in the streaming generator's `finally`, so a stream whose body is
+never iterated has no path to the release) or somewhere later. Confirm the
+trigger before writing a fix — that reading is a hypothesis, not a diagnosis.
+
+## Upstream resilience — retry the same model, then cool the deployment down
+
+Resilience used to be fallback-only: any exception out of an adapter sent the
+request to the *next model in the signed route*. A single transient 503 from a
+vLLM upstream therefore changed which model answered the caller — a silent
+model substitution caused by a dropped packet. Two mechanisms sit in front of
+fallback now, both scoped to HTTP-backed upstreams (`vllm`, `ollama_http`,
+`openrouter`); in-process backends have no transport to retry.
+
+### Bounded retries, below the fallback loop
+
+An idempotent upstream call is reissued on the **same deployment** before
+candidate selection is allowed to consider a different model. Two attempts by
+default, exponential backoff with equal jitter, `Retry-After` honoured when the
+upstream sends one.
+
+Two rules are load-bearing:
+
+* **Never retry after the first token has been streamed.** A partial stream
+  cannot be resumed upstream, and rerunning the prompt would splice two
+  different completions into one answer. The adapter tracks whether a chunk
+  reached the consumer and refuses the retry from that moment on — which is the
+  same cut-off the streaming fallback path already used.
+* **Classify before spending the deadline.** 408/425/429/500/502/503/504/529
+  and transport failures that produced no response are retried. A 400, 404 or
+  422 is the request being wrong; resending it buys the same rejection at the
+  cost of the caller's remaining time. A *read* timeout is not retried either —
+  the upstream had the request when the clock ran out.
+
+Every attempt and every backoff sleep is drawn from one
+`CHAT_COMPLETION_TIMEOUT_SECONDS` budget — on the streaming path as well as the
+blocking one. Each await on the upstream is bounded by what is *left* of the
+budget, and no attempt, sleep or upstream read is *started* once the budget is
+spent. The request still ends a hair past it, because unwinding the timeout and
+mapping the error take real time: against a mock upstream that would have
+streamed for 10 s, a 300 ms budget ended the stream at 301–303 ms over five
+runs. Retries cannot carry a request materially past the operator's timeout;
+they do not promise ending on the microsecond. When the remaining budget cannot
+fit the backoff plus a usable attempt, the retry is refused and the real
+upstream error surfaces instead of a timeout produced by our own optimism.
+
+Retries do not disturb the two things that now ride on the same request: policy
+enforcement (and therefore the budget reservation) runs once per request above
+the adapter, and the usage ledger is a per-request record — so a retried
+request still places one reservation and emits one invoice line.
+
+### Per-deployment cooldown and breaker
+
+Consecutive transient failures on one deployment open it for a cooldown, after
+which exactly one half-open probe is admitted: success closes it, failure
+re-opens it with a doubled cooldown up to the configured ceiling. A
+*deployment* is `(backend, endpoint, model_id)` — one Ollama host serving ten
+models does not lose all ten because one of them keeps OOMing.
+
+This is wired into the registry probe layer rather than standing beside it. The
+probes already answer "can this upstream serve right now?", cache it with a
+TTL, and feed the probe-aware resolver that picks a request's candidate, so:
+
+* an open deployment reports `upstream_cooldown` from the probe and drops out
+  of candidate selection without an HTTP round trip;
+* the vLLM probe's own `/v1/models` check **is** the half-open probe — a cheap
+  GET rather than a full generation;
+* only failures the retry classifier calls transient count — a 400, 404 or 422
+  leaves the deployment's history untouched, so an upstream *rejecting* a
+  request can never cool it down for other tenants. (A request that makes the
+  upstream itself fail with a 500 does count; from here that is
+  indistinguishable from any other 500.)
+
+**The threshold counts logical calls, not upstream attempts.** Read
+`UPSTREAM_BREAKER_FAILURE_THRESHOLD=3` as "three consecutive *requests* that
+failed after exhausting their own retries", not "three failed round trips": the
+adapter retries first and reports one verdict per request. With the shipped
+defaults a deployment therefore absorbs up to **six** failed upstream requests,
+across three callers, before it opens. That is deliberate — counting attempts
+would open the breaker twice as fast for a blip the retry already absorbed —
+but it is not what the number looks like, so size it accordingly.
+
+**A generation timeout is not a health signal, and that is deliberate.**
+`CHAT_COMPLETION_TIMEOUT_SECONDS` bounds elapsed time, and elapsed time cannot
+tell a wedged deployment apart from a healthy one producing a long answer — a
+4k-token completion and a hung socket both end the same way. An earlier cut of
+this classifier counted every timeout; once the streaming path grew a deadline
+of its own, three slow-but-successful streams were enough to open the breaker
+and withdraw a working model from every tenant. So a deadline expiry and
+httpx's read/write/pool timeouts are all discounted. A **connect** timeout
+still counts: it proves the upstream never accepted the call.
+
+The limit that leaves, stated because it is the price of the rule: **a
+deployment that accepts connections and then goes silent is never opened from
+the hot path.** For vLLM something else covers it — `VLLMUpstreamProbe` GETs
+`/v1/models` under `VLLM_UPSTREAM_PROBE_TIMEOUT_SECONDS` (1 s), where an
+unanswered call really is evidence about the server, and its timeouts do feed
+the breaker. `ollama_http` has no such probe, so a silently wedged Ollama
+deployment stays in candidate selection and every request to it spends its own
+full budget before failing. Fixing that needs a bounded liveness probe for the
+format — not counting generation timeouts again.
+
+State is exported both ways an operator looks for it: `chat.generate` and
+`chat.stream` spans carry `llm.upstream.deployment` and
+`llm.upstream.breaker.state`, and `/v1/metrics` exports
+`inference_engine_upstream_breaker_state{backend,endpoint,model}` (0=closed,
+1=half_open, 2=open) alongside `..._consecutive_failures`,
+`..._cooldown_seconds`, `..._opened_total`, `..._half_open_probes_total`,
+`..._skipped_total`, and `inference_engine_upstream_retries_total{backend}`.
+
+### Settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `UPSTREAM_RETRY_ENABLED` | `true` | Off restores fallback-only resilience. |
+| `UPSTREAM_RETRY_MAX_ATTEMPTS` | `2` | Total attempts per upstream call, retries included. |
+| `UPSTREAM_RETRY_BASE_DELAY_SECONDS` | `0.1` | First backoff before jitter; doubles per attempt. |
+| `UPSTREAM_RETRY_MAX_DELAY_SECONDS` | `2.0` | Ceiling for the computed backoff. A `Retry-After` above it is still honoured — or refused if it does not fit the deadline. |
+| `UPSTREAM_BREAKER_ENABLED` | `true` | Off leaves the deployment always eligible. |
+| `UPSTREAM_BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive failed *requests* (each having already exhausted its own retries) before a deployment opens — six failed upstream round trips at the default attempt cap. |
+| `UPSTREAM_BREAKER_COOLDOWN_SECONDS` | `15` | Cooldown on the first open. |
+| `UPSTREAM_BREAKER_MAX_COOLDOWN_SECONDS` | `120` | Ceiling as the cooldown doubles per failed half-open probe. |
+
 ## Streaming cancellation
 
 When a streaming client disconnects, the engine stops generating instead of burning GPU on a response nobody's reading.
@@ -2790,6 +3040,7 @@ Standard `llama` family models work on either local backend today.
 4. **Adapter coverage.** ✅ MLX-LM (Apple Silicon native) · ✅ vLLM for GPU-server workloads · ✅ Ollama-HTTP for architectures ahead of the llama.cpp wheel · ✅ OpenRouter for large open-weight models · SGLang · TensorRT-LLM for NVIDIA optimization.
 5. **Phase 5 — wire standardization.** ✅ `stream_options.include_usage` streaming usage trailer · ✅ OpenAI `error` envelope + `x-request-id` + `x-ratelimit-*` · ✅ `max_completion_tokens` · ✅ grammar-enforced Structured Outputs (`json_schema`) · ✅ logprobs, penalties, `logit_bias` · ✅ `usage.prompt_tokens_details.cached_tokens` · ✅ `/tokenize` + `/detokenize` · ✅ OTel GenAI semconv attrs + TTFT/TPOT metrics · `/v1/responses` (stateful; deferred) · batch/files/audio/moderations (deferred until a consumer needs them).
 6. **Phase 6 — model plane.** ✅ Signed Ed25519 routing policy, verified locally, with atomic LKG activation and offline lease · ✅ per-route input/output token, cost, RPM, TPM, and window spend ceilings with fail-closed pricing and reserve-then-settle budgeting · ✅ exact `deployment-shared` rate and budget windows via Redis/Sentinel · ✅ asynchronous payload-free observation reporting (v1 + v2) · ✅ certified workload surface (`orchestra-model-plane-workload-v1`) · ✅ fail-closed TLS/mTLS listener · ✅ signed UBI images, SBOMs, and a standalone Helm chart with production + SNO-trial profiles · rerank, standalone eval, and chat-attached auto-eval under signed routing (today they fail closed in governed mode) · OpenShift lifecycle, backup/recovery, multi-replica load, and SLO certification.
+7. **Upstream resilience.** ✅ Bounded retries on the same deployment ahead of model fallback (classified, jittered, `Retry-After`-aware, drawn from the request deadline, never after a stream's first token) · ✅ per-deployment cooldown + half-open breaker wired into the registry probe layer, exported as a Prometheus gauge and a span attribute · ✅ measured proxy overhead published above, including the streaming TTFT miss and its cause · a bounded liveness probe for `ollama_http`, without which a silently wedged Ollama deployment is never withdrawn · the leaked `ollama_http` dispatch slot recorded as a known issue above.
 
 ## Constraints (as instructed)
 

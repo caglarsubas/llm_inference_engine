@@ -41,7 +41,12 @@ from .model_routing_runtime import (
 )
 from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
-from .registry import get_openrouter_probe, get_probe, get_vllm_probe
+from .registry import (
+    descriptor_allows,
+    get_openrouter_probe,
+    get_probe,
+    get_vllm_probe,
+)
 from .request_identity import (
     ENGINE_REQUEST_ID_HEADER,
     USAGE_RECORD_ID_HEADER,
@@ -77,6 +82,13 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
     # ollama_http source automatically and land in ``available``. Anything
     # every source rejects (or that registry parsing skipped) lands in
     # ``unavailable`` / ``skipped`` with structured reasons.
+    #
+    # THREE COPIES OF THIS PREDICATE EXIST — here, ``api/state.py`` (candidate
+    # selection) and ``api/models.py`` ``_accept_descriptor`` (the catalog).
+    # They are separate so each module keeps its own patchable probe seam, and
+    # they MUST be edited together: this copy already fell a format behind
+    # once, which is how the startup log came to advertise a deployment the
+    # other two were refusing to serve.
     probe = get_probe()
 
     def _accept(desc):
@@ -86,6 +98,10 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
             return get_vllm_probe().probe(desc).loadable
         if desc.format == "openrouter":
             return get_openrouter_probe().probe(desc).loadable
+        if desc.format == "ollama_http":
+            # No probe of its own; the breaker is what withdraws a deployment
+            # in cooldown.
+            return descriptor_allows(desc)
         return True
 
     loadable, rejected = app_state.registry.list_loadable(_accept)

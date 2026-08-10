@@ -10,8 +10,10 @@ from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
 from .. import __version__
+from ..adapters._upstream_retry import retry_counters
 from ..config import settings
 from ..genai_metrics import genai_metrics
+from ..registry.breaker import STATE_VALUES, get_upstream_breaker
 from ..usage_ledger import usage_ledger
 from .state import app_state
 
@@ -220,6 +222,81 @@ async def metrics() -> str:
         lines.append(f"# HELP {name} {help_text}")
         lines.append(f"# TYPE {name} {metric_type}")
         lines.append(f"{name} {rate_limit[metric]}")
+
+    # Upstream resilience — retries on the same deployment, then the breaker.
+    lines.append(
+        "# HELP inference_engine_upstream_retries_total "
+        "Upstream calls reissued on the same deployment after a transient failure."
+    )
+    lines.append("# TYPE inference_engine_upstream_retries_total counter")
+    for backend, count in sorted(retry_counters.snapshot().items()):
+        lines.append(
+            f'inference_engine_upstream_retries_total{{backend="{_label_value(backend)}"}} {count}'
+        )
+
+    breaker = get_upstream_breaker()
+    lines.append(
+        "# HELP inference_engine_upstream_breaker_enabled Per-deployment breaker enabled flag."
+    )
+    lines.append("# TYPE inference_engine_upstream_breaker_enabled gauge")
+    lines.append(
+        f"inference_engine_upstream_breaker_enabled {1 if settings.upstream_breaker_enabled else 0}"
+    )
+    breaker_counters = breaker.counters()
+    for metric, metric_type, help_text in (
+        ("opened_total", "counter", "Times a deployment entered or re-entered cooldown."),
+        (
+            "half_open_probes_total",
+            "counter",
+            "Half-open trials admitted after a cooldown expired.",
+        ),
+        (
+            "skipped_total",
+            "counter",
+            "Calls refused because the deployment was in cooldown.",
+        ),
+    ):
+        name = f"inference_engine_upstream_breaker_{metric}"
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {metric_type}")
+        lines.append(f"{name} {breaker_counters[metric]}")
+
+    # State is 0=closed, 1=half_open, 2=open, so an alert reads `> 0`. Only
+    # deployments with failure history have a series: a healthy deployment that
+    # has never failed is absent rather than reported as a zero it never earned.
+    lines.append(
+        "# HELP inference_engine_upstream_breaker_state "
+        "Per-deployment breaker state (0=closed, 1=half_open, 2=open)."
+    )
+    lines.append("# TYPE inference_engine_upstream_breaker_state gauge")
+    lines.append(
+        "# HELP inference_engine_upstream_breaker_consecutive_failures "
+        "Consecutive transient upstream failures on this deployment."
+    )
+    lines.append("# TYPE inference_engine_upstream_breaker_consecutive_failures gauge")
+    lines.append(
+        "# HELP inference_engine_upstream_breaker_cooldown_seconds "
+        "Seconds left before this deployment's next half-open probe."
+    )
+    lines.append("# TYPE inference_engine_upstream_breaker_cooldown_seconds gauge")
+    for entry in breaker.entries():
+        labels = (
+            f'{{backend="{_label_value(entry.backend)}",'
+            f'endpoint="{_label_value(entry.endpoint)}",'
+            f'model="{_label_value(entry.model_id)}"}}'
+        )
+        lines.append(
+            f"inference_engine_upstream_breaker_state{labels} "
+            f"{STATE_VALUES.get(entry.state, 0)}"
+        )
+        lines.append(
+            f"inference_engine_upstream_breaker_consecutive_failures{labels} "
+            f"{entry.consecutive_failures}"
+        )
+        lines.append(
+            f"inference_engine_upstream_breaker_cooldown_seconds{labels} "
+            f"{entry.cooldown_remaining_seconds:.3f}"
+        )
 
     ledger = usage_ledger.snapshot()
     lines.append(

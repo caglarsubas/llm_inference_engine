@@ -80,9 +80,33 @@ class StreamGuardStep:
 
 
 def new_request_id(request: Any = None) -> str:
-    """Reuse the engine's own ``x-request-id`` so kernel evidence joins on it."""
+    """The correlation id a guardrail evaluation is tagged with.
+
+    THE ATTRIBUTE NAME IS LOAD-BEARING. ``main.py``'s outermost middleware
+    stores the minted id as ``request.state.engine_request_id`` and returns it
+    as the ``x-request-id`` response header. It was called
+    ``request.state.request_id`` until #93 split the server-owned id from the
+    tenant-runtime identities, and this reader kept naming the old attribute —
+    so this returned a *fresh* uuid on every guarded request, and the id the
+    guardrail service and the span carried was one nobody else ever held.
+    Reading the attribute the middleware actually writes is what fixes that.
+
+    OPEN QUESTION, deliberately not settled here: whether the right value is
+    the engine id or the tenant runtime's. The span key is
+    ``prometa.runtime.request_id`` and #93 captures
+    ``x-orchestra-runtime-request-id`` into ``request.state.runtime_request_id``
+    for exactly that identity, which argues for the runtime's; the engine id is
+    what the caller gets back and what the ledger uses. This function returns
+    the engine id — the value this code has always *meant* to return — and no
+    claim is made here about which one the kernel's ``runtime.guard.<stage>``
+    events join against, because that has not been checked end to end.
+
+    The fallback stays for callers that reach the guardrail without a request
+    object at all (the direct-call paths in tests): an id nobody can join on is
+    still better than an empty one, which would join on everything.
+    """
     state = getattr(request, "state", None)
-    request_id = getattr(state, "request_id", "") if state is not None else ""
+    request_id = getattr(state, "engine_request_id", "") if state is not None else ""
     return request_id or f"req_{uuid.uuid4().hex}"
 
 
@@ -90,7 +114,8 @@ def _span_attrs(outcome: GuardrailOutcome, identity: Identity, request_id: str) 
     client = app_state.guardrail
     attrs: dict = {
         # The kernel binds this exact key on its ``runtime.guard.<stage>``
-        # events; checklist E4's join is on the value, so the key has to match.
+        # events, so the key has to match. Whether the VALUE lines up is the
+        # open question in :func:`new_request_id`.
         "prometa.runtime.request_id": request_id,
         "prometa.guardrail.stage": outcome.stage,
         "prometa.guardrail.verdict": outcome.verdict,
