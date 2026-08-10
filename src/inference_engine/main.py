@@ -24,6 +24,7 @@ from .api.state import app_state
 from .auth import load_keys
 from .config import settings
 from .evals import load_policy
+from .guardrail import GuardrailClient, load_guardrail_config
 from .model_plane_observer import (
     ModelPlaneObservationReporter,
     load_model_plane_observation_config,
@@ -246,6 +247,7 @@ async def lifespan(app: FastAPI):
         auth_enabled=settings.auth_enabled,
         expected_org_id=settings.model_routing_expected_org_id,
     )
+    guardrail_config = load_guardrail_config(settings)
     observer_config = load_model_plane_observation_config(settings)
     observer = (
         ModelPlaneObservationReporter(
@@ -266,6 +268,9 @@ async def lifespan(app: FastAPI):
         raise
     app_state.model_routing_rate_limiter = rate_limiter
     app_state.model_plane_observer = observer
+    app_state.guardrail = (
+        GuardrailClient(guardrail_config) if guardrail_config is not None else None
+    )
     log = get_logger("startup")
     app_state.mark_starting()
     startup_task = asyncio.create_task(
@@ -334,6 +339,10 @@ async def lifespan(app: FastAPI):
             startup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await startup_task
+        guardrail_client = app_state.guardrail
+        if guardrail_client is not None:
+            with suppress(Exception):
+                await guardrail_client.aclose()
         try:
             await app_state.manager.shutdown()
         finally:
@@ -342,6 +351,7 @@ async def lifespan(app: FastAPI):
             finally:
                 app_state.model_routing_rate_limiter = previous_rate_limiter
                 app_state.model_plane_observer = None
+                app_state.guardrail = None
                 shutdown_tracing()
 
 

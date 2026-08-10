@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..adapters import (
     ContextLengthExceededError,
@@ -36,7 +36,7 @@ from ..schemas import (
     CompletionResponse,
     Usage,
 )
-from . import _fallback, _model_routing, _usage
+from . import _fallback, _guardrail, _model_routing, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
@@ -89,6 +89,7 @@ def _estimated_completion_tokens(prompts: list[str], params: GenerationParams) -
 @router.post("/v1/completions", response_model=CompletionResponse)
 async def create_completion(
     req: CompletionRequest,
+    request: Request,
     identity: Identity = Depends(require_identity),
 ) -> CompletionResponse:
     prompts = [req.prompt] if isinstance(req.prompt, str) else list(req.prompt)
@@ -113,6 +114,12 @@ async def create_completion(
         output_token_budget=output_token_budget,
     )
     try:
+        request_id = _guardrail.new_request_id(request)
+        prompts = await _guardrail.guard_string_inputs(
+            identity=identity,
+            request_id=request_id,
+            inputs=prompts,
+        )
         active = await _model_routing.resolve_initial_candidate(
             requested_model=req.model,
             decision=decision,
@@ -161,6 +168,20 @@ async def create_completion(
             input_tokens=total_prompt_tokens,
             output_tokens=total_completion_tokens,
         )
+        # One evaluation covers the whole batch: the choice texts go over as a
+        # list and a transform comes back as the same list, one entry per
+        # choice. Placed after the usage bind — the tokens were spent either way.
+        texts = [choice.text for choice in choices]
+        guarded_texts = await _guardrail.guard_string_outputs(
+            identity=identity,
+            request_id=request_id,
+            outputs=texts,
+        )
+        if guarded_texts is not texts:
+            choices = [
+                choice.model_copy(update={"text": text})
+                for choice, text in zip(choices, guarded_texts, strict=True)
+            ]
         return CompletionResponse(
             id=f"cmpl-{uuid.uuid4().hex}",
             created=int(time.time()),
