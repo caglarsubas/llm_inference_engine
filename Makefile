@@ -345,6 +345,21 @@ stress-cross-backend:
 	uv run python scripts/stress_test.py --requests 20 --concurrency 8 \
 	  --models llama3.2:1b,Llama-3.2-1B-Instruct-4bit:mlx
 
+# Proxy overhead: interleaves engine calls with direct calls to the upstream the
+# engine proxies to, and reports what the engine ADDS at each percentile.
+# BASELINE_MODEL is the UPSTREAM's own id for the model, not the engine's.
+BASELINE_URL ?= http://127.0.0.1:11434
+BASELINE_MODEL ?= llama3.2:1b
+stress-overhead:
+	uv run python scripts/stress_test.py --requests 200 --concurrency 1 --quiet \
+	  --max-tokens 1 --models llama3.2:1b \
+	  --baseline-url $(BASELINE_URL) --baseline-model $(BASELINE_MODEL)
+
+stress-overhead-stream:
+	uv run python scripts/stress_test.py --requests 200 --concurrency 1 --quiet \
+	  --max-tokens 16 --stream --models llama3.2:1b \
+	  --baseline-url $(BASELINE_URL) --baseline-model $(BASELINE_MODEL)
+
 test:
 	uv run pytest -v
 

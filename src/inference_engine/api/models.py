@@ -7,8 +7,11 @@ from ..auth import require_identity
 from ..config import settings
 from ..registry import (
     VLLMRegistry,
+    descriptor_allows,
+    descriptor_deployment_key,
     get_openrouter_probe,
     get_probe,
+    get_upstream_breaker,
     get_vllm_probe,
 )
 from ..response_normalize import infer_model_capabilities
@@ -98,6 +101,11 @@ def _to_info(desc) -> ModelInfo:
     )
 
 
+# THREE COPIES OF THIS PREDICATE EXIST — here, ``api/state.py`` (candidate
+# selection) and ``main.py`` ``_collect_startup_model_summary`` (the startup
+# log). They are separate so each module keeps its own patchable probe seam,
+# and they MUST be edited together: a format handled in one and not the others
+# makes those three surfaces disagree about the same deployment.
 def _accept_descriptor(desc) -> bool:
     if desc.format == "gguf":
         return get_probe().probe(desc).loadable
@@ -105,6 +113,11 @@ def _accept_descriptor(desc) -> bool:
         return get_vllm_probe().probe(desc).loadable
     if desc.format == "openrouter":
         return get_openrouter_probe().probe(desc).loadable
+    if desc.format == "ollama_http":
+        # No reachability probe of its own — /api/tags is the registry's
+        # discovery call, not a per-model health check — so the breaker is the
+        # only thing that can take a sick Ollama deployment out of the list.
+        return descriptor_allows(desc)
     return True
 
 
@@ -225,9 +238,11 @@ def _unavailable_entry(desc, *, reason: str, detail: str) -> UnavailableModel:
 def _unavailable_from_rejected(rejected) -> list[UnavailableModel]:
     unavailable: list[UnavailableModel] = []
     for desc in rejected:
-        # GGUF rejections carry a structured probe reason; non-GGUF
-        # rejections shouldn't really happen (we accept them
-        # unconditionally) but we surface them honestly if they do.
+        # GGUF, vLLM and OpenRouter rejections carry a structured probe
+        # reason. ollama_http has no probe, so the only way it lands here is
+        # the breaker holding it in cooldown. Any other format is accepted
+        # unconditionally by ``_accept_descriptor`` and should not appear —
+        # surfaced honestly as ``rejected_by_accept`` if it ever does.
         if desc.format == "gguf":
             result = get_probe().probe(desc)
             unavailable.append(
@@ -253,6 +268,17 @@ def _unavailable_from_rejected(rejected) -> list[UnavailableModel]:
                     desc,
                     reason=result.reason or "openrouter_unavailable",
                     detail=result.detail,
+                )
+            )
+        elif desc.format == "ollama_http":
+            remaining = get_upstream_breaker().cooldown_remaining(
+                descriptor_deployment_key(desc)
+            )
+            unavailable.append(
+                _unavailable_entry(
+                    desc,
+                    reason="upstream_cooldown",
+                    detail=f"cooldown has {remaining:.1f}s left",
                 )
             )
         else:

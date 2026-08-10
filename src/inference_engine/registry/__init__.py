@@ -1,3 +1,10 @@
+from .breaker import (
+    UpstreamBreaker,
+    breaker_span_attrs,
+    descriptor_allows,
+    descriptor_deployment_key,
+    get_upstream_breaker,
+)
 from .composite import CompositeRegistry
 from .mlx import MLXRegistry
 from .ollama import ModelDescriptor, ModelFormat, OllamaRegistry, SkippedManifest
@@ -21,10 +28,15 @@ __all__ = [
     "OpenRouterRegistry",
     "ProbeResult",
     "SkippedManifest",
+    "UpstreamBreaker",
     "VLLMRegistry",
     "VLLMProbeResult",
     "VLLMUpstreamProbe",
+    "breaker_span_attrs",
+    "descriptor_allows",
+    "descriptor_deployment_key",
     "get_openrouter_probe",
     "get_probe",
+    "get_upstream_breaker",
     "get_vllm_probe",
 ]

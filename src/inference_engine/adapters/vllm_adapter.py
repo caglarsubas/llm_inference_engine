@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
+from contextlib import AsyncExitStack, aclosing
 
 import httpx
 
@@ -47,6 +48,15 @@ from ..config import settings
 from ..observability import get_logger
 from ..registry import ModelDescriptor
 from ..schemas import ChatMessage, dump_chat_content
+from ._upstream import HttpUpstreamMixin
+from ._upstream_retry import (
+    RetryPlan,
+    UpstreamDeadline,
+    deadline_scope,
+    log_retry,
+    log_retry_refused,
+    plan_retry,
+)
 from .base import (
     EmbeddingResult,
     EmbeddingsNotSupportedError,
@@ -102,7 +112,7 @@ def _upstream_logprob_content(logprobs: dict | None) -> list[dict] | None:
     return content
 
 
-class VLLMAdapter(InferenceAdapter):
+class VLLMAdapter(HttpUpstreamMixin, InferenceAdapter):
     backend_name = "vllm"
     descriptor_format = "vllm"
     # vLLM enforces json_schema upstream via guided decoding (xgrammar).
@@ -169,6 +179,7 @@ class VLLMAdapter(InferenceAdapter):
         self._endpoint = descriptor.endpoint
         self._model_id = str(model_id)
         self._chat_template_kwargs = dict(chat_template_kwargs) if chat_template_kwargs else None
+        self._bind_deployment(self._endpoint, self._model_id)
         self._client = httpx.AsyncClient(
             base_url=self._endpoint,
             timeout=_chat_timeout(),
@@ -194,6 +205,7 @@ class VLLMAdapter(InferenceAdapter):
             self._endpoint = None
             self._model_id = None
             self._chat_template_kwargs = None
+            self._clear_deployment()
 
     # ------------------------------------------------------------------
     # Request / response translation
@@ -355,55 +367,164 @@ class VLLMAdapter(InferenceAdapter):
             "stream_options": {"include_usage": True},
         }
 
-        # vLLM emits standard OpenAI SSE: ``data: {json}`` per chunk, terminated
-        # by ``data: [DONE]``. Cancellation closes the underlying connection
-        # so vLLM reaps the request from its in-flight batch.
         assert self._client is not None
+        deadline = UpstreamDeadline(_deadline_seconds())
+        self._begin_upstream()
+        attempt = 0
+        reported = False
         try:
-            async with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
-                resp.raise_for_status()
-                async for raw_line in resp.aiter_lines():
-                    if cancel is not None and bool(cancel):
-                        return
-                    if not raw_line or not raw_line.startswith("data:"):
-                        continue
-                    payload = raw_line[5:].strip()
-                    if payload == "[DONE]":
-                        return
-                    try:
-                        event = json.loads(payload)
-                    except json.JSONDecodeError:
-                        log.warning("vllm.stream.bad_json", payload=payload[:200])
-                        continue
-                    choices = event.get("choices") or []
-                    usage = event.get("usage")
-                    if not choices:
-                        # The include_usage trailer: a chunk with an empty
-                        # choices array carrying only the final token counts.
-                        if isinstance(usage, dict):
-                            yield StreamChunk(
-                                text="",
-                                prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                                completion_tokens=int(usage.get("completion_tokens", 0)),
-                            )
-                        continue
-                    choice = choices[0]
-                    delta = choice.get("delta") or {}
-                    text = delta.get("content") or ""
-                    tool_call_deltas = delta.get("tool_calls")
-                    finish = choice.get("finish_reason")
-                    yield StreamChunk(
-                        text=text,
-                        finish_reason=finish,
-                        tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
-                        logprobs=_upstream_logprob_content(choice.get("logprobs")),
+            while True:
+                attempt += 1
+                # Reset per attempt: a failed attempt that emitted nothing is
+                # the only one eligible for another go.
+                emitted = False
+                try:
+                    async with aclosing(self._stream_once(body, cancel, deadline)) as pieces:
+                        async for piece in pieces:
+                            emitted = True
+                            yield piece
+                except Exception as exc:
+                    # HARD RULE: once a chunk has reached the consumer the
+                    # stream cannot be restarted. There is no way to resume an
+                    # upstream mid-generation, and re-running the prompt would
+                    # concatenate two different completions into one answer.
+                    plan = (
+                        RetryPlan(retry=False, reason="stream_already_emitted")
+                        if emitted
+                        else plan_retry(
+                            attempt=attempt,
+                            exc=exc,
+                            remaining_seconds=deadline.remaining,
+                        )
                     )
-        except httpx.TimeoutException as exc:
-            raise self._timeout_error() from exc
-        except httpx.HTTPStatusError as exc:
-            raise self._upstream_http_error(exc) from exc
-        except httpx.RequestError as exc:
-            raise self._upstream_request_error(exc) from exc
+                    if plan.retry:
+                        log_retry(
+                            backend=self.backend_name,
+                            model=self._model_id or "",
+                            attempt=attempt,
+                            plan=plan,
+                            exc=exc,
+                            operation="/v1/chat/completions#stream",
+                        )
+                        await asyncio.sleep(plan.delay_seconds)
+                        continue
+                    log_retry_refused(
+                        backend=self.backend_name,
+                        model=self._model_id or "",
+                        attempt=attempt,
+                        plan=plan,
+                        exc=exc,
+                        operation="/v1/chat/completions#stream",
+                    )
+                    self._finish_upstream(exc)
+                    reported = True
+                    typed = self._stream_error(exc)
+                    if typed is exc:
+                        raise
+                    raise typed from exc
+                self._finish_upstream(None)
+                reported = True
+                return
+        finally:
+            # Client disconnect tears the generator down without an outcome;
+            # a half-open trial must go back rather than be spent on a verdict
+            # nobody reached.
+            if not reported:
+                self._abandon_upstream()
+
+    async def _stream_once(
+        self,
+        body: dict,
+        cancel: Cancellation | None,
+        deadline: UpstreamDeadline,
+    ) -> AsyncIterator[StreamChunk]:
+        """One SSE attempt, raising raw httpx errors for the caller to classify.
+
+        vLLM emits standard OpenAI SSE: ``data: {json}`` per chunk, terminated
+        by ``data: [DONE]``. Cancellation closes the underlying connection so
+        vLLM reaps the request from its in-flight batch.
+
+        THE BUDGET IS ENFORCED HERE, NOT BY ``httpx.Timeout``. httpx's read
+        timeout is per read operation: a stream that drips a token every second
+        resets it forever and never trips it, which is exactly what a slow
+        upstream looks like. That is not merely a long request — the scheduler
+        lease is held for the whole stream, so an unbounded one takes the
+        deployment's dispatch slot with it. Every await on the upstream is
+        therefore wrapped in :func:`deadline_scope`, and the loop re-checks the
+        budget before each chunk it hands on, so the stream stops instead of
+        outliving ``CHAT_COMPLETION_TIMEOUT_SECONDS``. The resulting
+        ``TimeoutError`` reaches the caller as the route's typed
+        ``generation_timeout`` — a terminal SSE ``error`` event, since the
+        response line is already open — and is deliberately NOT counted
+        against the deployment's health: a stream that merely ran longer than
+        the caller's budget says nothing about the upstream. See
+        :func:`_upstream.is_health_signal`.
+        """
+        assert self._client is not None
+        async with AsyncExitStack() as stack:
+            async with deadline_scope(deadline):
+                resp = await stack.enter_async_context(
+                    self._client.stream("POST", "/v1/chat/completions", json=body)
+                )
+                if resp.status_code >= 400:
+                    # Pull the body in before raising: on a streamed response
+                    # the content is unread, and the error mapper reads it to
+                    # build the 502 detail. Without this it would raise
+                    # ResponseNotRead while handling the upstream's error,
+                    # hiding it behind a 500.
+                    await resp.aread()
+            resp.raise_for_status()
+            lines = resp.aiter_lines()
+            while True:
+                async with deadline_scope(deadline):
+                    try:
+                        raw_line = await anext(lines)
+                    except StopAsyncIteration:
+                        return
+                if cancel is not None and bool(cancel):
+                    return
+                if not raw_line or not raw_line.startswith("data:"):
+                    continue
+                payload = raw_line[5:].strip()
+                if payload == "[DONE]":
+                    return
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    log.warning("vllm.stream.bad_json", payload=payload[:200])
+                    continue
+                choices = event.get("choices") or []
+                usage = event.get("usage")
+                if not choices:
+                    # The include_usage trailer: a chunk with an empty
+                    # choices array carrying only the final token counts.
+                    if isinstance(usage, dict):
+                        yield StreamChunk(
+                            text="",
+                            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                            completion_tokens=int(usage.get("completion_tokens", 0)),
+                        )
+                    continue
+                choice = choices[0]
+                delta = choice.get("delta") or {}
+                text = delta.get("content") or ""
+                tool_call_deltas = delta.get("tool_calls")
+                finish = choice.get("finish_reason")
+                yield StreamChunk(
+                    text=text,
+                    finish_reason=finish,
+                    tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+                    logprobs=_upstream_logprob_content(choice.get("logprobs")),
+                )
+
+    def _stream_error(self, exc: Exception) -> Exception:
+        if isinstance(exc, httpx.TimeoutException | TimeoutError):
+            return self._timeout_error()
+        if isinstance(exc, httpx.HTTPStatusError):
+            return self._upstream_http_error(exc)
+        if isinstance(exc, httpx.RequestError):
+            return self._upstream_request_error(exc)
+        return exc
 
     # ------------------------------------------------------------------
     # complete (legacy /v1/completions pass-through)
@@ -489,22 +610,97 @@ class VLLMAdapter(InferenceAdapter):
         )
 
     async def _post_with_deadline(self, path: str, body: dict) -> httpx.Response:
+        """POST once, then retry the SAME deployment while that is honest.
+
+        A blocking completion has produced nothing the caller can see, so a
+        transient failure can be reissued verbatim. That reissue happens here,
+        below the route's fallback loop, which is what makes "retry this model"
+        strictly precede "answer with a different model".
+
+        The whole sequence — attempts and backoff sleeps alike — is drawn from
+        one ``CHAT_COMPLETION_TIMEOUT_SECONDS`` budget, so retrying cannot push
+        a request past the deadline the operator configured.
+        """
         assert self._client is not None
-        deadline = _deadline_seconds()
+        deadline = UpstreamDeadline(_deadline_seconds())
+        self._begin_upstream()
+        attempt = 0
+        reported = False
         try:
-            if deadline is None:
-                response = await self._client.post(path, json=body)
-            else:
-                async with asyncio.timeout(deadline):
-                    response = await self._client.post(path, json=body)
-            response.raise_for_status()
-            return response
-        except httpx.TimeoutException:
-            raise
-        except httpx.HTTPStatusError as exc:
-            raise self._upstream_http_error(exc) from exc
-        except httpx.RequestError as exc:
-            raise self._upstream_request_error(exc) from exc
+            while True:
+                attempt += 1
+                try:
+                    response = await self._post_once(path, body, deadline)
+                except Exception as exc:
+                    plan = plan_retry(
+                        attempt=attempt,
+                        exc=exc,
+                        remaining_seconds=deadline.remaining,
+                    )
+                    if plan.retry:
+                        log_retry(
+                            backend=self.backend_name,
+                            model=self._model_id or "",
+                            attempt=attempt,
+                            plan=plan,
+                            exc=exc,
+                            operation=path,
+                        )
+                        await asyncio.sleep(plan.delay_seconds)
+                        continue
+                    log_retry_refused(
+                        backend=self.backend_name,
+                        model=self._model_id or "",
+                        attempt=attempt,
+                        plan=plan,
+                        exc=exc,
+                        operation=path,
+                    )
+                    self._finish_upstream(exc)
+                    reported = True
+                    typed = self._as_typed_upstream_error(exc)
+                    if typed is exc:
+                        raise
+                    raise typed from exc
+                self._finish_upstream(None)
+                reported = True
+                return response
+        finally:
+            # Every exit that reached no verdict — cancellation inside the POST
+            # *or* inside the backoff sleep, shutdown, a client walking away —
+            # hands the half-open trial back. Spending it here would leave the
+            # breaker holding a trial nobody will ever report on, and
+            # ``begin_attempt`` answers OPEN for that deployment from then on:
+            # a healthy upstream silently gone from /v1/models until restart.
+            if not reported:
+                self._abandon_upstream()
+
+    async def _post_once(
+        self,
+        path: str,
+        body: dict,
+        deadline: UpstreamDeadline,
+    ) -> httpx.Response:
+        """One attempt, bounded by what is LEFT of the deadline, not all of it."""
+        assert self._client is not None
+        async with deadline_scope(deadline):
+            response = await self._client.post(path, json=body)
+        response.raise_for_status()
+        return response
+
+    def _as_typed_upstream_error(self, exc: Exception) -> Exception:
+        """Map a raw httpx failure onto this codebase's typed upstream errors.
+
+        Timeouts pass through untouched: the callers translate those into
+        ``GenerationTimeoutError`` so the route can answer 504 rather than 502.
+        """
+        if isinstance(exc, httpx.TimeoutException | TimeoutError):
+            return exc
+        if isinstance(exc, httpx.HTTPStatusError):
+            return self._upstream_http_error(exc)
+        if isinstance(exc, httpx.RequestError):
+            return self._upstream_request_error(exc)
+        return exc
 
     def _upstream_http_error(self, exc: httpx.HTTPStatusError) -> UpstreamGenerationError:
         detail = ""

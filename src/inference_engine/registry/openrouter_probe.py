@@ -37,6 +37,7 @@ import httpx
 
 from ..config import settings
 from ..observability import get_logger
+from .breaker import deployment_key, get_upstream_breaker
 from .ollama import ModelDescriptor
 
 log = get_logger("registry.openrouter_probe")
@@ -142,6 +143,25 @@ class OpenRouterProbe:
                 loadable=False,
                 reason="invalid_openrouter_descriptor",
                 detail="OpenRouter descriptor must include endpoint and params['model_id']",
+            )
+
+        # Cooldown gate, checked without claiming the half-open trial. The
+        # catalog fetch below is per-(endpoint, key) and shared by every
+        # configured OpenRouter model, so it is not a health signal for one
+        # deployment — it cannot serve as this breaker's half-open probe the
+        # way the vLLM per-model probe can. The adapter's own generation
+        # attempt is the trial, and it claims it on the hot path.
+        breaker = get_upstream_breaker()
+        deployment = deployment_key("openrouter", endpoint, model_id)
+        if not breaker.allows(deployment):
+            remaining = breaker.cooldown_remaining(deployment)
+            return OpenRouterProbeResult(
+                loadable=False,
+                reason="upstream_cooldown",
+                detail=(
+                    f"deployment is in breaker cooldown for another "
+                    f"{remaining:.1f}s after consecutive upstream failures"
+                ),
             )
 
         state = self._catalog_for(endpoint, api_key)

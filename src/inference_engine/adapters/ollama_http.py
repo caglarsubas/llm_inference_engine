@@ -42,8 +42,10 @@ Limits documented honestly:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
+from contextlib import AsyncExitStack, aclosing
 
 import httpx
 
@@ -52,6 +54,15 @@ from ..config import settings
 from ..observability import get_logger
 from ..registry import ModelDescriptor
 from ..schemas import ChatMessage, dump_chat_content
+from ._upstream import HttpUpstreamMixin
+from ._upstream_retry import (
+    RetryPlan,
+    UpstreamDeadline,
+    deadline_scope,
+    log_retry,
+    log_retry_refused,
+    plan_retry,
+)
 from .base import (
     EmbeddingResult,
     EmbeddingsNotSupportedError,
@@ -60,6 +71,7 @@ from .base import (
     GenerationTimeoutError,
     InferenceAdapter,
     StreamChunk,
+    UpstreamGenerationError,
 )
 
 log = get_logger("adapter.ollama_http")
@@ -78,6 +90,11 @@ def _chat_timeout() -> httpx.Timeout:
     return httpx.Timeout(seconds)
 
 
+def _deadline_seconds() -> float | None:
+    seconds = settings.chat_completion_timeout_seconds
+    return seconds if seconds > 0 else None
+
+
 def _has_image_content(messages: list[dict]) -> bool:
     for message in messages:
         content = message.get("content")
@@ -93,7 +110,7 @@ def _prepend_json_retry_prompt(messages: list[dict]) -> list[dict]:
     return [{"role": "system", "content": _JSON_RETRY_SYSTEM_PROMPT}, *messages]
 
 
-class OllamaHttpAdapter(InferenceAdapter):
+class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
     backend_name = "ollama_http"
     # DECLARED, then checked. Recent Ollama does implement structured outputs
     # in its own sampler, so True is the right PRIOR — but the OpenAI shim
@@ -162,6 +179,7 @@ class OllamaHttpAdapter(InferenceAdapter):
         self._descriptor = descriptor
         self._endpoint = descriptor.endpoint
         self._model_id = str(model_id)
+        self._bind_deployment(self._endpoint, self._model_id)
         self._client = httpx.AsyncClient(base_url=self._endpoint, timeout=_chat_timeout())
         log.info(
             "loaded",
@@ -181,6 +199,7 @@ class OllamaHttpAdapter(InferenceAdapter):
             self._descriptor = None
             self._endpoint = None
             self._model_id = None
+            self._clear_deployment()
 
     # ------------------------------------------------------------------
     # Request / response translation (OpenAI-compat shape)
@@ -270,33 +289,45 @@ class OllamaHttpAdapter(InferenceAdapter):
         }
         should_retry_empty_json = params.json_mode and _has_image_content(body["messages"])
         assert self._client is not None
+        # One budget for the whole logical call: the transport retries below
+        # and the empty-multimodal-JSON reprompt all draw from it, so neither
+        # can push the request past CHAT_COMPLETION_TIMEOUT_SECONDS.
+        deadline = UpstreamDeadline(_deadline_seconds())
+        self._begin_upstream()
+        reported = False
         try:
-            r = await self._client.post("/v1/chat/completions", json=body)
-            r.raise_for_status()
-        except httpx.TimeoutException as exc:
-            raise self._timeout_error() from exc
-        data = r.json()
-
-        if should_retry_empty_json and self._content_from_response(data) == "":
-            retry_body = dict(body)
-            retry_body.pop("response_format", None)
-            retry_body["max_tokens"] = max(
-                int(retry_body.get("max_tokens") or 0),
-                _JSON_RETRY_MIN_TOKENS,
-            )
-            retry_body["messages"] = _prepend_json_retry_prompt(body["messages"])
-            log.warning(
-                "ollama_http.retry_empty_multimodal_json",
-                model=self._model_id,
-                original_max_tokens=body.get("max_tokens"),
-                retry_max_tokens=retry_body["max_tokens"],
-            )
             try:
-                r = await self._client.post("/v1/chat/completions", json=retry_body)
-                r.raise_for_status()
-            except httpx.TimeoutException as exc:
-                raise self._timeout_error() from exc
-            data = r.json()
+                r = await self._post_with_retries(body, deadline)
+                data = r.json()
+
+                if should_retry_empty_json and self._content_from_response(data) == "":
+                    retry_body = dict(body)
+                    retry_body.pop("response_format", None)
+                    retry_body["max_tokens"] = max(
+                        int(retry_body.get("max_tokens") or 0),
+                        _JSON_RETRY_MIN_TOKENS,
+                    )
+                    retry_body["messages"] = _prepend_json_retry_prompt(body["messages"])
+                    log.warning(
+                        "ollama_http.retry_empty_multimodal_json",
+                        model=self._model_id,
+                        original_max_tokens=body.get("max_tokens"),
+                        retry_max_tokens=retry_body["max_tokens"],
+                    )
+                    r = await self._post_with_retries(retry_body, deadline)
+                    data = r.json()
+            except Exception as exc:
+                self._finish_upstream(exc)
+                reported = True
+                typed = self._as_typed_upstream_error(exc)
+                if typed is exc:
+                    raise
+                raise typed from exc
+            self._finish_upstream(None)
+            reported = True
+        finally:
+            if not reported:
+                self._abandon_upstream()
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -336,44 +367,225 @@ class OllamaHttpAdapter(InferenceAdapter):
             "stream_options": {"include_usage": True},
         }
         assert self._client is not None
+        deadline = UpstreamDeadline(_deadline_seconds())
+        self._begin_upstream()
+        attempt = 0
+        reported = False
         try:
-            async with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
-                resp.raise_for_status()
-                async for raw_line in resp.aiter_lines():
-                    if cancel is not None and bool(cancel):
-                        return
-                    if not raw_line or not raw_line.startswith("data:"):
-                        continue
-                    payload = raw_line[5:].strip()
-                    if payload == "[DONE]":
-                        return
-                    try:
-                        event = json.loads(payload)
-                    except json.JSONDecodeError:
-                        log.warning("ollama_http.stream.bad_json", payload=payload[:200])
-                        continue
-                    choices = event.get("choices") or []
-                    if not choices:
-                        usage = event.get("usage")
-                        if isinstance(usage, dict):
-                            yield StreamChunk(
-                                text="",
-                                prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                                completion_tokens=int(usage.get("completion_tokens", 0)),
-                            )
-                        continue
-                    choice = choices[0]
-                    delta = choice.get("delta") or {}
-                    text = delta.get("content") or ""
-                    tool_call_deltas = delta.get("tool_calls")
-                    finish = choice.get("finish_reason")
-                    yield StreamChunk(
-                        text=text,
-                        finish_reason=finish,
-                        tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+            while True:
+                attempt += 1
+                emitted = False
+                try:
+                    async with aclosing(self._stream_once(body, cancel, deadline)) as pieces:
+                        async for piece in pieces:
+                            emitted = True
+                            yield piece
+                except Exception as exc:
+                    # HARD RULE: a stream that has already delivered a chunk
+                    # cannot be reissued — there is no way to resume upstream,
+                    # and rerunning the prompt would splice two completions.
+                    plan = (
+                        RetryPlan(retry=False, reason="stream_already_emitted")
+                        if emitted
+                        else plan_retry(
+                            attempt=attempt,
+                            exc=exc,
+                            remaining_seconds=deadline.remaining,
+                        )
                     )
-        except httpx.TimeoutException as exc:
-            raise self._timeout_error() from exc
+                    if plan.retry:
+                        log_retry(
+                            backend=self.backend_name,
+                            model=self._model_id or "",
+                            attempt=attempt,
+                            plan=plan,
+                            exc=exc,
+                            operation="/v1/chat/completions#stream",
+                        )
+                        await asyncio.sleep(plan.delay_seconds)
+                        continue
+                    log_retry_refused(
+                        backend=self.backend_name,
+                        model=self._model_id or "",
+                        attempt=attempt,
+                        plan=plan,
+                        exc=exc,
+                        operation="/v1/chat/completions#stream",
+                    )
+                    self._finish_upstream(exc)
+                    reported = True
+                    typed = self._as_typed_upstream_error(exc)
+                    if typed is exc:
+                        raise
+                    raise typed from exc
+                self._finish_upstream(None)
+                reported = True
+                return
+        finally:
+            if not reported:
+                self._abandon_upstream()
+
+    async def _stream_once(
+        self,
+        body: dict,
+        cancel: Cancellation | None,
+        deadline: UpstreamDeadline,
+    ) -> AsyncIterator[StreamChunk]:
+        """One SSE attempt, raising raw httpx errors for the caller to classify.
+
+        THE BUDGET IS ENFORCED HERE, NOT BY ``httpx.Timeout``. httpx's read
+        timeout is per read operation: a stream that drips a token every second
+        resets it forever and never trips it, which is exactly what a slow
+        upstream looks like. That is not merely a long request — the scheduler
+        lease is held for the whole stream, so an unbounded one takes the
+        deployment's dispatch slot with it. Every await on the upstream is
+        therefore wrapped in :func:`deadline_scope`, and the loop re-checks the
+        budget before each chunk it hands on, so the stream stops instead of
+        outliving ``CHAT_COMPLETION_TIMEOUT_SECONDS``. The resulting
+        ``TimeoutError`` reaches the caller as the route's typed
+        ``generation_timeout`` — a terminal SSE ``error`` event, since the
+        response line is already open — and is deliberately NOT counted
+        against the deployment's health: a stream that merely ran longer than
+        the caller's budget says nothing about the upstream. See
+        :func:`_upstream.is_health_signal`.
+        """
+        assert self._client is not None
+        async with AsyncExitStack() as stack:
+            async with deadline_scope(deadline):
+                resp = await stack.enter_async_context(
+                    self._client.stream("POST", "/v1/chat/completions", json=body)
+                )
+                if resp.status_code >= 400:
+                    # Read the body before raising: on a streamed response it is
+                    # unread, and the error mapper reads it to build the 502
+                    # detail.
+                    await resp.aread()
+            resp.raise_for_status()
+            lines = resp.aiter_lines()
+            while True:
+                async with deadline_scope(deadline):
+                    try:
+                        raw_line = await anext(lines)
+                    except StopAsyncIteration:
+                        return
+                if cancel is not None and bool(cancel):
+                    return
+                if not raw_line or not raw_line.startswith("data:"):
+                    continue
+                payload = raw_line[5:].strip()
+                if payload == "[DONE]":
+                    return
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    log.warning("ollama_http.stream.bad_json", payload=payload[:200])
+                    continue
+                choices = event.get("choices") or []
+                if not choices:
+                    usage = event.get("usage")
+                    if isinstance(usage, dict):
+                        yield StreamChunk(
+                            text="",
+                            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                            completion_tokens=int(usage.get("completion_tokens", 0)),
+                        )
+                    continue
+                choice = choices[0]
+                delta = choice.get("delta") or {}
+                text = delta.get("content") or ""
+                tool_call_deltas = delta.get("tool_calls")
+                finish = choice.get("finish_reason")
+                yield StreamChunk(
+                    text=text,
+                    finish_reason=finish,
+                    tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+                )
+
+    # ------------------------------------------------------------------
+    # transport — one attempt, the retry loop over it, and error mapping
+    # ------------------------------------------------------------------
+
+    async def _post_once(self, body: dict, deadline: UpstreamDeadline) -> httpx.Response:
+        """One attempt, bounded by what is LEFT of the deadline, not all of it."""
+        assert self._client is not None
+        async with deadline_scope(deadline):
+            response = await self._client.post("/v1/chat/completions", json=body)
+        response.raise_for_status()
+        return response
+
+    async def _post_with_retries(
+        self,
+        body: dict,
+        deadline: UpstreamDeadline,
+    ) -> httpx.Response:
+        """Reissue this POST on the SAME deployment while that is honest.
+
+        Sits below the route's fallback loop on purpose: a transient upstream
+        failure must cost the caller a retry on the model they asked for, not
+        a silent substitution of a different one.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return await self._post_once(body, deadline)
+            except Exception as exc:
+                plan = plan_retry(
+                    attempt=attempt,
+                    exc=exc,
+                    remaining_seconds=deadline.remaining,
+                )
+                if not plan.retry:
+                    log_retry_refused(
+                        backend=self.backend_name,
+                        model=self._model_id or "",
+                        attempt=attempt,
+                        plan=plan,
+                        exc=exc,
+                        operation="/v1/chat/completions",
+                    )
+                    raise
+                log_retry(
+                    backend=self.backend_name,
+                    model=self._model_id or "",
+                    attempt=attempt,
+                    plan=plan,
+                    exc=exc,
+                    operation="/v1/chat/completions",
+                )
+                await asyncio.sleep(plan.delay_seconds)
+
+    def _as_typed_upstream_error(self, exc: Exception) -> Exception:
+        if isinstance(exc, httpx.TimeoutException | TimeoutError):
+            return self._timeout_error()
+        if isinstance(exc, httpx.HTTPStatusError):
+            return self._upstream_http_error(exc)
+        if isinstance(exc, httpx.RequestError):
+            return self._upstream_request_error(exc)
+        return exc
+
+    def _upstream_http_error(self, exc: httpx.HTTPStatusError) -> UpstreamGenerationError:
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            detail = exc.response.text[:500]
+        else:
+            detail = json.dumps(payload, sort_keys=True)[:500]
+        return UpstreamGenerationError(
+            error_type="upstream_http_error",
+            upstream_status_code=exc.response.status_code,
+            backend=self.backend_name,
+            model=self._model_id or "",
+            detail=detail,
+        )
+
+    def _upstream_request_error(self, exc: httpx.RequestError) -> UpstreamGenerationError:
+        return UpstreamGenerationError(
+            error_type="upstream_request_error",
+            backend=self.backend_name,
+            model=self._model_id or "",
+            detail=str(exc).splitlines()[0][:500] if str(exc) else exc.__class__.__name__,
+        )
 
     async def complete(
         self,

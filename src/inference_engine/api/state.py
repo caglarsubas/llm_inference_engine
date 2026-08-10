@@ -36,6 +36,7 @@ from ..registry import (
     OllamaRegistry,
     OpenRouterRegistry,
     VLLMRegistry,
+    descriptor_allows,
     get_openrouter_probe,
     get_probe,
     get_vllm_probe,
@@ -111,6 +112,13 @@ class AppState:
         # through to ollama_http); vLLM descriptors must also be present on
         # the upstream's own /v1/models surface. This keeps ``manager.get(id)``
         # and ``/v1/models`` agreeing on what's reachable.
+        #
+        # THREE COPIES OF THIS PREDICATE EXIST — here, ``api/models.py``
+        # ``_accept_descriptor`` and ``main.py`` ``_collect_startup_model_summary``.
+        # They are separate so each module keeps its own patchable probe seam,
+        # and they MUST be edited together: a format handled in one and not the
+        # others makes the startup log, ``/v1/models`` and candidate selection
+        # disagree about the same deployment.
         def _accept(desc: ModelDescriptor) -> bool:
             if desc.format == "gguf":
                 return get_probe().probe(desc).loadable
@@ -118,6 +126,10 @@ class AppState:
                 return get_vllm_probe().probe(desc).loadable
             if desc.format == "openrouter":
                 return get_openrouter_probe().probe(desc).loadable
+            if desc.format == "ollama_http":
+                # No probe of its own, so the breaker is what keeps a
+                # deployment in cooldown out of candidate selection.
+                return descriptor_allows(desc)
             return True
 
         self._accept = _accept
