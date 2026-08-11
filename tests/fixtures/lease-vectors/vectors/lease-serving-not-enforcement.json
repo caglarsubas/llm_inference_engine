@@ -1,0 +1,103 @@
+{
+  "vectorVersion": 1,
+  "id": "lease-serving-not-enforcement",
+  "description": "An enforcing lease whose only matched control says `serving`, alongside a quarantine at a resolvable scope for somebody else. Both runtimes match a control and enforce nothing, so both report 0 and `advisory`.",
+  "context": {
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "maxLeaseSeconds": 900,
+    "maxClockSkewSeconds": 60
+  },
+  "trust": [
+    {
+      "issuer": "prometa-platform/runtime-control-lease",
+      "keyId": "runtime-control-lease-key-1",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "allowedArtifactTypes": [
+        "orchestra.runtime-control-lease"
+      ],
+      "allowedOrgIds": [
+        "org-golden"
+      ],
+      "allowedEnvironments": [
+        "staging"
+      ]
+    }
+  ],
+  "runtimes": {
+    "engine": {
+      "enforceableScopes": [
+        "deployment",
+        "org",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden"
+      }
+    },
+    "sdk-host": {
+      "enforceableScopes": [
+        "agent",
+        "deployment",
+        "org",
+        "solution",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden",
+        "solution": "solution-golden",
+        "agent": "agent-golden"
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "apply",
+      "at": "2026-08-11T09:00:01.000Z",
+      "lease": {
+        "artifactType": "orchestra.runtime-control-lease",
+        "leaseVersion": 1,
+        "algorithm": "ed25519",
+        "canonicalization": "signed-payload-json-v1",
+        "issuer": "prometa-platform/runtime-control-lease",
+        "keyId": "runtime-control-lease-key-1",
+        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"reasonCode\":\"incident-4715-cleared\",\"scope\":\"deployment\",\"state\":\"serving\",\"subjectId\":\"deployment-golden\"},{\"reasonCode\":\"incident-4716\",\"scope\":\"tenant\",\"state\":\"quarantined\",\"subjectId\":\"tenant-someone-else\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"prometa-platform/runtime-control-lease\",\"jti\":\"jti-lease-serving-match-4\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-serving-match\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":4,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
+        "signature": "XtzJRqxaAIDjuL7dhcMwmH3aJKOmwsO4smDUfBSmrtZPldXz7a4EVeffrnpiG6jxBuUmAtr/XIm2P+M0niGLBg==",
+        "signed": true
+      },
+      "expect": {
+        "outcome": "verified",
+        "digest": "sha256:2756db0f543dc5ee8618c534ee2033b8348b0524154cf3bddbf7513d453e5ba2",
+        "leaseId": "lease-serving-match",
+        "revision": 4,
+        "mode": "enforcing",
+        "staleAction": "continue",
+        "controlCount": 2
+      }
+    },
+    {
+      "action": "evaluate",
+      "at": "2026-08-11T09:00:01.000Z",
+      "expectByRuntime": {
+        "engine": {
+          "admitting": true,
+          "state": "serving",
+          "stale": false,
+          "enforcement": "advisory",
+          "enforcedControlCount": 0
+        },
+        "sdk-host": {
+          "admitting": true,
+          "state": "serving",
+          "stale": false,
+          "enforcement": "advisory",
+          "enforcedControlCount": 0
+        }
+      }
+    }
+  ]
+}

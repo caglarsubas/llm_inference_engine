@@ -32,6 +32,30 @@ base=(
 "$helm_bin" template model-plane-staging "$chart" "${base[@]}" \
   >"$workdir/staging.yaml"
 
+# Runtime control is off in the default render, and switching it on changes no
+# observation setting: the acknowledgement is additive on whatever version is
+# already configured.
+grep -qF 'name: MODEL_PLANE_RUNTIME_CONTROL_ENABLED' "$workdir/staging.yaml"
+if grep -qF 'MODEL_PLANE_RUNTIME_CONTROL_STALE_ACTION' "$workdir/staging.yaml"; then
+  echo "Default render configured runtime control while it is disabled" >&2
+  exit 1
+fi
+if "$helm_bin" template model-plane-staging "$chart" "${base[@]}" \
+  --set runtimeControl.enabled=true \
+  --set runtimeControl.staleAction=halt >/dev/null 2>&1; then
+  echo "Runtime control rendered an unsupported stale action" >&2
+  exit 1
+fi
+"$helm_bin" template model-plane-staging "$chart" "${base[@]}" \
+  --set runtimeControl.enabled=true \
+  --set runtimeControl.staleAction=stop \
+  >"$workdir/staging-runtime-control.yaml"
+grep -qF 'name: MODEL_PLANE_RUNTIME_CONTROL_STALE_ACTION' \
+  "$workdir/staging-runtime-control.yaml"
+grep -qF 'value: "stop"' "$workdir/staging-runtime-control.yaml"
+grep -qF 'name: MODEL_PLANE_RUNTIME_CONTROL_TRUST_STORE_FILE' \
+  "$workdir/staging-runtime-control.yaml"
+
 required=(
   --set productionProfile.namespaceDefaultDenyAcknowledged=true
   --set image.repository=registry.example.test/orchestra/inference-engine-ubi

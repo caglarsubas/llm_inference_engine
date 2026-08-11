@@ -1,0 +1,43 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-unknown-keys-ignored",
+  "description": "\u00a77b.18: unknown members inside the object are ignored. `mode` is one of them on purpose \u2014 it is the issuer's instruction, and a consumer that read it here would be reporting what the runtime was told instead of what it did.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": "rcl:org-golden:staging:deployment-golden",
+    "revision": 42,
+    "enforcement": "enforcing",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 2,
+    "ignoredControlCount": 1,
+    "stale": false,
+    "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+    "leaseParseFailed": false,
+    "mode": "enforcing",
+    "leaseDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "appliedAt": null
+  },
+  "expect": {
+    "outcome": "accepted",
+    "normalized": {
+      "leaseId": "rcl:org-golden:staging:deployment-golden",
+      "revision": 42,
+      "enforcement": "enforcing",
+      "enforceableScopes": [
+        "org",
+        "tenant",
+        "deployment"
+      ],
+      "enforcedControlCount": 2,
+      "ignoredControlCount": 1,
+      "stale": false,
+      "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+      "leaseParseFailed": false
+    }
+  }
+}

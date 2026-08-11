@@ -1,0 +1,86 @@
+{
+  "vectorVersion": 1,
+  "id": "lease-wrong-key-purpose",
+  "description": "A structurally perfect lease signed by the routing-policy key. The signature verifies; the key was never provisioned to stop a runtime, so every implementation must refuse it.",
+  "context": {
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "maxLeaseSeconds": 900,
+    "maxClockSkewSeconds": 60
+  },
+  "trust": [
+    {
+      "issuer": "prometa-platform/runtime-control-lease",
+      "keyId": "runtime-control-lease-key-1",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "allowedArtifactTypes": [
+        "orchestra.runtime-control-lease"
+      ],
+      "allowedOrgIds": [
+        "org-golden"
+      ],
+      "allowedEnvironments": [
+        "staging"
+      ]
+    },
+    {
+      "issuer": "prometa-platform/routing-policy",
+      "keyId": "routing-policy-key-1",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAKay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+      "allowedArtifactTypes": [
+        "orchestra.routing-policy"
+      ]
+    }
+  ],
+  "runtimes": {
+    "engine": {
+      "enforceableScopes": [
+        "deployment",
+        "org",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden"
+      }
+    },
+    "sdk-host": {
+      "enforceableScopes": [
+        "agent",
+        "deployment",
+        "org",
+        "solution",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden",
+        "solution": "solution-golden",
+        "agent": "agent-golden"
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "apply",
+      "at": "2026-08-11T09:00:01.000Z",
+      "lease": {
+        "artifactType": "orchestra.runtime-control-lease",
+        "leaseVersion": 1,
+        "algorithm": "ed25519",
+        "canonicalization": "signed-payload-json-v1",
+        "issuer": "prometa-platform/routing-policy",
+        "keyId": "routing-policy-key-1",
+        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"scope\":\"deployment\",\"state\":\"quarantined\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"prometa-platform/routing-policy\",\"jti\":\"jti-lease-wrong-purpose-1\",\"keyId\":\"routing-policy-key-1\",\"leaseId\":\"lease-wrong-purpose\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":1,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
+        "signature": "8QGHOoTXMEu2WWdx7KAZdw9Wchh77S7fKRtndEkjqh+TMI5N/5bSZPBXWbPZHO0P5r/WIZzMY2koqC+Hd600Cw==",
+        "signed": true
+      },
+      "expect": {
+        "outcome": "refused",
+        "errorCode": "signing_key_purpose_denied"
+      }
+    }
+  ]
+}

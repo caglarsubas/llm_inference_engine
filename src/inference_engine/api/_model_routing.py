@@ -12,6 +12,7 @@ from ..adapters import InferenceAdapter
 from ..auth import Identity
 from ..config import CERTIFIED_MODEL_WORKLOAD_SURFACE, settings
 from ..manager import ModelNotFoundError
+from ..model_plane_control import QUARANTINED_ERROR_CODE, RuntimeControlRefusal
 from ..model_routing_runtime import (
     ModelRoutingDecision,
     ModelRoutingEnforcementError,
@@ -193,6 +194,44 @@ def _emit_denial_span(
         pass
 
 
+def _runtime_control_http_error(refusal: RuntimeControlRefusal) -> HTTPException:
+    """Say that a control applies and at which scope, and nothing more.
+
+    The lease id and its revision identify control-plane state to a caller who
+    may only be one of many tenants behind this replica, so they stay on the
+    authenticated admin status and in the local log.
+    """
+    detail = {
+        "message": (
+            "runtime control has quarantined this subject"
+            if refusal.code == QUARANTINED_ERROR_CODE
+            else "a matched runtime control is stale and this deployment stops rather than serve it"
+        ),
+        "type": refusal.code,
+        "code": refusal.code,
+        "scope": refusal.scope,
+    }
+    return HTTPException(status_code=503, detail=detail)
+
+
+def enforce_runtime_control(*, identity: Identity) -> None:
+    """Refuse a quarantined subject from cache, before any admission work.
+
+    Runs ahead of routing enforcement so a refused request never takes a
+    rate-limit reservation it will not use. The check is a few comparisons
+    against the cached lease projection; the lease's signature was verified
+    when it arrived on the observer's reply, not here.
+    """
+    control = app_state.model_plane_runtime_control
+    if control is None:
+        return
+    refusal = control.evaluate(tenant=identity.tenant)
+    if refusal is None:
+        return
+    _emit_denial_span(identity=identity, code=refusal.code)
+    raise _runtime_control_http_error(refusal)
+
+
 async def enforce_generation_request(
     *,
     identity: Identity,
@@ -200,6 +239,7 @@ async def enforce_generation_request(
     input_token_upper_bound: int | None,
     output_token_budget: int,
 ) -> ModelRoutingDecision | None:
+    enforce_runtime_control(identity=identity)
     try:
         decision = await asyncio.to_thread(
             enforce_model_routing_request,
@@ -507,6 +547,7 @@ __all__ = [
     "completion_input_token_upper_bound",
     "embedding_input_token_upper_bound",
     "enforce_generation_request",
+    "enforce_runtime_control",
     "model_routing_span_attrs",
     "observe_usage",
     "reject_unsupported_governed_workload",

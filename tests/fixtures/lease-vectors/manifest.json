@@ -1,0 +1,126 @@
+{
+  "manifestVersion": 1,
+  "contract": "runtime-control-lease-contract.md \u00a78",
+  "generatedBy": "generate.py",
+  "identities": {
+    "orgId": "org-golden",
+    "targetEnvironment": "staging",
+    "tenantId": "tenant-golden",
+    "deploymentId": "deployment-golden",
+    "solutionId": "solution-golden",
+    "agentId": "agent-golden"
+  },
+  "signingKeys": {
+    "runtimeControlLease": {
+      "issuer": "prometa-platform/runtime-control-lease",
+      "keyId": "runtime-control-lease-key-1",
+      "privateKeySeedBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+    },
+    "routingPolicy": {
+      "issuer": "prometa-platform/routing-policy",
+      "keyId": "routing-policy-key-1",
+      "privateKeySeedBase64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAKay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc="
+    }
+  },
+  "vectors": [
+    {
+      "id": "lease-valid-v1",
+      "file": "vectors/lease-valid-v1.json",
+      "description": "An enforcing deployment-scoped quarantine. Every implementation verifies it and derives the same digest from the same bytes."
+    },
+    {
+      "id": "lease-wrong-key-purpose",
+      "file": "vectors/lease-wrong-key-purpose.json",
+      "description": "A structurally perfect lease signed by the routing-policy key. The signature verifies; the key was never provisioned to stop a runtime, so every implementation must refuse it."
+    },
+    {
+      "id": "lease-lower-revision",
+      "file": "vectors/lease-lower-revision.json",
+      "description": "A captured pre-quarantine lease replayed under the same leaseId. It is authentic, in window, and arrives last; it must not lift the live quarantine."
+    },
+    {
+      "id": "lease-advisory-expired",
+      "file": "vectors/lease-advisory-expired.json",
+      "description": "An advisory lease that names a quarantine and asks for staleAction stop, evaluated long after it expired. Mode is checked first, so this refuses no traffic anywhere."
+    },
+    {
+      "id": "lease-quarantine-expired",
+      "file": "vectors/lease-quarantine-expired.json",
+      "description": "An enforcing quarantine whose lease expired with staleAction continue. `continue` means keep enforcing what the last lease said, so the quarantine survives: otherwise it could be lifted by cutting the runtime off from the control plane."
+    },
+    {
+      "id": "lease-agent-scope",
+      "file": "vectors/lease-agent-scope.json",
+      "description": "An agent-scoped quarantine. The engine cannot resolve an agent identity, so it enforces nothing and must say so rather than show a green tick; the SDK host holds the identity and refuses work."
+    },
+    {
+      "id": "lease-serving-replay-across-streams",
+      "file": "vectors/lease-serving-replay-across-streams.json",
+      "description": "A genuine, correctly signed, unexpired `serving` lease carrying a different leaseId and a lower revision, replayed against a live quarantine. Revisions are ordered globally per (orgId, targetEnvironment), so changing the leaseId must not buy a replay past the guard."
+    },
+    {
+      "id": "lease-serving-not-enforcement",
+      "file": "vectors/lease-serving-not-enforcement.json",
+      "description": "An enforcing lease whose only matched control says `serving`, alongside a quarantine at a resolvable scope for somebody else. Both runtimes match a control and enforce nothing, so both report 0 and `advisory`."
+    },
+    {
+      "id": "lease-tampered-signature",
+      "file": "vectors/lease-tampered-signature.json",
+      "description": "lease-valid-v1 with one flipped signature bit."
+    }
+  ],
+  "acknowledgementVectors": [
+    {
+      "id": "ack-enforcing-quarantine",
+      "file": "acks/ack-enforcing-quarantine.json",
+      "description": "The pinned shape from a replica refusing traffic for two matched quarantines while one control sits at a scope it cannot resolve."
+    },
+    {
+      "id": "ack-advisory-nothing-enforced",
+      "file": "acks/ack-advisory-nothing-enforced.json",
+      "description": "A live lease under which this replica enforced nothing: \u00a78c makes that `advisory` with a count of 0, and intake must store it as reported rather than inferring enforcement from the lease."
+    },
+    {
+      "id": "ack-stale-lease-still-enforcing",
+      "file": "acks/ack-stale-lease-still-enforcing.json",
+      "description": "An expired lease under staleAction `continue`: the replica is still refusing, and says so. Intake must not read `stale` as `not enforcing` \u2014 that would make an unreachable issuer look like a lifted quarantine on the operator surface too."
+    },
+    {
+      "id": "ack-no-lease",
+      "file": "acks/ack-no-lease.json",
+      "description": "A replica that has accepted no lease. It still declares the scopes it could resolve, because that describes the runtime and not the lease."
+    },
+    {
+      "id": "ack-lease-parse-failed",
+      "file": "acks/ack-lease-parse-failed.json",
+      "description": "\u00a75.11: a lease this replica could not read. It reports the failure and whatever it still holds; intake must record the failure rather than treating it as `no quarantine`."
+    },
+    {
+      "id": "ack-unknown-keys-ignored",
+      "file": "acks/ack-unknown-keys-ignored.json",
+      "description": "\u00a77b.18: unknown members inside the object are ignored. `mode` is one of them on purpose \u2014 it is the issuer's instruction, and a consumer that read it here would be reporting what the runtime was told instead of what it did."
+    },
+    {
+      "id": "ack-missing-object",
+      "file": "acks/ack-missing-object.json",
+      "description": "\u00a77b.18: an observation with no `runtimeControlAck` at all. This replica said nothing, which is not the same as reporting compliance and must never be counted as any."
+    },
+    {
+      "id": "ack-enforcement-off-refused",
+      "file": "acks/ack-enforcement-off-refused.json",
+      "description": "`off` is not in the pinned enum (\u00a77b.17). It is the value the pre-contract shape used, so accepting it here is how a stale producer goes unnoticed."
+    },
+    {
+      "id": "ack-missing-field-refused",
+      "file": "acks/ack-missing-field-refused.json",
+      "description": "`enforcedControlCount` absent. A missing known member is fatal: defaulting it to 0 would silently rewrite what the replica said."
+    },
+    {
+      "id": "ack-enforcing-without-lease-refused",
+      "file": "acks/ack-enforcing-without-lease-refused.json",
+      "description": "Enforcement claimed with no lease to enforce. \u00a71: a surface may only claim enforcement it can prove, and this one cannot name what it is enforcing."
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "vectorVersion": 1,
+  "id": "lease-lower-revision",
+  "description": "A captured pre-quarantine lease replayed under the same leaseId. It is authentic, in window, and arrives last; it must not lift the live quarantine.",
+  "context": {
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "maxLeaseSeconds": 900,
+    "maxClockSkewSeconds": 60
+  },
+  "trust": [
+    {
+      "issuer": "prometa-platform/runtime-control-lease",
+      "keyId": "runtime-control-lease-key-1",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "allowedArtifactTypes": [
+        "orchestra.runtime-control-lease"
+      ],
+      "allowedOrgIds": [
+        "org-golden"
+      ],
+      "allowedEnvironments": [
+        "staging"
+      ]
+    }
+  ],
+  "runtimes": {
+    "engine": {
+      "enforceableScopes": [
+        "deployment",
+        "org",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden"
+      }
+    },
+    "sdk-host": {
+      "enforceableScopes": [
+        "agent",
+        "deployment",
+        "org",
+        "solution",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden",
+        "solution": "solution-golden",
+        "agent": "agent-golden"
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "apply",
+      "at": "2026-08-11T09:00:01.000Z",
+      "lease": {
+        "artifactType": "orchestra.runtime-control-lease",
+        "leaseVersion": 1,
+        "algorithm": "ed25519",
+        "canonicalization": "signed-payload-json-v1",
+        "issuer": "prometa-platform/runtime-control-lease",
+        "keyId": "runtime-control-lease-key-1",
+        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"scope\":\"deployment\",\"state\":\"quarantined\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"prometa-platform/runtime-control-lease\",\"jti\":\"jti-lease-golden-7\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-golden\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":7,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
+        "signature": "8Q7VO3v2u2+I0ar3eqagErUswNe/BNpZa7EJPQ0q4xKt+kdiirT/fHfGBGO79AzEYmgC8bMn/SSwOMO9NS+MAw==",
+        "signed": true
+      },
+      "expect": {
+        "outcome": "verified",
+        "digest": "sha256:4b1b6fbf1b1a70d230445f38a6993aae310a8b6cb29b6cd15f2ffd8a8f07edad",
+        "leaseId": "lease-golden",
+        "revision": 7,
+        "mode": "enforcing",
+        "staleAction": "continue",
+        "controlCount": 1
+      }
+    },
+    {
+      "action": "apply",
+      "at": "2026-08-11T09:00:40.000Z",
+      "lease": {
+        "artifactType": "orchestra.runtime-control-lease",
+        "leaseVersion": 1,
+        "algorithm": "ed25519",
+        "canonicalization": "signed-payload-json-v1",
+        "issuer": "prometa-platform/runtime-control-lease",
+        "keyId": "runtime-control-lease-key-1",
+        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"scope\":\"deployment\",\"state\":\"serving\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:30.000Z\",\"issuedAt\":\"2026-08-11T09:00:30.000Z\",\"issuer\":\"prometa-platform/runtime-control-lease\",\"jti\":\"jti-lease-golden-6\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-golden\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:30.000Z\",\"orgId\":\"org-golden\",\"revision\":6,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
+        "signature": "uFoWMiJya6FgGlTdTKRihqb/bHXP0K+TP8PZhnlO9twJsXJUciH/F3xykEGw1l8R2feUVNmlx5jKNj1dsph4CA==",
+        "signed": true
+      },
+      "expect": {
+        "outcome": "refused",
+        "errorCode": "control_lease_out_of_order"
+      }
+    },
+    {
+      "action": "evaluate",
+      "at": "2026-08-11T09:00:40.000Z",
+      "expectByRuntime": {
+        "engine": {
+          "admitting": false,
+          "state": "quarantined",
+          "stale": false,
+          "enforcement": "enforcing",
+          "enforcedControlCount": 1
+        },
+        "sdk-host": {
+          "admitting": false,
+          "state": "quarantined",
+          "stale": false,
+          "enforcement": "enforcing",
+          "enforcedControlCount": 1
+        }
+      }
+    }
+  ]
+}

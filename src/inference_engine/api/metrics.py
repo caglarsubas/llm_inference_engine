@@ -63,6 +63,65 @@ async def metrics() -> str:
         value = observer_metrics.get(metric)
         lines.append(f"{name} {value if value is not None else 0}")
 
+    # Runtime-control state as counts and flags only. No subject id, reason
+    # code or lease identifier is rendered here or anywhere else this scrape
+    # can reach; a scraper learns how many controls apply, never to whom.
+    control = app_state.model_plane_runtime_control
+    control_metrics = control.metrics_snapshot() if control is not None else {}
+    lines.append(
+        "# HELP inference_engine_model_plane_runtime_control_enabled "
+        "Signed runtime-control lease seam enabled flag."
+    )
+    lines.append("# TYPE inference_engine_model_plane_runtime_control_enabled gauge")
+    lines.append(
+        f"inference_engine_model_plane_runtime_control_enabled {1 if control is not None else 0}"
+    )
+    for metric, metric_type, help_text in (
+        ("lease_held", "gauge", "This replica has accepted a runtime-control lease."),
+        (
+            "enforcing",
+            "gauge",
+            "This replica matched a quarantine under an enforcing lease.",
+        ),
+        (
+            "stale",
+            "gauge",
+            "A lease is held and its window has passed; the stale action decides "
+            "what stays refused.",
+        ),
+        (
+            "stopping_while_stale",
+            "gauge",
+            "A stale lease is stopping every subject it governs here, not only "
+            "the quarantined ones.",
+        ),
+        ("controls", "gauge", "Controls carried by the last accepted lease."),
+        (
+            "matched_controls",
+            "gauge",
+            "Of those, controls at a scope this replica enforces whose subject it matched.",
+        ),
+        (
+            "ignored_controls",
+            "gauge",
+            "Of those, controls at a scope this replica cannot resolve and ignores.",
+        ),
+        ("enforced_controls", "gauge", "Matched controls in force on this replica now."),
+        ("revision", "gauge", "Revision the last accepted lease carried."),
+        (
+            "lease_seconds_remaining",
+            "gauge",
+            "Seconds until the held lease stops governing.",
+        ),
+        ("leases_accepted_total", "counter", "Runtime-control leases verified and applied."),
+        ("leases_rejected_total", "counter", "Runtime-control refreshes rejected locally."),
+        ("refusals_total", "counter", "Requests refused by runtime control."),
+    ):
+        name = f"inference_engine_model_plane_runtime_control_{metric}"
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {metric_type}")
+        lines.append(f"{name} {control_metrics.get(metric, 0)}")
+
     lines.append("# HELP inference_engine_models_loaded Number of models currently loaded.")
     lines.append("# TYPE inference_engine_models_loaded gauge")
     lines.append(f"inference_engine_models_loaded {len(app_state.manager.loaded_models())}")

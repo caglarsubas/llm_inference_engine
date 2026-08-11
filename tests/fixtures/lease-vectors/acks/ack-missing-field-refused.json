@@ -1,0 +1,24 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-missing-field-refused",
+  "description": "`enforcedControlCount` absent. A missing known member is fatal: defaulting it to 0 would silently rewrite what the replica said.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": "rcl:org-golden:staging:deployment-golden",
+    "revision": 42,
+    "enforcement": "enforcing",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "ignoredControlCount": 1,
+    "stale": false,
+    "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+    "leaseParseFailed": false
+  },
+  "expect": {
+    "outcome": "rejected"
+  }
+}

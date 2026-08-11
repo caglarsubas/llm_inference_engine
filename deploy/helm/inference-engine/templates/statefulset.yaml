@@ -180,6 +180,16 @@ spec:
               value: {{ .Values.observation.timeoutSeconds | quote }}
             - name: MODEL_PLANE_OBSERVATION_JITTER_RATIO
               value: {{ .Values.observation.jitterRatio | quote }}
+            - name: MODEL_PLANE_RUNTIME_CONTROL_ENABLED
+              value: {{ ternary "true" "false" .Values.runtimeControl.enabled | quote }}
+            {{- if .Values.runtimeControl.enabled }}
+            - name: MODEL_PLANE_RUNTIME_CONTROL_TRUST_STORE_FILE
+              value: /config/model_routing_trust.json
+            - name: MODEL_PLANE_RUNTIME_CONTROL_MAX_LEASE_SECONDS
+              value: {{ .Values.runtimeControl.maxLeaseSeconds | quote }}
+            - name: MODEL_PLANE_RUNTIME_CONTROL_STALE_ACTION
+              value: {{ .Values.runtimeControl.staleAction | quote }}
+            {{- end }}
             - name: OTEL_ENABLED
               value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

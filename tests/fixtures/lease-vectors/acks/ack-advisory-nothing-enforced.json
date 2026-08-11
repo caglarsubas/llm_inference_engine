@@ -1,0 +1,40 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-advisory-nothing-enforced",
+  "description": "A live lease under which this replica enforced nothing: \u00a78c makes that `advisory` with a count of 0, and intake must store it as reported rather than inferring enforcement from the lease.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": "rcl:org-golden:staging:deployment-golden",
+    "revision": 42,
+    "enforcement": "advisory",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 0,
+    "ignoredControlCount": 1,
+    "stale": false,
+    "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+    "leaseParseFailed": false
+  },
+  "expect": {
+    "outcome": "accepted",
+    "normalized": {
+      "leaseId": "rcl:org-golden:staging:deployment-golden",
+      "revision": 42,
+      "enforcement": "advisory",
+      "enforceableScopes": [
+        "org",
+        "tenant",
+        "deployment"
+      ],
+      "enforcedControlCount": 0,
+      "ignoredControlCount": 1,
+      "stale": false,
+      "leaseExpiresAt": "2026-08-11T09:05:00.000Z",
+      "leaseParseFailed": false
+    }
+  }
+}

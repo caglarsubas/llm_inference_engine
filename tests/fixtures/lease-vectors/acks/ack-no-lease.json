@@ -1,0 +1,40 @@
+{
+  "vectorVersion": 1,
+  "id": "ack-no-lease",
+  "description": "A replica that has accepted no lease. It still declares the scopes it could resolve, because that describes the runtime and not the lease.",
+  "contract": "runtime-control-lease-contract.md \u00a77b",
+  "observedAt": "2026-08-11T09:00:01.000Z",
+  "acknowledgement": {
+    "leaseId": null,
+    "revision": null,
+    "enforcement": "advisory",
+    "enforceableScopes": [
+      "org",
+      "tenant",
+      "deployment"
+    ],
+    "enforcedControlCount": 0,
+    "ignoredControlCount": 0,
+    "stale": false,
+    "leaseExpiresAt": null,
+    "leaseParseFailed": false
+  },
+  "expect": {
+    "outcome": "accepted",
+    "normalized": {
+      "leaseId": null,
+      "revision": null,
+      "enforcement": "advisory",
+      "enforceableScopes": [
+        "org",
+        "tenant",
+        "deployment"
+      ],
+      "enforcedControlCount": 0,
+      "ignoredControlCount": 0,
+      "stale": false,
+      "leaseExpiresAt": null,
+      "leaseParseFailed": false
+    }
+  }
+}

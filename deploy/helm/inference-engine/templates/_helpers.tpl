@@ -115,6 +115,12 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if not (has (int .Values.observation.version) (list 1 2)) -}}
 {{- fail "observation.version must be 1 or 2" -}}
 {{- end -}}
+{{- if and .Values.runtimeControl.enabled (not .Values.observation.enabled) -}}
+{{- fail "runtimeControl.enabled requires observation.enabled=true: the observation reply is its only channel" -}}
+{{- end -}}
+{{- if and .Values.runtimeControl.enabled (not (has .Values.runtimeControl.staleAction (list "lease" "continue" "stop"))) -}}
+{{- fail "runtimeControl.staleAction must be lease, continue, or stop" -}}
+{{- end -}}
 {{- if and .Values.otel.enabled (not .Values.otel.endpoint) -}}
 {{- fail "otel.endpoint is required when otel.enabled=true" -}}
 {{- end -}}

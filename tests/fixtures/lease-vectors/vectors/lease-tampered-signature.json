@@ -1,0 +1,78 @@
+{
+  "vectorVersion": 1,
+  "id": "lease-tampered-signature",
+  "description": "lease-valid-v1 with one flipped signature bit.",
+  "context": {
+    "expectedOrgId": "org-golden",
+    "expectedEnvironment": "staging",
+    "maxLeaseSeconds": 900,
+    "maxClockSkewSeconds": 60
+  },
+  "trust": [
+    {
+      "issuer": "prometa-platform/runtime-control-lease",
+      "keyId": "runtime-control-lease-key-1",
+      "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "allowedArtifactTypes": [
+        "orchestra.runtime-control-lease"
+      ],
+      "allowedOrgIds": [
+        "org-golden"
+      ],
+      "allowedEnvironments": [
+        "staging"
+      ]
+    }
+  ],
+  "runtimes": {
+    "engine": {
+      "enforceableScopes": [
+        "deployment",
+        "org",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden"
+      }
+    },
+    "sdk-host": {
+      "enforceableScopes": [
+        "agent",
+        "deployment",
+        "org",
+        "solution",
+        "tenant"
+      ],
+      "subjects": {
+        "org": "org-golden",
+        "tenant": "tenant-golden",
+        "deployment": "deployment-golden",
+        "solution": "solution-golden",
+        "agent": "agent-golden"
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "apply",
+      "at": "2026-08-11T09:00:01.000Z",
+      "lease": {
+        "artifactType": "orchestra.runtime-control-lease",
+        "leaseVersion": 1,
+        "algorithm": "ed25519",
+        "canonicalization": "signed-payload-json-v1",
+        "issuer": "prometa-platform/runtime-control-lease",
+        "keyId": "runtime-control-lease-key-1",
+        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"reasonCode\":\"incident-4711\",\"scope\":\"deployment\",\"state\":\"quarantined\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"prometa-platform/runtime-control-lease\",\"jti\":\"jti-lease-golden-6\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-golden\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":6,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
+        "signature": "zZ7GRKDanyfQ6nFxafD8h0KEAUY/iKneKbNfeTLFnvSfBskh19gpb0btisv2Chw1/gOE7pMiGaroiXWIWwvtCA==",
+        "signed": true
+      },
+      "expect": {
+        "outcome": "refused",
+        "errorCode": "invalid_signature"
+      }
+    }
+  ]
+}

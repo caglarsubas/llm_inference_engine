@@ -80,6 +80,7 @@ async def rerank(
     req: RerankRequest,
     identity: Identity = Depends(require_identity),
 ) -> RerankResponse:
+    _model_routing.enforce_runtime_control(identity=identity)
     _model_routing.reject_unsupported_governed_workload(
         identity=identity,
         workload="rerank.run",
