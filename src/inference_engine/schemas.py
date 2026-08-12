@@ -768,3 +768,103 @@ class ModelCatalog(BaseModel):
     object: Literal["model_catalog"] = "model_catalog"
     data: list[ModelCatalogEntry]
     unavailable: list[UnavailableModel] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Responses API (/v1/responses)
+#
+# A stateless subset. The engine stores nothing between requests, so the
+# stateful half of the API (``store``, ``previous_response_id``, background
+# runs) is refused with a typed error rather than accepted and ignored —
+# a client that believes its turn was persisted would build a broken thread
+# on top of a lie. ``api/responses.py`` translates these onto the chat models
+# so the priced request spine stays the single implementation.
+# ---------------------------------------------------------------------------
+
+
+class ResponsesContentPart(BaseModel):
+    # ``output_text`` is accepted on input because that is what a caller gets
+    # back in ``output`` — echoing a prior turn into ``input`` is the stateless
+    # way to continue a conversation without ``previous_response_id``.
+    type: Literal["input_text", "output_text"]
+    text: str = ""
+
+
+class ResponsesInputMessage(BaseModel):
+    type: Literal["message"] = "message"
+    # ``developer`` is the Responses spelling of ``system``.
+    role: Literal["system", "developer", "user", "assistant"]
+    content: str | list[ResponsesContentPart]
+
+
+class ResponsesTextFormat(BaseModel):
+    type: Literal["text", "json_object"] = "text"
+
+
+class ResponsesTextConfig(BaseModel):
+    format: ResponsesTextFormat | None = None
+
+
+class ResponsesRequest(BaseModel):
+    model: str
+    input: str | list[ResponsesInputMessage]
+    # Prepended as a system turn. OpenAI documents this as replacing prior
+    # instructions when continuing a stored response; with no stored state
+    # there is nothing to replace.
+    instructions: str | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    stream: bool = False
+    text: ResponsesTextConfig | None = None
+    metadata: dict[str, str] | None = None
+    user: str | None = None
+    # Refused, not served. Declared so the refusal is a typed 400 naming the
+    # parameter instead of a silent drop by pydantic's default extra="ignore".
+    store: bool = False
+    previous_response_id: str | None = None
+    background: bool = False
+
+
+class ResponsesOutputText(BaseModel):
+    type: Literal["output_text"] = "output_text"
+    text: str
+    annotations: list[dict] = Field(default_factory=list)
+
+
+class ResponsesOutputMessage(BaseModel):
+    type: Literal["message"] = "message"
+    id: str
+    status: Literal["completed", "incomplete"] = "completed"
+    role: Literal["assistant"] = "assistant"
+    content: list[ResponsesOutputText]
+
+
+class ResponsesUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+class ResponsesIncompleteDetails(BaseModel):
+    reason: str
+
+
+class ResponsesResponse(BaseModel):
+    id: str
+    object: Literal["response"] = "response"
+    created_at: int
+    model: str
+    status: Literal["completed", "incomplete"] = "completed"
+    output: list[ResponsesOutputMessage]
+    usage: ResponsesUsage
+    incomplete_details: ResponsesIncompleteDetails | None = None
+    instructions: str | None = None
+    metadata: dict[str, str] | None = None
+    # Same engine extension fields the other response models carry, so
+    # provenance reads identically whichever endpoint served the request.
+    request_key_source: str = "local-inference"
+    fallback_from_model: str | None = None
+    fallback_from_backend: str | None = None
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None

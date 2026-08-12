@@ -16,6 +16,7 @@ from .api import (
     metrics,
     models,
     rerank,
+    responses,
     tokenize,
 )
 from .api._models_snapshot import run_models_snapshot_refresher
@@ -63,7 +64,16 @@ configure_tracing()
 # Priced inference surfaces, and the only paths that produce a billing record.
 # /v1/rerank is excluded on purpose: it has no routing or pricing integration
 # and already sits outside CERTIFIED_MODEL_WORKLOAD_SURFACE.
-_USAGE_LEDGER_PATHS = {"/v1/chat/completions", "/v1/completions", "/v1/embeddings"}
+# Billing is gated on this exact set: the ledger middleware keys on
+# ``request.url.path``, so a priced route missing from here serves traffic and
+# invoices nothing. ``/v1/responses`` delegates to the chat handler but keeps
+# its own path, so it does not inherit chat's entry — it needs its own.
+_USAGE_LEDGER_PATHS = {
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/embeddings",
+    "/v1/responses",
+}
 
 _READINESS_EXEMPT_PATHS = {"/v1/health", "/v1/ready", "/v1/metrics"}
 # Inference paths that don't live under /v1/. ``/tokenize`` and ``/detokenize``
@@ -535,6 +545,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(metrics.router, tags=["metrics"])
 app.include_router(models.router, tags=["models"])
 app.include_router(chat.router, tags=["chat"])
+app.include_router(responses.router, tags=["responses"])
 app.include_router(completions.router, tags=["completions"])
 app.include_router(embeddings.router, tags=["embeddings"])
 app.include_router(rerank.router, tags=["rerank"])
