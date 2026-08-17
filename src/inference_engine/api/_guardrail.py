@@ -32,7 +32,6 @@ guardrail fault never escapes as an unhandled exception.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,6 +51,7 @@ from ..guardrail import (
     client_fault_outcome,
 )
 from ..observability import get_logger, span
+from ..request_identity import new_engine_request_id
 from ..schemas import ChatMessage, chat_content_text
 from .state import app_state
 
@@ -80,42 +80,47 @@ class StreamGuardStep:
 
 
 def new_request_id(request: Any = None) -> str:
-    """The correlation id a guardrail evaluation is tagged with.
+    """The identifier kernel evidence joins this evaluation on.
 
-    THE ATTRIBUTE NAME IS LOAD-BEARING. ``main.py``'s outermost middleware
-    stores the minted id as ``request.state.engine_request_id`` and returns it
-    as the ``x-request-id`` response header. It was called
-    ``request.state.request_id`` until #93 split the server-owned id from the
-    tenant-runtime identities, and this reader kept naming the old attribute —
-    so this returned a *fresh* uuid on every guarded request, and the id the
-    guardrail service and the span carried was one nobody else ever held.
-    Reading the attribute the middleware actually writes is what fixes that.
+    #94 left this open: the span key is ``prometa.runtime.request_id``, but the
+    value returned was the engine's own id, and which of the two the kernel
+    joins against had not been checked end to end. Checked now, in
+    orchestra-python-sdk, and it is the runtime's. ``RuntimeKernel.execute``
+    runs one request under one id and spends that id twice — it binds it as
+    ``prometa.runtime.request_id`` on its ``runtime.guard.<stage>`` events
+    (``kernel.py``, via ``runtime_release_identity_attributes``), and it passes
+    it to the model call, where the gateway sends it here as
+    ``x-orchestra-runtime-request-id`` (``model_gateway.py``). The engine id
+    never crosses back to the kernel, so it cannot appear on either side of the
+    join; #93 already captures the value that can into
+    ``request.state.runtime_request_id``. That is what this prefers.
 
-    OPEN QUESTION, deliberately not settled here: whether the right value is
-    the engine id or the tenant runtime's. The span key is
-    ``prometa.runtime.request_id`` and #93 captures
-    ``x-orchestra-runtime-request-id`` into ``request.state.runtime_request_id``
-    for exactly that identity, which argues for the runtime's; the engine id is
-    what the caller gets back and what the ledger uses. This function returns
-    the engine id — the value this code has always *meant* to return — and no
-    claim is made here about which one the kernel's ``runtime.guard.<stage>``
-    events join against, because that has not been checked end to end.
+    The engine request id stands in for a caller that sent none — a direct
+    OpenAI-compatible client with no runtime above it. Nothing upstream joins
+    on that value, but it is the one the caller was handed back in
+    ``x-request-id``, so the evaluation stays tied to a request someone can
+    look up rather than to an id that appears nowhere else.
 
-    The fallback stays for callers that reach the guardrail without a request
+    The mint stays for callers that reach the guardrail without a request
     object at all (the direct-call paths in tests): an id nobody can join on is
     still better than an empty one, which would join on everything.
     """
     state = getattr(request, "state", None)
-    request_id = getattr(state, "engine_request_id", "") if state is not None else ""
-    return request_id or f"req_{uuid.uuid4().hex}"
+    if state is not None:
+        request_id = getattr(state, "runtime_request_id", None) or getattr(
+            state, "engine_request_id", None
+        )
+        if request_id:
+            return request_id
+    return new_engine_request_id()
 
 
 def _span_attrs(outcome: GuardrailOutcome, identity: Identity, request_id: str) -> dict:
     client = app_state.guardrail
     attrs: dict = {
         # The kernel binds this exact key on its ``runtime.guard.<stage>``
-        # events, so the key has to match. Whether the VALUE lines up is the
-        # open question in :func:`new_request_id`.
+        # events; checklist E4's join is on the value, so both have to match.
+        # Which value that is, and why, is :func:`new_request_id`.
         "prometa.runtime.request_id": request_id,
         "prometa.guardrail.stage": outcome.stage,
         "prometa.guardrail.verdict": outcome.verdict,

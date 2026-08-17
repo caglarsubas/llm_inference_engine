@@ -1503,10 +1503,42 @@ def test_the_span_carries_the_request_id_and_the_server_skew_count(
     )
 
     attrs = _guardrail_spans(exporter)[0].attributes
-    # The kernel binds the same key. What this pins is that the value is an id
-    # someone else actually holds — the engine id the caller got back — and not
-    # the per-evaluation uuid this used to mint. Which of the engine's two ids
-    # the kernel joins on is the open question in ``new_request_id``.
+    # The kernel binds the same key. This request carries no runtime id, so
+    # what it pins is the fallback: the engine id the caller got back, not the
+    # per-evaluation uuid this used to mint and not the inbound x-request-id.
+    # The runtime id the kernel actually joins on is the test below.
     assert attrs["prometa.runtime.request_id"] == response.headers["x-request-id"]
     assert attrs["prometa.runtime.request_id"] != "req-join"
     assert attrs["prometa.guardrail.request_fields_dropped_by_server"] == 3
+
+
+def test_a_runtime_request_id_wins_the_join_over_the_engines_own_hop(
+    monkeypatch, exporter, no_model
+) -> None:
+    """The kernel binds ``prometa.runtime.request_id`` to the id it executes under.
+
+    That id reaches this engine as ``x-orchestra-runtime-request-id`` and
+    nowhere else, so it — not the engine's own per-hop id, which never crosses
+    back to the kernel — is what has to appear under the key. This is the
+    question ``new_request_id`` left open in #94, and binding the engine id
+    left E4 joining on a value the kernel never emitted.
+    """
+    seen = _install(monkeypatch, _static(_response(verdict="deny")))
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "stub:1", "messages": [{"role": "user", "content": "hi"}]},
+        headers={
+            "x-orchestra-runtime-request-id": "runtime-req-1",
+            # A generic client may still send this; it is not a candidate id.
+            "x-request-id": "client-supplied",
+        },
+    )
+
+    attrs = _guardrail_spans(exporter)[0].attributes
+    assert attrs["prometa.runtime.request_id"] == "runtime-req-1"
+    # The guardrail service's own evidence has to land on the same value.
+    assert seen[0]["requestId"] == "runtime-req-1"
+    # The engine id stays server-owned, and separate from the join.
+    assert response.headers["x-request-id"] not in {"client-supplied", "runtime-req-1"}
