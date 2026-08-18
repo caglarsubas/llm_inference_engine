@@ -58,6 +58,12 @@ class OllamaHttpRegistry:
         self._endpoint = endpoint.rstrip("/") if endpoint else ""
         self._cache: dict[str, ModelDescriptor] = {}
         self._cache_expires_at: float = 0.0
+        # Trained context window per blob digest. Keyed by digest rather than
+        # by name because the window is a property of the weights: a re-pull
+        # that changes the digest re-asks, and a plain TTL expiry does not.
+        # Without this the 30 s refresh would re-issue /api/show for every
+        # model forever, to learn a number that cannot have changed.
+        self._context_lengths: dict[str, int] = {}
 
     @property
     def endpoint(self) -> str:
@@ -92,6 +98,57 @@ class OllamaHttpRegistry:
             log.warning("ollama_http.tags_malformed", endpoint=self._endpoint, error=str(exc))
             return None
         return list(payload.get("models") or [])
+
+    def _fetch_context_length(self, qname: str) -> int | None:
+        """Trained context window for one model, via ``POST /api/show``.
+
+        ``/api/tags`` does not carry it, so without this call every
+        ollama-served model reports a null window in ``/v1/models`` while
+        GGUF-served ones report a real one — the same model looks different
+        depending on which backend happens to serve it.
+
+        The window lives under ``model_info`` as ``<arch>.context_length``
+        (e.g. ``qwen35.context_length``). We read ``general.architecture`` to
+        build that key and fall back to a suffix scan, because the prefix is
+        the GGUF architecture string and not always the name we know the
+        model by. Any failure returns None: an advisory field is not worth
+        failing discovery over.
+        """
+        if not self._endpoint:
+            return None
+        url = self._endpoint + "/api/show"
+        payload = json.dumps({"model": qname}).encode("utf-8")
+        request = urllib.request.Request(
+            url, data=payload, headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            log.warning("ollama_http.show_fetch_failed", model=qname, error=str(exc))
+            return None
+
+        info = body.get("model_info")
+        if not isinstance(info, dict):
+            return None
+        arch = info.get("general.architecture")
+        candidates = []
+        if isinstance(arch, str) and arch:
+            candidates.append(f"{arch}.context_length")
+        candidates.extend(k for k in info if k.endswith(".context_length"))
+        for key in candidates:
+            value = info.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+        return None
+
+    def _context_length_for(self, qname: str, digest: str) -> int | None:
+        if digest and digest in self._context_lengths:
+            return self._context_lengths[digest]
+        value = self._fetch_context_length(qname)
+        if value is not None and digest:
+            self._context_lengths[digest] = value
+        return value
 
     def _refresh(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -140,6 +197,11 @@ class OllamaHttpRegistry:
                     reason="cloud_alias_no_local_weights",
                 )
                 continue
+            params: dict = {"model_id": qname, "digest": digest}
+            context_length = self._context_length_for(qname, digest)
+            if context_length is not None:
+                params["context_length"] = context_length
+
             desc = ModelDescriptor(
                 name=model_name,
                 tag=tag,
@@ -150,7 +212,7 @@ class OllamaHttpRegistry:
                 # ``endpoint``.
                 model_path=Path(f"ollama_http://{self._endpoint}/{qname}"),
                 format="ollama_http",
-                params={"model_id": qname, "digest": digest},
+                params=params,
                 size_bytes=size,
                 endpoint=self._endpoint,
             )
