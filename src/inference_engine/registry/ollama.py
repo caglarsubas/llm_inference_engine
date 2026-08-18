@@ -183,6 +183,7 @@ class OllamaRegistry:
         template: str | None = None
         system: str | None = None
         params: dict = {}
+        projector_path: Path | None = None
 
         for layer in manifest.get("layers") or []:
             media = layer.get("mediaType", "")
@@ -194,6 +195,8 @@ class OllamaRegistry:
             if kind == "model":
                 gguf_path = self._blob_path(digest)
                 size_bytes = int(layer.get("size", 0))
+            elif kind == "projector":
+                projector_path = self._blob_path(digest)
             elif kind == "template":
                 template = self._read_blob_text(digest)
             elif kind == "system":
@@ -220,6 +223,17 @@ class OllamaRegistry:
                 detail=str(gguf_path),
             )
             return None
+
+        if projector_path is not None and projector_path.exists():
+            # Multimodal manifest (e.g. ``qwen3.8:27b``). Our in-process
+            # llama.cpp adapter has no projector support, so a descriptor
+            # routed down the gguf path serves this model text-only — the
+            # vision half disappears with no error. Record it rather than
+            # drop it silently: whoever picks the backend needs to know the
+            # weights carry a projector the gguf path will ignore, and the
+            # ollama_http fallback (where ollama owns the projector) is the
+            # only source that serves it whole.
+            params = {**params, "projector_path": str(projector_path)}
 
         return ModelDescriptor(
             name=model,
