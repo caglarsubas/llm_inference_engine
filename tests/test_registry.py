@@ -102,3 +102,53 @@ def test_n_ctx_train_returns_zero_when_unknown() -> None:
     assert _n_ctx_train_from_metadata({}) == 0
     assert _n_ctx_train_from_metadata({"llama.context_length": "not-a-number"}) == 0
     assert _n_ctx_train_from_metadata({"llama.context_length": "0"}) == 0
+
+
+def _make_multimodal_store(root: Path) -> Path:
+    """A manifest carrying a projector layer, the shape ``qwen3.8:27b`` ships."""
+    blobs = root / "blobs"
+    manifests = root / "manifests" / "registry.ollama.ai" / "library" / "seer"
+    blobs.mkdir(parents=True)
+    manifests.mkdir(parents=True)
+
+    model_digest, _ = _write_blob(blobs, b"FAKE GGUF BYTES")
+    projector_digest, projector_path = _write_blob(blobs, b"FAKE PROJECTOR BYTES")
+
+    manifest = {
+        "schemaVersion": 2,
+        "layers": [
+            {"mediaType": "application/vnd.ollama.image.model", "digest": model_digest, "size": 15},
+            {
+                "mediaType": "application/vnd.ollama.image.projector",
+                "digest": projector_digest,
+                "size": 20,
+            },
+        ],
+    }
+    (manifests / "27b").write_text(json.dumps(manifest))
+    return projector_path
+
+
+def test_projector_layer_is_surfaced_not_dropped(tmp_path: Path) -> None:
+    """A multimodal manifest must not look identical to a text-only one.
+
+    The in-process llama.cpp adapter cannot use an Ollama projector, so a
+    descriptor routed down the gguf path serves such a model text-only with
+    no error. Recording the projector keeps that loss visible instead of
+    letting vision disappear silently.
+    """
+    projector_path = _make_multimodal_store(tmp_path)
+    registry = OllamaRegistry(tmp_path)
+
+    desc = registry.get("seer:27b")
+    assert desc is not None
+    assert desc.params.get("projector_path") == str(projector_path)
+
+
+def test_text_only_manifest_records_no_projector(tmp_path: Path) -> None:
+    _make_store(tmp_path)
+    desc = OllamaRegistry(tmp_path).get("demo:1b")
+    assert desc is not None
+    assert "projector_path" not in desc.params
+    # The params blob must still survive alongside the new key.
+    assert desc.params.get("temperature") == 0.5
