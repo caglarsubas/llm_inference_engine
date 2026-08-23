@@ -16,11 +16,11 @@
 #   install     — render plists, copy to LaunchAgents/, load + start.
 #                 Idempotent: re-running re-renders and reloads.
 #   uninstall   — bootout + remove the installed plists.
-#   start       — kickstart both agents.
+#   start       — kickstart the agents.
 #   stop        — bootout (stops without uninstalling).
 #   restart     — stop + start (re-reads the plist).
 #   status      — print agent state, PID, last exit, log paths.
-#   logs ENGINE|OLLAMA   — tail -f the matching log stream.
+#   logs ENGINE|OLLAMA|ROTATE   — tail -f the matching log stream.
 #
 # Design notes
 # ------------
@@ -45,8 +45,13 @@ INSTALL_DIR="$HOME/Library/LaunchAgents"
 
 ENGINE_LABEL="com.prometa.inference-engine"
 OLLAMA_LABEL="com.prometa.ollama"
+# Periodic one-shot rather than a daemon: the agent logs live in /tmp with no
+# rotation, and unbounded growth there is both a disk risk and a retention one
+# (/tmp survives a single reboot, so incident history is the first thing lost).
+ROTATE_LABEL="com.prometa.log-rotate"
 ENGINE_PLIST="$INSTALL_DIR/$ENGINE_LABEL.plist"
 OLLAMA_PLIST="$INSTALL_DIR/$OLLAMA_LABEL.plist"
+ROTATE_PLIST="$INSTALL_DIR/$ROTATE_LABEL.plist"
 
 # launchctl in modern macOS prefers the GUI domain for user agents.
 USER_DOMAIN="gui/$(id -u)"
@@ -194,12 +199,15 @@ cmd_install() {
     log "Rendering plists with project=$PROJECT_DIR"
     render_plist "$ENGINE_LABEL.plist" "$ENGINE_PLIST"
     render_plist "$OLLAMA_LABEL.plist" "$OLLAMA_PLIST"
+    render_plist "$ROTATE_LABEL.plist" "$ROTATE_PLIST"
     log "Loading agents under $USER_DOMAIN"
     bootstrap_one "$ENGINE_PLIST"
     bootstrap_one "$OLLAMA_PLIST"
+    bootstrap_one "$ROTATE_PLIST"
     log "Installed.  Logs:"
     note "    /tmp/prometa-inference-engine.{out,err}.log"
     note "    /tmp/prometa-ollama.{out,err}.log"
+    note "    /tmp/prometa-logrotate.{out,err}  (rotator's own output)"
     log "Endpoints:"
     note "    engine: http://127.0.0.1:8080/v1"
     note "    ollama: http://127.0.0.1:11434"
@@ -209,8 +217,9 @@ cmd_uninstall() {
     require_macos
     bootout_if_loaded "$ENGINE_PLIST"
     bootout_if_loaded "$OLLAMA_PLIST"
-    rm -f "$ENGINE_PLIST" "$OLLAMA_PLIST"
-    log "Uninstalled engine + ollama launchd agents."
+    bootout_if_loaded "$ROTATE_PLIST"
+    rm -f "$ENGINE_PLIST" "$OLLAMA_PLIST" "$ROTATE_PLIST"
+    log "Uninstalled engine + ollama + log-rotate launchd agents."
 }
 
 cmd_start() {
@@ -218,6 +227,11 @@ cmd_start() {
     [[ -f "$ENGINE_PLIST" ]] || { err "Not installed — run '$0 install' first."; exit 1; }
     bootstrap_one "$ENGINE_PLIST"
     bootstrap_one "$OLLAMA_PLIST"
+    # Guarded, unlike the two above: an install that predates this agent has no
+    # rotate plist to bootstrap, and `start` should skip it rather than fail.
+    if [[ -f "$ROTATE_PLIST" ]]; then
+        bootstrap_one "$ROTATE_PLIST"
+    fi
     log "Started."
 }
 
@@ -225,6 +239,7 @@ cmd_stop() {
     require_macos
     bootout_if_loaded "$ENGINE_PLIST"
     bootout_if_loaded "$OLLAMA_PLIST"
+    bootout_if_loaded "$ROTATE_PLIST"
     log "Stopped (plists remain installed; '$0 start' to resume)."
 }
 
@@ -235,7 +250,7 @@ cmd_restart() {
 
 cmd_status() {
     require_macos
-    for label in "$ENGINE_LABEL" "$OLLAMA_LABEL"; do
+    for label in "$ENGINE_LABEL" "$OLLAMA_LABEL" "$ROTATE_LABEL"; do
         printf '\n=== %s ===\n' "$label"
         if launchctl print "$USER_DOMAIN/$label" 2>/dev/null \
             | grep -E '^\s+(state|pid|last exit code|program)\s*=' ; then
@@ -255,7 +270,8 @@ cmd_logs() {
     case "$target" in
         engine|ENGINE) tail -F /tmp/prometa-inference-engine.{out,err}.log ;;
         ollama|OLLAMA) tail -F /tmp/prometa-ollama.{out,err}.log ;;
-        *) err "logs takes 'engine' or 'ollama'"; exit 2 ;;
+        rotate|ROTATE) tail -F /tmp/prometa-logrotate.{out,err} ;;
+        *) err "logs takes 'engine', 'ollama' or 'rotate'"; exit 2 ;;
     esac
 }
 
