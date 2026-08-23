@@ -16,6 +16,7 @@
   Path/value substitutions performed at install time:
 
       __PROJECT_DIR__    absolute path to the repository root.
+      __VENV_PYTHON__    absolute path to the project venv's python3.
       __HOME__           the installing user's home directory.
 -->
 <plist version="1.0">
@@ -23,10 +24,15 @@
     <key>Label</key>
     <string>com.prometa.log-rotate</string>
 
+    <!-- Run under the venv interpreter, not /bin/bash. When the repository
+         lives under a TCC-protected directory (~/Desktop, ~/Documents) the
+         shell launchd spawns cannot even read a script there — it fails with
+         `Operation not permitted` and exit 126. The venv interpreter already
+         holds the Full Disk Access grant the engine agent depends on. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>__PROJECT_DIR__/scripts/rotate-logs.sh</string>
+        <string>__VENV_PYTHON__</string>
+        <string>__PROJECT_DIR__/scripts/rotate_logs.py</string>
     </array>
 
     <key>WorkingDirectory</key>
