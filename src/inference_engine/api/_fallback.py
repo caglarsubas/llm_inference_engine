@@ -113,27 +113,37 @@ async def resolve_openrouter_fallback(
         error_type=error_type,
     )
     for candidate in fallback_candidates(model_name):
-        try:
-            with span(
-                "model.fallback.acquire",
-                model=candidate,
-                **span_attrs(info),
-                **(intent_attrs or {}),
-                **{
-                    "prometa.tenant": identity.tenant,
-                    "prometa.key_id": identity.key_id,
-                },
-            ) as s:
+        with span(
+            "model.fallback.acquire",
+            model=candidate,
+            **span_attrs(info),
+            **(intent_attrs or {}),
+            **{
+                "prometa.tenant": identity.tenant,
+                "prometa.key_id": identity.key_id,
+            },
+        ) as s:
+            try:
                 fallback_adapter, desc = await app_state.manager.get(candidate)
-                s.bind(
-                    **{
-                        "llm.request.key_source": request_key_source(fallback_adapter),
-                        "llm.fallback.to_model": desc.qualified_name,
-                        "llm.fallback.to_backend": fallback_adapter.backend_name,
-                    }
-                )
-        except ModelNotFoundError:
-            continue
+            except ModelNotFoundError:
+                # A miss is the *designed* outcome for the speculative
+                # ``<base>:openrouter`` candidate, which usually is not a
+                # registered model. Letting it escape the span recorded every
+                # such probe as ``span.error`` at ERROR level with an OTel
+                # error status, which reads exactly like a fallback that
+                # failed — indistinguishable in the logs from the real thing.
+                # Resolve it as a result instead and let the loop try the next
+                # candidate.
+                s.bind(**{"llm.fallback.candidate_resolved": False})
+                continue
+            s.bind(
+                **{
+                    "llm.request.key_source": request_key_source(fallback_adapter),
+                    "llm.fallback.to_model": desc.qualified_name,
+                    "llm.fallback.to_backend": fallback_adapter.backend_name,
+                    "llm.fallback.candidate_resolved": True,
+                }
+            )
 
         if request_key_source(fallback_adapter) != OPENROUTER_KEY_SOURCE:
             log.warning(

@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import HTTPException
+from opentelemetry.trace import StatusCode
 
 from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
 from inference_engine.adapters.base import (
@@ -175,6 +176,50 @@ async def test_blocking_timeout_uses_openrouter_fallback(monkeypatch: pytest.Mon
     assert response.fallback_reason == "generation_timeout"
     assert response.fallback_error_type == "GenerationTimeoutError"
     assert response.choices[0].message.content == "answered by OpenRouter"
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_that_does_not_exist_is_not_recorded_as_a_span_error(
+    monkeypatch: pytest.MonkeyPatch,
+    _session_exporter,
+) -> None:
+    """Trying a candidate that misses is normal control flow, not a fault.
+
+    ``fallback_candidates`` returns the configured model first and a
+    speculative ``<base>:openrouter`` second, so a miss on the way to a
+    successful fallback is the designed path. The miss used to escape the
+    ``model.fallback.acquire`` span, which recorded it at ERROR level with an
+    OTel error status — indistinguishable in the logs from a fallback that
+    actually failed, and the reason a working fallback path was read as broken
+    during a health check.
+    """
+    _install_openrouter_fallback(monkeypatch)
+    # First candidate resolves to nothing; the same-name one still does.
+    monkeypatch.setattr(settings, "openrouter_fallback_model", "missing:openrouter")
+    _session_exporter.clear()
+
+    response = await _blocking_response(
+        _LocalTimeoutAdapter(),
+        "gemma4:26b",
+        [ChatMessage(role="user", content="score this answer")],
+        GenerationParams(),
+        Identity(tenant="dev", key_id="sk-x"),
+    )
+
+    # The miss did not stop the fallback from landing.
+    assert response.model == "gemma4:openrouter"
+
+    acquires = [
+        s for s in _session_exporter.get_finished_spans() if s.name == "model.fallback.acquire"
+    ]
+    assert [s.attributes.get("model") for s in acquires] == [
+        "missing:openrouter",
+        "gemma4:openrouter",
+    ]
+    missed, resolved = acquires
+    assert missed.status.status_code is not StatusCode.ERROR
+    assert missed.attributes["llm.fallback.candidate_resolved"] is False
+    assert resolved.attributes["llm.fallback.candidate_resolved"] is True
 
 
 @pytest.mark.asyncio
