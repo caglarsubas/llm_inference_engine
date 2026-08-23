@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Tunnel probe launchd template — installed by scripts/share-service.sh.
+
+  Measures the endpoint callers actually reach. Every other health signal in
+  this deployment is taken from inside the host, which is why 402 ngrok session
+  drops over one eleven-day window left no trace anywhere: from localhost the
+  engine was up the whole time, and it was right.
+
+  Unlike the engine and ngrok agents this is not a daemon — it is a periodic
+  one-shot. ``StartInterval`` re-runs it and ``KeepAlive=false`` lets it exit
+  between runs, so a probe that hangs cannot wedge the agent: launchd simply
+  runs it again on the next tick.
+
+  Cost note: each run is one real request through the tunnel and counts against
+  the ngrok plan's request budget (~43k/month at 60 s). Widen StartInterval if
+  that matters more than resolution.
+
+  Path/value substitutions performed at install time:
+
+      __PROJECT_DIR__    absolute path to the repository root.
+      __VENV_PYTHON__    absolute path to the project venv's python3.
+      __HOME__           the installing user's home directory.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.prometa.tunnel-probe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__VENV_PYTHON__</string>
+        <string>__PROJECT_DIR__/scripts/tunnel_probe.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <!-- Unauthenticated, so a healthy engine answers 200 on /v1/health
+             without a key. Point this at a different path only if that
+             changes. -->
+        <key>PROMETA_TUNNEL_HEALTH_PATH</key>
+        <string>/v1/health</string>
+        <!-- Generous relative to a warm tunnel (~0.8 s) because ngrok's free
+             tier parks an idle tunnel: the first request after a quiet spell
+             has been observed taking 20 s. A tighter timeout would report
+             that as an outage. -->
+        <key>PROMETA_TUNNEL_TIMEOUT</key>
+        <string>30</string>
+    </dict>
+
+    <!-- Periodic one-shot: run at load, then every StartInterval seconds. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <!-- The probe writes one line per run; a state change is marked CHANGE,
+         so `grep CHANGE` on this file is the outage history. -->
+    <key>StandardOutPath</key>
+    <string>/tmp/prometa-tunnel-probe.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/prometa-tunnel-probe.err.log</string>
+</dict>
+</plist>

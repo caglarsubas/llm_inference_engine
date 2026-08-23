@@ -22,12 +22,13 @@
 #                                     Idempotent: re-running re-renders.
 #                                     --domain may be omitted if NGROK_DOMAIN
 #                                     is set; --port defaults to PORT/.env/8080.
-#   uninstall   bootout + remove the installed plist.
-#   start       kickstart the agent.
+#   uninstall   bootout + remove the installed plists.
+#   start       kickstart the agents.
 #   stop        bootout (stops without uninstalling).
 #   restart     stop + start (re-reads the plist).
-#   status      print agent state, PID, last exit, the public URL, log paths.
-#   logs        tail -F the tunnel logs.
+#   status      print agent state, PID, last exit, the public URL, measured
+#               availability from the probe, and log paths.
+#   logs [tunnel|probe]   tail -F the matching log stream (default tunnel).
 #
 # Examples
 #   ./scripts/share-service.sh install --domain my-name.ngrok-free.dev
@@ -43,6 +44,12 @@ INSTALL_DIR="$HOME/Library/LaunchAgents"
 
 LABEL="com.prometa.ngrok-tunnel"
 PLIST="$INSTALL_DIR/$LABEL.plist"
+# The tunnel is the one hop no engine-side signal can see: over one eleven-day
+# window it dropped its session 402 times while /v1/health reported ok
+# throughout, because from localhost it was. This probes the public URL end to
+# end and records what a caller on the internet would have got.
+PROBE_LABEL="com.prometa.tunnel-probe"
+PROBE_PLIST="$INSTALL_DIR/$PROBE_LABEL.plist"
 USER_DOMAIN="gui/$(id -u)"
 
 err()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -117,6 +124,29 @@ bootstrap_one() {
     launchctl kickstart -k "$USER_DOMAIN/$LABEL"
 }
 
+render_probe_plist() {
+    local venv_python="$PROJECT_DIR/.venv/bin/python3"
+    [[ -x "$venv_python" ]] || venv_python="$(command -v python3)"
+    sed \
+        -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+        -e "s|__VENV_PYTHON__|$venv_python|g" \
+        -e "s|__HOME__|$HOME|g" \
+        "$TEMPLATE_DIR/$PROBE_LABEL.plist" > "$PROBE_PLIST"
+}
+
+probe_bootout_if_loaded() {
+    [[ -f "$PROBE_PLIST" ]] || return 0
+    if launchctl print "$USER_DOMAIN/$PROBE_LABEL" >/dev/null 2>&1; then
+        launchctl bootout "$USER_DOMAIN" "$PROBE_PLIST" 2>/dev/null || true
+    fi
+}
+
+bootstrap_probe() {
+    probe_bootout_if_loaded
+    launchctl bootstrap "$USER_DOMAIN" "$PROBE_PLIST"
+    launchctl kickstart -k "$USER_DOMAIN/$PROBE_LABEL"
+}
+
 kill_adhoc_ngrok() {
     # Free ngrok allows a single simultaneous agent session.  A leftover
     # `make share` / detached ngrok would make the agent's tunnel fail to
@@ -159,17 +189,22 @@ cmd_install() {
     render_plist "$DOMAIN" "$port"
     log "Loading agent under $USER_DOMAIN"
     bootstrap_one
+    log "Rendering $PROBE_LABEL.plist"
+    render_probe_plist
+    bootstrap_probe
     log "Installed.  Public endpoint will be:"
     note "    https://$DOMAIN"
-    note "    logs: /tmp/prometa-ngrok-tunnel.{out,err}.log"
+    note "    logs:  /tmp/prometa-ngrok-tunnel.{out,err}.log"
+    note "    probe: /tmp/prometa-tunnel-probe.out.log  (grep CHANGE for outages)"
     log "It now auto-starts on login and respawns on crash/reboot."
 }
 
 cmd_uninstall() {
     require_macos
     bootout_if_loaded
-    rm -f "$PLIST"
-    log "Uninstalled ngrok tunnel agent (the reserved domain stays on your account)."
+    probe_bootout_if_loaded
+    rm -f "$PLIST" "$PROBE_PLIST"
+    log "Uninstalled ngrok tunnel + probe agents (the reserved domain stays on your account)."
 }
 
 cmd_start() {
@@ -177,13 +212,17 @@ cmd_start() {
     [[ -f "$PLIST" ]] || { err "Not installed — run '$0 install --domain <d>' first."; exit 1; }
     kill_adhoc_ngrok
     bootstrap_one
+    if [[ -f "$PROBE_PLIST" ]]; then
+        bootstrap_probe
+    fi
     log "Started."
 }
 
 cmd_stop() {
     require_macos
     bootout_if_loaded
-    log "Stopped (plist remains installed; '$0 start' to resume)."
+    probe_bootout_if_loaded
+    log "Stopped (plists remain installed; '$0 start' to resume)."
 }
 
 cmd_restart() { cmd_stop; cmd_start; }
@@ -202,12 +241,42 @@ cmd_status() {
     url="$(curl -fsS --max-time 2 http://127.0.0.1:4040/api/tunnels 2>/dev/null \
         | grep -oE 'https://[a-zA-Z0-9.-]+\.ngrok(-free)?\.(app|dev|io)' | head -n1 || true)"
     [[ -n "$url" ]] && printf '\nPublic URL: %s\n' "$url"
+
+    printf '\n=== %s ===\n' "$PROBE_LABEL"
+    if launchctl print "$USER_DOMAIN/$PROBE_LABEL" 2>/dev/null \
+        | grep -E '^\s+(state|last exit code|program)\s*=' ; then
+        :
+    else
+        note "    not loaded"
+    fi
+    # The probe keeps running totals in its state file; report them rather than
+    # making the operator reconstruct availability from the log.
+    if [[ -f /tmp/prometa-tunnel-probe.state.json ]]; then
+        python3 - <<'PROBE_STATE' 2>/dev/null || true
+import json
+s = json.load(open("/tmp/prometa-tunnel-probe.state.json"))
+total = s.get("probes_total", 0)
+fails = s.get("failures_total", 0)
+pct = 100.0 * (total - fails) / total if total else 0.0
+print(f"    measured availability: {pct:.2f}%  ({total - fails}/{total} probes)")
+print(f"    currently: {'up' if s.get('up') else 'DOWN'}"
+      f"  consecutive failures: {s.get('consecutive_failures', 0)}"
+      f"  transitions: {s.get('transitions_total', 0)}")
+PROBE_STATE
+    fi
+
     printf '\nLog files:\n'
-    ls -lh /tmp/prometa-ngrok-tunnel.*.log 2>/dev/null \
+    ls -lh /tmp/prometa-ngrok-tunnel.*.log /tmp/prometa-tunnel-probe.*.log 2>/dev/null \
         | awk '{printf "    %s  %s  %s\n", $5, $6" "$7" "$8, $9}' || true
 }
 
-cmd_logs() { tail -F /tmp/prometa-ngrok-tunnel.{out,err}.log; }
+cmd_logs() {
+    case "${1:-tunnel}" in
+        tunnel|TUNNEL) tail -F /tmp/prometa-ngrok-tunnel.{out,err}.log ;;
+        probe|PROBE)   tail -F /tmp/prometa-tunnel-probe.out.log ;;
+        *) err "logs takes 'tunnel' or 'probe'"; exit 2 ;;
+    esac
+}
 
 usage() {
     sed -n '1,/^# ---*$/p' "$0" | sed 's/^# \{0,1\}//; s/^#//'
