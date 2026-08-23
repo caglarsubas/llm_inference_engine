@@ -782,6 +782,33 @@ def test_a_failed_half_open_probe_reopens_with_a_longer_cooldown() -> None:
     assert breaker.cooldown_remaining(key) == pytest.approx(20.0, abs=0.5)
 
 
+def test_a_permanently_dead_deployment_does_not_overflow_the_backoff() -> None:
+    """A deployment down for ~1000 half-open cycles must still get a cooldown.
+
+    ``open_cycles`` grows once per failed trial and never resets while the
+    upstream stays unreachable. The backoff used to compute
+    ``base * 2 ** (open_cycles - 1)`` and clamp afterwards, so past 1025 cycles
+    the float multiply raised ``OverflowError: int too large to convert to
+    float``. That escaped ``record_failure`` into the caller — in production it
+    aborted the ``/v1/models`` snapshot refresh on every cycle for three days
+    while the endpoint kept reporting healthy.
+    """
+    breaker = UpstreamBreaker(
+        failure_threshold=1, cooldown_seconds=15.0, max_cooldown_seconds=120.0
+    )
+    key = "vllm|http://x:8000|m"
+
+    breaker.record_failure(key, reason="upstream_unreachable")
+    # Far past the float exponent limit, and past the observed 1026.
+    breaker._states[key].open_cycles = 20_000  # noqa: SLF001 — no clock injection seam
+    breaker._states[key].open_until = 0.0  # noqa: SLF001
+    assert breaker.begin_attempt(key) == HALF_OPEN
+
+    breaker.record_failure(key, reason="upstream_unreachable")
+
+    assert breaker.cooldown_remaining(key) == pytest.approx(120.0, abs=0.5)
+
+
 def test_a_failure_that_says_nothing_gives_the_half_open_trial_back() -> None:
     breaker = UpstreamBreaker(failure_threshold=1, cooldown_seconds=0.0)
     key = "vllm|http://x:8000|m"

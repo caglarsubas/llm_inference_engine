@@ -52,6 +52,14 @@
              5 m so successive chat calls don't re-mmap a 30 GB blob. -->
         <key>OLLAMA_KEEP_ALIVE</key>
         <string>30m</string>
+        <!-- Keep the hot models resident *together*. With the default of one,
+             a mixed workload evicts and re-reads a multi-GB blob on nearly
+             every model switch: 1,337 reloads over eleven days, and that
+             reload cost is a large part of the ~37 s median chat latency.
+             Three covers the three busiest models (~53 GB with KV on a
+             128 GB machine); lower it if unified memory gets tight. -->
+        <key>OLLAMA_MAX_LOADED_MODELS</key>
+        <string>3</string>
     </dict>
 
     <key>RunAtLoad</key>
