@@ -82,6 +82,7 @@ not assume it, so it is written down here and in the README settings table.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -202,6 +203,31 @@ class UpstreamBreaker:
         if self._max_cooldown_seconds is not None:
             return max(0.0, self._max_cooldown_seconds)
         return max(0.0, settings.upstream_breaker_max_cooldown_seconds)
+
+    def _cooldown_for(self, open_cycles: int) -> float:
+        """Exponential backoff for ``open_cycles`` consecutive open cycles.
+
+        The exponent is clamped *before* exponentiating rather than clamping
+        the product afterwards. A deployment that is permanently unreachable
+        keeps failing its half-open trial, so ``open_cycles`` grows without
+        bound; past 1025 cycles ``base * 2 ** (cycles - 1)`` raised
+        ``OverflowError: int too large to convert to float`` on the float
+        multiply. That escaped :meth:`record_failure` into whatever was
+        probing, which took the whole ``/v1/models`` snapshot refresh down
+        with it every cycle. The cooldown saturates at ``max_cooldown_seconds``
+        after ``ceil(log2(cap / base))`` doublings, so clamping there is
+        exact — the returned value is unchanged for every input that used to
+        compute successfully.
+        """
+        base = self.cooldown_seconds
+        cap = self.max_cooldown_seconds
+        if base <= 0.0:
+            return 0.0
+        if cap <= base:
+            return cap
+        steps = max(0, open_cycles - 1)
+        saturating_steps = math.ceil(math.log2(cap / base))
+        return min(cap, base * 2 ** min(steps, saturating_steps))
 
     # ------------------------------------------------------------------
     # admission
@@ -330,10 +356,7 @@ class UpstreamBreaker:
                 # back off further rather than probing at the same cadence.
                 state.open_cycles += 1
 
-            cooldown = min(
-                self.max_cooldown_seconds,
-                self.cooldown_seconds * (2 ** max(0, state.open_cycles - 1)),
-            )
+            cooldown = self._cooldown_for(state.open_cycles)
             state.open_until = now + cooldown
             state.opened_total += 1
             self._counters.opened_total += 1
