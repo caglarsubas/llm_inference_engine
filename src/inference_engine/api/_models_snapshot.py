@@ -48,6 +48,11 @@ log = get_logger("models.snapshot")
 # layer back — keeps the dependency edge one-directional.
 BuildViews = Callable[[], "tuple[ModelList, ModelCatalog]"]
 
+# Consecutive refresh failures before the warning becomes an error. Three
+# cycles at the default cadence is well past "a probe blipped" and squarely in
+# "the catalog is frozen and nobody has been told".
+_ESCALATE_AFTER = 3
+
 
 @dataclass(frozen=True)
 class ModelsSnapshot:
@@ -76,6 +81,18 @@ class ModelsSnapshotCache:
     def get(self) -> ModelsSnapshot | None:
         with self._lock:
             return self._snapshot
+
+    def staleness_seconds(self) -> float | None:
+        """Age of the served snapshot, or ``None`` before the first build.
+
+        A refresh failure keeps the previous snapshot in place, so age is the
+        only signal that separates "fresh" from "frozen since Tuesday".
+        """
+        with self._lock:
+            snapshot = self._snapshot
+        if snapshot is None:
+            return None
+        return max(0.0, time.time() - snapshot.generated_at)
 
     def set(self, snapshot: ModelsSnapshot) -> None:
         with self._lock:
@@ -126,18 +143,31 @@ async def run_models_snapshot_refresher(
         with suppress(Exception):
             await asyncio.shield(wait_for)
 
+    consecutive_failures = 0
     while True:
         try:
             snapshot = await asyncio.to_thread(build_snapshot, build_views)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - refresh must not take the loop down
-            log.warning(
+            consecutive_failures += 1
+            # Degrading freshness quietly is the point of this handler, but a
+            # *persistent* failure is a different animal: the served snapshot
+            # keeps ageing while /v1/health still reports ok. Escalate once the
+            # failure stops looking transient, and always carry the traceback —
+            # ``str(exc)`` alone ("int too large to convert to float") cost
+            # three days of stale catalog before the raising call was findable.
+            emit = log.error if consecutive_failures >= _ESCALATE_AFTER else log.warning
+            emit(
                 "models_snapshot_refresh_failed",
                 error_type=type(exc).__name__,
                 error=str(exc),
+                consecutive_failures=consecutive_failures,
+                stale_seconds=cache.staleness_seconds(),
+                exc_info=True,
             )
         else:
+            consecutive_failures = 0
             cache.set(snapshot)
             log.debug(
                 "models_snapshot_refreshed",
