@@ -362,6 +362,20 @@ class Settings(BaseSettings):
     otel_exporter_otlp_protocol: Literal["grpc", "http/protobuf"] = Field(default="grpc")
     otel_exporter_otlp_headers: str = Field(default="", repr=False, exclude=True)
     otel_service_name: str = Field(default="inference-engine")
+    otel_bsp_schedule_delay_millis: int = Field(
+        default=1000,
+        ge=1,
+        le=60_000,
+        description=(
+            "How long the BatchSpanProcessor holds finished spans before "
+            "exporting. The OpenTelemetry default is 5s, which was the first "
+            "of five buffers between a request finishing and it reaching a "
+            "dashboard. Spans here are low-volume and already carry the whole "
+            "request, so holding them buys no batching worth the delay. Named "
+            "as a setting rather than left to OTEL_BSP_SCHEDULE_DELAY so the "
+            "value is visible in one place with the rest of the config."
+        ),
+    )
 
     # Per-key bearer auth. Off by default; flip on for any environment where
     # multiple agents/tenants share the engine.

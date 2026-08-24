@@ -8,7 +8,12 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     jsonData:
-      timeInterval: 15s
+      # Must track scrape_interval in prometheus*.yml. Grafana computes
+      # $__rate_interval as max(4 x this, $__interval + this) -- at 15s every
+      # rate/increase window was pinned to 60s no matter how fast the pipeline
+      # underneath delivered, which is what smeared one request into a 60s
+      # trapezoid reading 0.022 req/s.
+      timeInterval: 5s
       # Trace correlation: clicking a metric series with these labels jumps
       # to the matching trace in Jaeger.
       exemplarTraceIdDestinations:
