@@ -1,17 +1,28 @@
 """HTTP-level standardization contract.
 
-The ``error`` envelope, server-owned ``x-request-id``, the root ``/metrics``
-alias, and the tokenizer routes — all exercised through the real ASGI app so
-middleware and exception handlers are in the path.
+The ``error`` envelope, server-owned ``x-request-id``, the per-request
+scheduler admission headers, the root ``/metrics`` alias, and the tokenizer
+routes — all exercised through the real ASGI app so middleware and exception
+handlers are in the path.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterable
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
+from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
+from inference_engine.adapters.base import GenerationResult
+from inference_engine.api import _scheduling
 from inference_engine.api.state import app_state
+from inference_engine.cancellation import Cancellation
 from inference_engine.main import app
+from inference_engine.manager import ModelNotFoundError
+from inference_engine.registry import ModelDescriptor
+from inference_engine.scheduler import SchedulerLease
 
 
 @pytest.fixture(autouse=True)
@@ -288,3 +299,173 @@ def test_tokenize_unknown_model_is_a_typed_404(client: TestClient) -> None:
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "model_not_found"
+
+
+# --- per-request scheduler admission -----------------------------------------
+
+
+class _AdmissionAdapter(InferenceAdapter):
+    """Smallest adapter that can be admitted, generated from, and streamed."""
+
+    backend_name = "header-test"
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    @property
+    def loaded_model(self) -> ModelDescriptor | None:
+        return None
+
+    async def load(self, descriptor: ModelDescriptor) -> None: ...
+    async def unload(self) -> None: ...
+
+    async def generate(
+        self, messages: Iterable, params: GenerationParams, cancel: Cancellation | None = None
+    ) -> GenerationResult:
+        return GenerationResult(
+            text="ok", finish_reason="stop", prompt_tokens=3, completion_tokens=1
+        )
+
+    async def stream(
+        self, messages: Iterable, params: GenerationParams, cancel: Cancellation | None = None
+    ) -> AsyncIterator[StreamChunk]:
+        yield StreamChunk(text="ok")
+        yield StreamChunk(text="", finish_reason="stop")
+
+
+_ADMISSION_MODEL = "fake-model:1b"
+_ADMISSION_RESOURCE = f"{_AdmissionAdapter.backend_name}:{_ADMISSION_MODEL}"
+
+
+@pytest.fixture
+def admitted(monkeypatch) -> None:
+    """Install one servable model so a chat request reaches the scheduler."""
+
+    async def _get(model_id: str):
+        if model_id != _ADMISSION_MODEL:
+            raise ModelNotFoundError(model_id)
+        name, tag = model_id.rsplit(":", 1)
+        return _AdmissionAdapter(), ModelDescriptor(
+            name=name,
+            tag=tag,
+            namespace="test",
+            registry="test",
+            model_path=Path(f"/tmp/{model_id}"),
+            format="gguf",
+            size_bytes=1,
+        )
+
+    monkeypatch.setattr(app_state.manager, "get", _get)
+
+
+def _chat_body(**extra) -> dict:
+    return {
+        "model": _ADMISSION_MODEL,
+        "messages": [{"role": "user", "content": "hi"}],
+        **extra,
+    }
+
+
+def test_blocking_chat_reports_the_admission_that_served_it(
+    client: TestClient, admitted: None
+) -> None:
+    response = client.post("/v1/chat/completions", json=_chat_body())
+
+    assert response.status_code == 200, response.text
+    assert int(response.headers[_scheduling.QUEUE_WAIT_MS_HEADER]) >= 0
+    assert response.headers[_scheduling.RESOURCE_HEADER] == _ADMISSION_RESOURCE
+    # Both depths count this request, so a lone caller sees 1 rather than 0.
+    # A client rendering the raw value as "requests ahead of you" is off by
+    # one, which is exactly the misleading progress this channel removes.
+    assert response.headers[_scheduling.QUEUE_DEPTH_HEADER] == "1"
+    assert response.headers[_scheduling.TENANT_QUEUE_DEPTH_HEADER] == "1"
+
+
+def test_streaming_admission_headers_land_before_the_first_delta(
+    client: TestClient, admitted: None
+) -> None:
+    """The reason these headers are worth more than a span on the stream path.
+
+    Admission completes before the response is constructed, so the queue wait
+    is already known when headers are flushed — the caller reads it at stream
+    open, ahead of any content, rather than reconstructing it from a trace
+    after the turn is over.
+    """
+    with client.stream("POST", "/v1/chat/completions", json=_chat_body(stream=True)) as response:
+        assert response.status_code == 200
+        # Read the headers with the body still unconsumed: this is the moment
+        # a client can act on them.
+        wait_ms = int(response.headers[_scheduling.QUEUE_WAIT_MS_HEADER])
+        assert response.headers[_scheduling.RESOURCE_HEADER] == _ADMISSION_RESOURCE
+        assert response.headers[_scheduling.QUEUE_DEPTH_HEADER] == "1"
+        body = "".join(response.iter_text())
+
+    assert wait_ms >= 0
+    assert '"content":"ok"' in body
+
+
+def test_a_request_that_never_reached_the_scheduler_reports_no_admission(
+    client: TestClient, admitted: None
+) -> None:
+    """No admission, no headers — never a fabricated zero.
+
+    A caller must be able to tell "I did not queue" from "I queued for 0 ms",
+    because only the first means the number is absent.
+    """
+    response = client.post("/v1/chat/completions", json=_chat_body(model="nope:9b"))
+
+    assert response.status_code >= 400
+    assert _scheduling.QUEUE_WAIT_MS_HEADER not in response.headers
+    assert _scheduling.RESOURCE_HEADER not in response.headers
+
+
+def _lease(**overrides) -> SchedulerLease:
+    fields = {
+        "lease_id": 1,
+        "tenant": "dev",
+        "resource_key": _ADMISSION_RESOURCE,
+        "workload": "chat.generate",
+        "priority": 20.0,
+        "estimated_tokens": 8,
+        "wait_ms": 4120.4,
+        "queue_depth_at_submit": 3,
+        "tenant_queue_depth_at_submit": 1,
+    }
+    return SchedulerLease(**{**fields, **overrides})
+
+
+def test_a_re_admitted_request_still_reports_the_admission_it_started_on() -> None:
+    """Fallback and schema-repair retries queue again; the headers do not move.
+
+    On a stream they could not: headers are flushed when the stream opens,
+    before any re-admission exists. Holding the blocking path to the same rule
+    keeps one meaning for the value instead of one per path.
+    """
+    telemetry = _scheduling.begin_admission()
+    _scheduling.bind_admission(_lease())
+    _scheduling.bind_admission(_lease(wait_ms=99.0, resource_key="other:model:7b"))
+
+    headers = _scheduling.admission_headers(telemetry)
+    assert headers[_scheduling.QUEUE_WAIT_MS_HEADER] == "4120"
+    assert headers[_scheduling.RESOURCE_HEADER] == _ADMISSION_RESOURCE
+
+
+def test_an_unwritable_resource_key_drops_only_its_own_header() -> None:
+    """A model id the registry reported must not be able to fail a response.
+
+    The numbers still go out; only the name that cannot be encoded is dropped.
+    """
+    telemetry = _scheduling.begin_admission()
+    _scheduling.bind_admission(_lease(resource_key="ollama:modèle:7b"))
+
+    headers = _scheduling.admission_headers(telemetry)
+    assert _scheduling.RESOURCE_HEADER not in headers
+    assert headers[_scheduling.QUEUE_WAIT_MS_HEADER] == "4120"
+    assert headers[_scheduling.QUEUE_DEPTH_HEADER] == "3"
+
+
+def test_binding_outside_a_request_scope_is_inert() -> None:
+    """Route coroutines are called directly all over this suite; that must work."""
+    _scheduling.bind_admission(_lease())
+    assert _scheduling.admission_headers(None) == {}
