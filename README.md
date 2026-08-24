@@ -714,6 +714,7 @@ common ones, so a var missing from that file is still settable:
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc`                                                                                | `grpc` or `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | empty                                                                                  | URL-encoded comma-separated headers; keep API keys in a Secret |
 | `OTEL_SERVICE_NAME`      | `inference-engine`                                                                       | `service.name` resource attribute                        |
+| `OTEL_BSP_SCHEDULE_DELAY_MILLIS` | `1000`                                                                          | How long finished spans wait before export. OTel's own default is 5000, the first of several buffers between a request completing and a dashboard showing it |
 | `AUTH_ENABLED`           | `false`                                                                                  | Bearer-token gate on `/v1/models` and `/v1/chat/completions` |
 | `AUTH_KEYS_FILE`         | `.auth_keys.json`                                                                        | JSON key records; optional `key_id`, `not_before`, and `expires_at` enable managed rotation |
 | `INFERENCE_ENGINE_SERVER_TLS_CERT_FILE` | empty                                                                    | Server certificate PEM; must be paired with the private key |

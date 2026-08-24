@@ -182,12 +182,76 @@
     },
     {
       "type": "row",
-      "title": "Request rate breakdowns",
+      "id": 107,
+      "collapsed": false,
+      "panels": [],
+      "title": "Live admission (engine-scraped \u2014 no trace pipeline)",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 5
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 20,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "title": "In flight / queued by tenant (live)",
+      "description": "Scraped straight off the engine's /v1/metrics, so it is visible within one scrape interval. The scheduler increments these AT ADMISSION, before the model is called.\n\nEvery other traffic panel is derived from spans, and a span does not exist until the request COMPLETES -- so on a p50 of ~36s those panels cannot show a request that is still generating. This panel can. Use it to answer \"did my request land?\"; use the rate panels for throughput.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant) (inference_engine_scheduler_in_flight_by_tenant)",
+          "legendFormat": "{{tenant}} \u00b7 in flight",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (tenant) (inference_engine_scheduler_queued_by_tenant)",
+          "legendFormat": "{{tenant}} \u00b7 queued",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Request rate breakdowns",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
       },
       "id": 101,
       "collapsed": false,
@@ -204,7 +268,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 15
       },
       "id": 5,
       "targets": [
@@ -234,7 +298,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Requests/sec by tenant",
+      "title": "Requests by tenant",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -243,19 +307,20 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 6
+        "y": 15
       },
       "id": 6,
       "targets": [
         {
-          "expr": "sum by (prometa_tenant) (rate(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__rate_interval}]))",
+          "expr": "sum by (prometa_tenant) (increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__rate_interval}]))",
           "legendFormat": "{{prometa_tenant}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "unit": "short",
+          "min": 0
         }
       },
       "options": {
@@ -265,10 +330,11 @@
           "calcs": [
             "last",
             "max",
-            "mean"
+            "sum"
           ]
         }
-      }
+      },
+      "description": "increase(), not rate(), because this deployment's per-tenant traffic sits around 0.02 req/s and a rate over $__rate_interval (60s at a 15s scrape) renders a SINGLE request as 0.022 req/s smeared into a 60s trapezoid -- a number that reads like throughput but is really 1/45s, the gap between the two samples Prometheus found.\n\nCounts answer the question this panel is actually asked. Prometheus still extrapolates increase() to the window edges, so a lone request can read slightly above 1.\n\nDerived from spans, so it lags a completed request by ~20-30s through the collector pipeline and shows nothing while a request is still generating. For that, see 'In flight / queued by tenant (live)'."
     },
     {
       "type": "timeseries",
@@ -281,7 +347,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 24
       },
       "id": 7,
       "targets": [
@@ -319,7 +385,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 24
       },
       "id": 8,
       "targets": [
@@ -353,7 +419,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 33
       },
       "id": 102,
       "collapsed": false,
@@ -370,23 +436,23 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 25
+        "y": 34
       },
       "id": 9,
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[${__rate_interval}])))",
-          "legendFormat": "p50 — {{span_name}}",
+          "legendFormat": "p50 \u2014 {{span_name}}",
           "refId": "A"
         },
         {
           "expr": "histogram_quantile(0.95, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[${__rate_interval}])))",
-          "legendFormat": "p95 — {{span_name}}",
+          "legendFormat": "p95 \u2014 {{span_name}}",
           "refId": "B"
         },
         {
           "expr": "histogram_quantile(0.99, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[${__rate_interval}])))",
-          "legendFormat": "p99 — {{span_name}}",
+          "legendFormat": "p99 \u2014 {{span_name}}",
           "refId": "C"
         }
       ],
@@ -418,7 +484,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 25
+        "y": 34
       },
       "id": 10,
       "targets": [
@@ -452,7 +518,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 44
       },
       "id": 103,
       "collapsed": false,
@@ -469,7 +535,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 45
       },
       "id": 11,
       "targets": [
@@ -510,7 +576,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 45
       },
       "id": 12,
       "targets": [
@@ -551,18 +617,18 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 54
       },
       "id": 13,
       "targets": [
         {
           "expr": "sum by (gen_ai_request_model) (rate(inference_tokens_input_total{gen_ai_request_model!=\"unknown\"}[${__rate_interval}]))",
-          "legendFormat": "input — {{gen_ai_request_model}}",
+          "legendFormat": "input \u2014 {{gen_ai_request_model}}",
           "refId": "A"
         },
         {
           "expr": "sum by (gen_ai_request_model) (rate(inference_tokens_output_total{gen_ai_request_model!=\"unknown\"}[${__rate_interval}]))",
-          "legendFormat": "output — {{gen_ai_request_model}}",
+          "legendFormat": "output \u2014 {{gen_ai_request_model}}",
           "refId": "B"
         }
       ],
@@ -588,12 +654,12 @@
     },
     {
       "type": "row",
-      "title": "Tenant × model traffic matrix",
+      "title": "Tenant \u00d7 model traffic matrix",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 63
       },
       "id": 104,
       "collapsed": false,
@@ -601,7 +667,7 @@
     },
     {
       "type": "table",
-      "title": "Requests by tenant × model (dashboard range)",
+      "title": "Requests by tenant \u00d7 model (dashboard range)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -610,7 +676,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 64
       },
       "id": 14,
       "targets": [
@@ -669,7 +735,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 65
+        "y": 74
       },
       "id": 105,
       "collapsed": false,
@@ -686,7 +752,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 75
       },
       "id": 15,
       "targets": [
@@ -724,7 +790,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 75
       },
       "id": 16,
       "targets": [
@@ -758,7 +824,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 75
+        "y": 84
       },
       "id": 106,
       "collapsed": false,
@@ -775,7 +841,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 76
+        "y": 85
       },
       "id": 17,
       "targets": [
@@ -803,7 +869,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 76
+        "y": 85
       },
       "id": 18,
       "targets": [
@@ -830,7 +896,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 76
+        "y": 85
       },
       "id": 19,
       "targets": [
@@ -862,7 +928,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Inference Engine — Overview",
+  "title": "Inference Engine \u2014 Overview",
   "uid": "inference-engine-overview",
   "version": 3,
   "weekStart": ""

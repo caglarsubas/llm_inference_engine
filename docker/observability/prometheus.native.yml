@@ -23,6 +23,12 @@ global:
 
 scrape_configs:
   - job_name: otel-collector
+    # 5s, overriding the 15s global. Everything on this job is derived from
+    # spans and has already waited out the collector's batch + flush; a slow
+    # scrape on top of that is the difference between "a few seconds" and
+    # "did it even record?". rate()/increase() also need two samples inside
+    # the window, so the scrape interval is paid twice before a value renders.
+    scrape_interval: 5s
     static_configs:
       - targets: ['otel-collector:8889']
     metric_relabel_configs:
@@ -30,6 +36,12 @@ scrape_configs:
         regex: 'telemetry_sdk_(name|language|version)'
 
   - job_name: inference-engine
+    # 5s. This job carries the scheduler gauges, which are the only traffic
+    # signal that moves AT ADMISSION rather than on span export -- the one
+    # thing that shows a request while it is still generating. Costs ~7ms and
+    # 45KB per scrape, so the interval is the only thing standing between a
+    # request starting and it being on screen.
+    scrape_interval: 5s
     metrics_path: /v1/metrics
     static_configs:
       - targets: ['host.docker.internal:8080']

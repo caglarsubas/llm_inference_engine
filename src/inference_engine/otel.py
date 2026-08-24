@@ -193,13 +193,19 @@ def configure_tracing() -> None:
     except ValueError as exc:
         log.error("otel.configuration_invalid", error=str(exc))
         return
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            exporter,
+            schedule_delay_millis=settings.otel_bsp_schedule_delay_millis,
+        )
+    )
     trace.set_tracer_provider(provider)
 
     _tracer = trace.get_tracer("inference_engine")
     log.info(
         "otel.configured",
         endpoint=settings.otel_exporter_otlp_endpoint,
+        bsp_schedule_delay_ms=settings.otel_bsp_schedule_delay_millis,
         protocol=settings.otel_exporter_otlp_protocol,
         service_name=settings.otel_service_name,
     )

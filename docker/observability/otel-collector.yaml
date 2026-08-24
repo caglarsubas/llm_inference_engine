@@ -38,8 +38,12 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # 1s, not the 5s default. This processor sits in BOTH pipelines below -- once
+  # on the way into the connectors and again on the way out to Prometheus -- so
+  # its timeout is paid twice per request. send_batch_size stays high because
+  # the timeout, not the size, is what fires on this deployment's volume.
   batch:
-    timeout: 5s
+    timeout: 1s
     send_batch_size: 512
 
   # Promote span attributes that we want as metric labels into a stable
@@ -72,7 +76,10 @@ connectors:
       - name: gen_ai.system
         default: unknown
     namespace: traces.spanmetrics
-    metrics_flush_interval: 15s
+    # Was 15s, the single largest fixed delay between a request finishing and
+    # it appearing on a dashboard. Nothing downstream needs 15s: Prometheus
+    # scrapes this collector every 5s.
+    metrics_flush_interval: 5s
     aggregation_temporality: AGGREGATION_TEMPORALITY_CUMULATIVE
 
   # Span attribute values → sum metrics. The ``sum`` connector reads a numeric

@@ -135,3 +135,52 @@ def test_exporter_rejects_malformed_or_duplicate_headers(headers: str) -> None:
                 headers,
             )
         )
+
+
+def test_settings_default_span_export_delay_beats_the_otel_default() -> None:
+    """OTel's own default is 5000ms. Ours must be materially lower."""
+    loaded = Settings(_env_file=None)
+    assert loaded.otel_bsp_schedule_delay_millis == 1000
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, otel_bsp_schedule_delay_millis=0)
+
+
+def test_span_export_delay_reaches_the_batch_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured delay must actually be passed to BatchSpanProcessor.
+
+    Constructing it as ``BatchSpanProcessor(exporter)`` silently reinstates
+    OTel's 5s default -- the first of several buffers between a request
+    finishing and it reaching a dashboard, and the only one inside this
+    process. The setting existing is not evidence that it is wired.
+    """
+    captured: dict[str, object] = {}
+
+    class RecordingProcessor:
+        def __init__(self, exporter: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def on_start(self, *args: object, **kwargs: object) -> None: ...
+
+        def on_end(self, *args: object, **kwargs: object) -> None: ...
+
+        def shutdown(self) -> None: ...
+
+        def force_flush(self, *args: object, **kwargs: object) -> bool:
+            return True
+
+    from opentelemetry.sdk.trace import export as sdk_export
+
+    monkeypatch.setattr(sdk_export, "BatchSpanProcessor", RecordingProcessor)
+    monkeypatch.setattr(otel.settings, "otel_enabled", True)
+    monkeypatch.setattr(otel.settings, "otel_bsp_schedule_delay_millis", 1234)
+    # configure_tracing() is idempotent by design; reset the latch so this test
+    # exercises a real first initialisation.
+    monkeypatch.setattr(otel, "_initialized", False)
+    monkeypatch.setattr(otel, "_tracer", None)
+
+    otel.configure_tracing()
+
+    assert captured.get("schedule_delay_millis") == 1234
