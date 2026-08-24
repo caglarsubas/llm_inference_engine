@@ -4,9 +4,12 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__, usage_ledger
 from .api import (
+    _scheduling,
     admin,
     chat,
     completions,
@@ -540,6 +543,51 @@ async def request_id_header(request: Request, call_next):
     response.headers[ENGINE_REQUEST_ID_HEADER] = engine_request_id
     return response
 
+
+class SchedulerAdmissionHeaders:
+    """Stamp this request's own admission onto the response it produced.
+
+    ``scheduler_span_attrs`` already puts these numbers on a span, which reaches
+    the caller's trace backend once the request is over. A client drawing a live
+    progress row needs them in-band, and on a stream it gets them at the best
+    moment available: response headers are flushed when the stream opens, so the
+    queue wait arrives ahead of the first content delta rather than after the
+    last one.
+
+    Pure ASGI on purpose. ``@app.middleware("http")`` is Starlette's
+    ``BaseHTTPMiddleware``, which runs the rest of the app in a child task and
+    pumps the body back through a bounded queue; another of those wrapped around
+    the SSE routes stalls the stream outright, and the streaming path is exactly
+    the one these headers exist for. A send hook adds no task, no queue, and no
+    buffering.
+
+    ``begin_admission`` runs here rather than in the route because a ContextVar
+    the route *rebinds* cannot travel back up through those child tasks. The
+    container is opened on the way in and mutated on the way through, which
+    does — the same shape ``usage_ledger`` uses for its record.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        telemetry = _scheduling.begin_admission()
+
+        async def _send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in _scheduling.admission_headers(telemetry).items():
+                    headers.append(name, value)
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+
+app.add_middleware(SchedulerAdmissionHeaders)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(metrics.router, tags=["metrics"])

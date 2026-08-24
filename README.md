@@ -386,6 +386,39 @@ pre-bind 401, 422, early 400, or unhandled failures do not advertise a record
 that will never be emitted. The exact v2 field and header contract is
 `contracts/prometa-model-usage-v2.schema.json`.
 
+Every scheduled route also reports **the admission that started the response**
+— what this specific request waited for, rather than the aggregate `/metrics`
+already publishes:
+
+```
+x-engine-queue-wait-ms: 4120
+x-engine-queue-depth: 3
+x-engine-tenant-queue-depth: 1
+x-engine-resource: ollama_http:nemotron-3-nano:30b
+```
+
+On `stream: true` these are the most useful numbers the engine can give a live
+client, because admission completes *before* the response is constructed: the
+headers are flushed when the stream opens, so a caller reads the queue wait
+ahead of the first content delta instead of reconstructing it from a trace once
+the turn is over.
+
+Both depths count the request itself, so an admitted request under a live
+scheduler always reports at least `1` — it means "admitted with nobody else
+waiting", not "one request ahead of you". A `0` means `SCHEDULER_ENABLED=false`
+and nothing queued at all. The headers are absent entirely on a request that
+never reached the scheduler (unknown model, guardrail denial, 429 on a full
+tenant queue), so "did not queue" stays distinguishable from "queued for 0 ms".
+
+They describe the admission, not the outcome. A request that falls back to
+another model, or retries a schema repair, is admitted a second time; that
+later wait is not counted, and on the streaming path it cannot be, since the
+headers are already on the wire by then. When a response fell back, the body's
+`model` is what actually served — `x-engine-resource` names what the request
+was admitted against. The resource header alone is dropped if a model id will
+not encode into a header value; the numbers still go out, because a telemetry
+field must never fail a completion the caller already paid for.
+
 After the platform dual-reader is deployed, roll out the engine before the SDK
 **only after an identity preflight passes**. Inventory every configured or
 caller-supplied legacy runtime-request-id source and verify representative live
@@ -538,7 +571,7 @@ src/inference_engine/
 │   ├── evals.py         # /v1/evals/rubrics + /v1/evals/policy + /v1/evals/run
 │   ├── admin.py         # auth-key, auto-eval, and signed model-routing reload/status endpoints
 │   ├── errors.py        # dual `error` + `detail` envelope, x-request-id, x-ratelimit-* headers
-│   ├── _scheduling.py   # shared API helpers for scheduler admission/span attrs
+│   ├── _scheduling.py   # shared API helpers for scheduler admission/span attrs + x-engine-* headers
 │   ├── _auto_eval.py    # blocking + background batch helpers for chat-attached eval
 │   ├── _batcher.py      # EmbedCoalescer — dynamic batching for /v1/embeddings
 │   ├── _tool_audit.py   # gen_ai.tool_call / gen_ai.tool_result event emission with truncation
