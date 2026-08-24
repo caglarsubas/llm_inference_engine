@@ -92,18 +92,29 @@ class AppState:
         # Local-format ordering (mlx-vs-gguf) follows the existing toggle.
         local_sources = (mlx, ollama) if settings.prefer_mlx_over_gguf else (ollama, mlx)
 
-        # Ollama-HTTP fallback comes *after* the local sources: anything
-        # llama.cpp / MLX can serve in-process wins on latency, only
-        # llama.cpp-rejected GGUFs fall through to the HTTP path.  Empty
-        # endpoint → registry stays inert; nothing to wire up.
-        sources: tuple = (openrouter, vllm, *local_sources)
+        # Where the Ollama-HTTP registry sits relative to the local sources is
+        # PREFER_OLLAMA_HTTP_OVER_GGUF. Primary (the default) puts it ahead of
+        # them, so a model the upstream serves is resolved there without first
+        # paying a load probe on a GGUF descriptor that is going to be
+        # rejected. Ordering it last is the historical behaviour and is right
+        # only when the bundled llama-cpp-python wheel actually covers the
+        # model store.  Empty endpoint → registry stays inert either way.
+        sources: tuple = (openrouter, vllm)
         if settings.ollama_http_endpoint:
             ollama_http = OllamaHttpRegistry(settings.ollama_http_endpoint)
-            sources = (*sources, ollama_http)
-            log.info(
-                "ollama_http.fallback_enabled",
-                endpoint=settings.ollama_http_endpoint,
+            primary = settings.prefer_ollama_http_over_gguf
+            sources = (
+                (*sources, ollama_http, *local_sources)
+                if primary
+                else (*sources, *local_sources, ollama_http)
             )
+            log.info(
+                "ollama_http.enabled",
+                endpoint=settings.ollama_http_endpoint,
+                role="primary" if primary else "fallback",
+            )
+        else:
+            sources = (*sources, *local_sources)
 
         self.registry = CompositeRegistry(sources)
 

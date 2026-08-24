@@ -28,12 +28,17 @@ class Settings(BaseSettings):
         ),
     )
     vllm_demanded_models_file: Path = Field(
-        default=Path(".vllm_models.demanded.example.json"),
+        default=Path(".vllm_models.demanded.json"),
         description=(
             "Catalog-only vLLM demand manifest. Entries not present in "
             "VLLM_MODELS_FILE are reported under /v1/models*.unavailable as "
             "demanded_not_configured so benchmark clients can distinguish "
-            "operator backlog from unknown ids."
+            "operator backlog from unknown ids. Missing file means no demand "
+            "is advertised, which is the right default: this used to point at "
+            ".vllm_models.demanded.example.json, so every deployment that "
+            "never set it advertised the shipped 64-entry sample as its own "
+            "backlog. Seed a real one from that example when the backlog is "
+            "genuinely yours."
         ),
     )
     hf_vlm_models_dir: Path = Field(
@@ -151,9 +156,27 @@ class Settings(BaseSettings):
             "(e.g. gemma4, qwen3.6, ministral-3 — anything Ollama's ggml "
             "fork supports but our wheel doesn't yet). Empty string disables "
             "the fallback; the engine then marks unsupported models as "
-            "'unavailable' rather than routing them. The Ollama-served "
-            "registry is consulted *after* local llama.cpp, so anything "
-            "llama.cpp can load stays in-process for the latency win."
+            "'unavailable' rather than routing them. Whether it is consulted "
+            "before or after local llama.cpp is PREFER_OLLAMA_HTTP_OVER_GGUF."
+        ),
+    )
+    prefer_ollama_http_over_gguf: bool = Field(
+        default=True,
+        description=(
+            "Consult the Ollama HTTP registry BEFORE the local GGUF/MLX "
+            "sources, making it the primary serving backend.\n\n"
+            "It was introduced as a fallback on the premise that whatever "
+            "llama.cpp can load should stay in-process for the latency win. "
+            "That premise inverted: Ollama's ggml fork tracks new "
+            "architectures far ahead of the llama-cpp-python wheel, so on a "
+            "current model set the bundled wheel opens a small minority of "
+            "the store and 'fallback' describes almost all traffic. Ordering "
+            "it last then costs a per-model load probe to reach the backend "
+            "that was always going to serve the request, and silently splits "
+            "a model family across two runtimes with different samplers.\n\n"
+            "Set false to restore in-process-first ordering — correct when "
+            "the wheel does cover your store, since it drops the HTTP hop and "
+            "restores prefix-cache introspection."
         ),
     )
     prefer_mlx_over_gguf: bool = Field(
