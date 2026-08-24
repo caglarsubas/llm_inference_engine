@@ -5,7 +5,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .env
+.env.bak*
 .auth_keys.json
+.auth_keys.json.bak*
 .auto_eval_policies.json
 .model_routing_policy.json
 .model_routing_policy.lkg.json
@@ -17,3 +19,4 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.healthcheck-backup-*/
