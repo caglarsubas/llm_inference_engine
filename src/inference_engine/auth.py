@@ -327,6 +327,17 @@ def require_identity(request: Request) -> Identity:
 
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
+        # Logged for the same reason as an invalid key below: without it this
+        # rejection exists only in the uvicorn access line. Over one eleven-day
+        # window this path produced all but two of ~975 401s — including a
+        # client that retried with no header for four straight days, which was
+        # invisible to every structured signal. `has_header` separates "sent
+        # nothing" from "sent something malformed" without recording the value.
+        log.warning(
+            "auth.missing_bearer",
+            path=request.url.path,
+            has_header=bool(header),
+        )
         raise HTTPException(status_code=401, detail="missing bearer token")
 
     key = header[7:].strip()

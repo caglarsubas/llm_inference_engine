@@ -22,11 +22,12 @@ from inference_engine.auth import (
 from inference_engine.config import settings
 
 
-def _fake_request(headers: dict[str, str] | None = None):
+def _fake_request(headers: dict[str, str] | None = None, path: str = "/v1/chat/completions"):
     """Construct an object that quacks like a FastAPI Request for require_identity."""
     return SimpleNamespace(
         headers=headers or {},
         state=SimpleNamespace(),
+        url=SimpleNamespace(path=path),
     )
 
 
@@ -90,6 +91,41 @@ def test_missing_header_raises_401(monkeypatch) -> None:
     with pytest.raises(HTTPException) as exc:
         require_identity(_fake_request())
     assert exc.value.status_code == 401
+
+
+def test_a_missing_bearer_is_logged_not_only_counted(monkeypatch, capsys) -> None:
+    """A rejection nobody records is a rejection nobody can debug.
+
+    The invalid-key branch logs; this one did not, so it existed only in the
+    uvicorn access line. Over one eleven-day window it produced all but two of
+    ~975 401s, including a client that retried with no header for four straight
+    days without registering in any structured signal.
+    """
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    auth_mod._set_keys_for_tests([("sk-x", "x")])
+
+    with pytest.raises(HTTPException):
+        require_identity(_fake_request(path="/v1/embeddings"))
+
+    # structlog renders to stdout rather than through stdlib logging, so the
+    # assertion reads the stream rather than caplog.
+    out = capsys.readouterr().out
+    assert "auth.missing_bearer" in out
+    assert "/v1/embeddings" in out
+
+
+def test_a_malformed_header_is_distinguishable_from_no_header(monkeypatch, capsys) -> None:
+    """`has_header` separates the two without ever recording the value."""
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    auth_mod._set_keys_for_tests([("sk-x", "x")])
+
+    with pytest.raises(HTTPException):
+        require_identity(_fake_request({"authorization": "Basic hunter2"}))
+
+    out = capsys.readouterr().out
+    assert "auth.missing_bearer" in out
+    assert "has_header=True" in out
+    assert "hunter2" not in out
 
 
 def test_unknown_key_raises_401(monkeypatch) -> None:
