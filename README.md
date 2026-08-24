@@ -2465,7 +2465,7 @@ controlled and is not.
 
 ## Auth + tenant attribution
 
-Per-key bearer-token auth — off by default for local dev, switch on with `AUTH_ENABLED=true`. Keys live in a JSON file (`.auth_keys.json`, gitignored):
+Per-key bearer-token auth — on by default in every shipped config (`.env.example`, docker-compose, the launchd template, the Helm chart). Keys live in a JSON file (`.auth_keys.json`, gitignored); seed it with `cp .auth_keys.example.json .auth_keys.json`, since the engine refuses to start with `AUTH_ENABLED=true` and no keys file:
 
 ```json
 [

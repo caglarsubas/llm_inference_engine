@@ -206,6 +206,22 @@ def _activate_snapshot(snapshot: AuthKeySnapshot) -> None:
     _keys_loaded = True
 
 
+def _missing_keys_message(path: Path) -> str:
+    """Explain the fix, not just the fact.
+
+    Auth ships on, so this is the first thing a fresh checkout hits. Naming the
+    seed file turns a startup crash into one command; the alternative most
+    people reach for otherwise is turning auth off.
+    """
+    return (
+        f"AUTH_ENABLED=true but keys file missing: {path}\n"
+        "Seed one and replace the CHANGE-ME values:\n"
+        "    cp .auth_keys.example.json .auth_keys.json          # native\n"
+        "    cp .auth_keys.example.json docker/config/auth_keys.json   # compose\n"
+        "Do not disable auth to get past this."
+    )
+
+
 def load_keys() -> int:
     """Populate the in-memory key index from disk. Returns count loaded.
 
@@ -218,7 +234,7 @@ def load_keys() -> int:
     path = Path(settings.auth_keys_file)
     if not path.exists():
         if settings.auth_enabled:
-            raise FileNotFoundError(f"AUTH_ENABLED=true but keys file missing: {path}")
+            raise FileNotFoundError(_missing_keys_message(path))
         _keys_by_value = {}
         _keys_digest = None
         _keys_loaded = True
@@ -242,7 +258,7 @@ def reload_keys(*, required_key: str | None = None) -> AuthKeyReloadResult:
     path = Path(settings.auth_keys_file)
     if not path.exists():
         if settings.auth_enabled:
-            raise FileNotFoundError(f"AUTH_ENABLED=true but keys file missing: {path}")
+            raise FileNotFoundError(_missing_keys_message(path))
         snapshot = AuthKeySnapshot(by_value={}, digest="", source=str(path))
     else:
         snapshot = _parse_key_snapshot(path)

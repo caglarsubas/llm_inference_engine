@@ -81,8 +81,16 @@
              move the collector to a different host. -->
         <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
         <string>http://127.0.0.1:4317</string>
+        <!-- Pinned true. This agent is normally installed alongside the
+             ngrok tunnel agent, which puts the engine on the public
+             internet; auth off there is an open, unauthenticated LLM
+             anyone with the URL can bill to this machine. It also
+             collapses every span's prometa.tenant to "anonymous", which
+             silently empties per-tenant metrics and the usage ledger.
+             Requires .auth_keys.json to exist -- the engine refuses to
+             start with AUTH_ENABLED=true and no keys file. -->
         <key>AUTH_ENABLED</key>
-        <string>false</string>
+        <string>true</string>
     </dict>
 
     <!-- Auto-start on login + auto-restart on crash. -->

@@ -36,9 +36,16 @@ PORT_OVERRIDE=""
 DOMAIN=""
 ASSUME_YES="false"
 
-# Pull HOST / PORT / AUTH_ENABLED out of .env without sourcing it (the file may
-# contain values that aren't safe to eval). Default to the engine's own
-# defaults when unset.
+# Pull HOST / PORT out of .env without sourcing it (the file may contain values
+# that aren't safe to eval). Default to the engine's own defaults when unset.
+#
+# AUTH_ENABLED is deliberately NOT read here. Every layer that can set it --
+# .env, the launchd plist's EnvironmentVariables, docker-compose, the shell --
+# is a place where the file and the running process can disagree, and process
+# env beats pydantic's env_file. A .env reading AUTH_ENABLED=true in front of a
+# process running with it false is exactly the case this check exists to catch,
+# and reading the file would make the check agree with the wrong source. We ask
+# the engine instead; see effective_auth_enabled().
 env_get() {
   local key="$1" default="$2" line
   if [[ -f "$ENV_FILE" ]]; then
@@ -70,7 +77,6 @@ done
 
 HOST="${HOST_OVERRIDE:-$(env_get HOST 127.0.0.1)}"
 PORT="${PORT_OVERRIDE:-$(env_get PORT 8080)}"
-AUTH_ENABLED="$(env_get AUTH_ENABLED false)"
 LOCAL_URL="http://${HOST}:${PORT}"
 
 # ANSI helpers (no-op when not a TTY).
@@ -83,6 +89,20 @@ fi
 
 note() { printf '%s\n' "$*"; }
 err()  { printf '%s%s%s\n' "$RED" "$*" "$RST" >&2; }
+
+# Ask the running engine whether it is enforcing auth, rather than trusting any
+# config file. /v1/models is behind require_identity, so an unauthenticated GET
+# returns 401 when auth is on and 200 when it is off. Prints "true", "false", or
+# "unknown" if the engine answered with neither.
+effective_auth_enabled() {
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${LOCAL_URL}/v1/models" 2>/dev/null || true)"
+  case "$code" in
+    401|403) printf 'true' ;;
+    200)     printf 'false' ;;
+    *)       printf 'unknown' ;;
+  esac
+}
 
 # --------------------------------------------------------------------------
 # Pre-flight: engine reachable?
@@ -103,9 +123,18 @@ note "${GRN}✓${RST} engine healthy on ${LOCAL_URL}"
 # --------------------------------------------------------------------------
 # Safety: a public URL with auth OFF is an open, unauthenticated LLM.
 # --------------------------------------------------------------------------
-if [[ "$(printf '%s' "$AUTH_ENABLED" | tr '[:upper:]' '[:lower:]')" != "true" ]]; then
+AUTH_ENABLED="$(effective_auth_enabled)"
+if [[ "$AUTH_ENABLED" != "true" ]]; then
   note ""
-  err "WARNING: AUTH_ENABLED is not 'true'."
+  if [[ "$AUTH_ENABLED" == "unknown" ]]; then
+    err "WARNING: could not determine whether the engine is enforcing auth."
+    err "${LOCAL_URL}/v1/models answered with neither 200 nor 401."
+  else
+    err "WARNING: the running engine is NOT enforcing auth."
+    err "It served ${LOCAL_URL}/v1/models to a request with no bearer token."
+    err "Note this is the engine's live behaviour -- a .env saying"
+    err "AUTH_ENABLED=true does not override the process it was started with."
+  fi
   err "Anyone with this URL can run inference on your machine for free."
   err "Turn on bearer-token auth before sharing widely:"
   err "    1) create .auth_keys.json  ->  [{\"key\":\"sk-...\",\"tenant\":\"prometa\"}]"

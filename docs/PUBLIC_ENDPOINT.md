@@ -130,11 +130,25 @@ both the engine and its public URL come back together after a reboot.
 
 ## 3. Authentication
 
-Auth is **optional** and controlled server-side by `AUTH_ENABLED`.
+Auth is controlled server-side by `AUTH_ENABLED`, and every shipped config
+turns it on. Leave it on — the endpoint in this document is reachable from the
+public internet.
 
-- **Auth off** (default for local dev): send no credentials. Every request is
-  attributed to the `anonymous` tenant.
-- **Auth on**: send a bearer token on every request.
+- **Auth on** (default): send a bearer token on every request.
+- **Auth off**: send no credentials. Every request is attributed to the
+  `anonymous` tenant, which means a public URL anyone can run inference through
+  and per-tenant metrics that read as a single unattributed bucket.
+
+`AUTH_ENABLED` can be set in more than one place — `.env`, the launchd plist's
+`EnvironmentVariables`, docker-compose, the shell — and process env wins over
+`.env`. To see what the engine is *actually* enforcing rather than what a file
+claims, ask it: `/v1/models` is behind auth, so
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' "$BASE/models"   # 401 = on, 200 = off
+```
+
+`make share` runs exactly this check before opening a tunnel.
 
 ```bash
 curl -s "$BASE/models" -H "Authorization: Bearer $KEY"
