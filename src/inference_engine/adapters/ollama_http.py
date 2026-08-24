@@ -27,9 +27,10 @@ the upstream's concern) — same shape as the vLLM adapter's caveat.
 
 Limits documented honestly:
 
-* **No embeddings** in this round.  Ollama supports them via ``/api/embed``
-  but the surface differs from OpenAI's; ``embed()`` raises
-  ``EmbeddingsNotSupportedError`` so the route maps to HTTP 501.
+* **Embeddings are served** through the shim's ``/v1/embeddings``, which
+  returns the OpenAI shape verbatim.  This matters because embedding-only
+  models such as ``embeddinggemma:300m`` are among the GGUFs llama.cpp
+  cannot open, so this backend is the only one that can serve them.
 * **No prefix-cache introspection.**  Ollama runs its own KV cache on the
   upstream side and doesn't surface per-call hit counts; the
   ``prefix_cache_*`` properties report ``enabled=False``.
@@ -75,6 +76,9 @@ from .base import (
 )
 
 log = get_logger("adapter.ollama_http")
+
+_CHAT_PATH = "/v1/chat/completions"
+_EMBEDDINGS_PATH = "/v1/embeddings"
 
 _JSON_RETRY_MIN_TOKENS = 256
 _JSON_RETRY_SYSTEM_PROMPT = (
@@ -143,6 +147,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         self._endpoint: str | None = None
         self._model_id: str | None = None
         self._client: httpx.AsyncClient | None = None
+        self._last_embed_action: str = "none"
 
     @property
     def is_loaded(self) -> bool:
@@ -505,11 +510,16 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
     # transport — one attempt, the retry loop over it, and error mapping
     # ------------------------------------------------------------------
 
-    async def _post_once(self, body: dict, deadline: UpstreamDeadline) -> httpx.Response:
+    async def _post_once(
+        self,
+        body: dict,
+        deadline: UpstreamDeadline,
+        path: str = _CHAT_PATH,
+    ) -> httpx.Response:
         """One attempt, bounded by what is LEFT of the deadline, not all of it."""
         assert self._client is not None
         async with deadline_scope(deadline):
-            response = await self._client.post("/v1/chat/completions", json=body)
+            response = await self._client.post(path, json=body)
         response.raise_for_status()
         return response
 
@@ -517,6 +527,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         self,
         body: dict,
         deadline: UpstreamDeadline,
+        path: str = _CHAT_PATH,
     ) -> httpx.Response:
         """Reissue this POST on the SAME deployment while that is honest.
 
@@ -528,7 +539,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         while True:
             attempt += 1
             try:
-                return await self._post_once(body, deadline)
+                return await self._post_once(body, deadline, path)
             except Exception as exc:
                 plan = plan_retry(
                     attempt=attempt,
@@ -542,7 +553,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                         attempt=attempt,
                         plan=plan,
                         exc=exc,
-                        operation="/v1/chat/completions",
+                        operation=path,
                     )
                     raise
                 log_retry(
@@ -551,7 +562,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                     attempt=attempt,
                     plan=plan,
                     exc=exc,
-                    operation="/v1/chat/completions",
+                    operation=path,
                 )
                 await asyncio.sleep(plan.delay_seconds)
 
@@ -599,8 +610,96 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         msg = ChatMessage(role="user", content=prompt)
         return await self.generate([msg], params, cancel=cancel)
 
-    async def embed(self, inputs: list[str]) -> EmbeddingResult:  # noqa: ARG002
-        raise EmbeddingsNotSupportedError(self.backend_name)
+    async def embed(self, inputs: list[str]) -> EmbeddingResult:
+        """Embed via Ollama's OpenAI-compatible ``/v1/embeddings``.
+
+        Ollama serves embeddings natively and its shim returns the OpenAI
+        shape verbatim, so this is a straight passthrough rather than the
+        capability probe the in-process llama.cpp adapter needs: there is no
+        "decoder-only GGUF misused as an embedder" failure mode to detect
+        here, because the upstream refuses those itself with a 400.
+
+        This existed as an unconditional ``EmbeddingsNotSupportedError``
+        while ollama_http was only a chat fallback. That stopped being
+        harmless once it became the primary source: ``embeddinggemma:300m``
+        is an embedding model that *only* this backend can open, so every
+        ``/v1/embeddings`` call against it returned 501.
+
+        ``data`` is sorted by ``index`` before the vectors are taken. The
+        contract is "one vector per input, in request order" and the shim is
+        not required to preserve order on the wire.
+        """
+        if not self.is_loaded:
+            raise RuntimeError("model not loaded")
+        if not inputs:
+            return EmbeddingResult(embeddings=[], prompt_tokens=0)
+
+        assert self._client is not None
+        body = {"model": self._model_id, "input": list(inputs)}
+        deadline = UpstreamDeadline(_deadline_seconds())
+        self._begin_upstream()
+        reported = False
+        try:
+            try:
+                response = await self._post_with_retries(body, deadline, _EMBEDDINGS_PATH)
+                payload = response.json()
+            except httpx.HTTPStatusError as exc:
+                # Ollama answers 501 when the model is not an embedding model
+                # at all -- a decoder-only chat GGUF, say. That is a statement
+                # about the MODEL, not the health of the deployment, so it must
+                # not count as a breaker failure and must not surface as a 500.
+                # It is exactly the condition the route already renders as HTTP
+                # 501 "embeddings not supported by <backend>", which also tells
+                # the caller what to do: load a real embedding model.
+                #
+                # in-process llama.cpp permits this same misuse (it has an
+                # explicit decoder-only serial path), so a store that embedded
+                # with a chat model under gguf-first ordering loses that here.
+                # Honest 501 beats a silent quality regression on vectors no
+                # encoder ever produced.
+                reported = True
+                if exc.response.status_code == 501:
+                    self._abandon_upstream()
+                    raise EmbeddingsNotSupportedError(self.backend_name) from exc
+                self._finish_upstream(exc)
+                raise self._upstream_http_error(exc) from exc
+            except Exception as exc:
+                self._finish_upstream(exc)
+                reported = True
+                typed = self._as_typed_upstream_error(exc)
+                if typed is exc:
+                    raise
+                raise typed from exc
+            self._finish_upstream(None)
+            reported = True
+        finally:
+            if not reported:
+                self._abandon_upstream()
+
+        data = payload.get("data")
+        if not isinstance(data, list) or len(data) != len(inputs):
+            raise UpstreamGenerationError(
+                error_type="upstream_contract_error",
+                backend=self.backend_name,
+                model=self._model_id or "",
+                detail=(
+                    f"expected {len(inputs)} embeddings, got "
+                    f"{len(data) if isinstance(data, list) else type(data).__name__}"
+                ),
+            )
+        ordered = sorted(data, key=lambda item: item.get("index", 0))
+        usage = payload.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("total_tokens") or 0
+        self._last_embed_action = "upstream"
+        return EmbeddingResult(
+            embeddings=[item["embedding"] for item in ordered],
+            prompt_tokens=int(prompt_tokens),
+        )
+
+    @property
+    def last_embed_action(self) -> str:
+        """What the last ``embed()`` did — read by the embeddings coalescer."""
+        return self._last_embed_action
 
     # ------------------------------------------------------------------
     # No prefix-cache introspection (Ollama doesn't surface it via HTTP).

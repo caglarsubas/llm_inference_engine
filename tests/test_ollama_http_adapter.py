@@ -6,7 +6,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from inference_engine.adapters.base import GenerationParams
+from inference_engine.adapters.base import (
+    EmbeddingsNotSupportedError,
+    GenerationParams,
+    UpstreamGenerationError,
+)
 from inference_engine.adapters.ollama_http import OllamaHttpAdapter
 from inference_engine.registry import ModelDescriptor
 from inference_engine.schemas import ChatMessage
@@ -174,3 +178,146 @@ def test_ollama_still_sends_the_schema_it_was_given() -> None:
     assert kwargs["response_format"]["type"] == "json_schema"
     assert kwargs["response_format"]["json_schema"]["name"] == "probe"
     assert kwargs["response_format"]["json_schema"]["strict"] is True
+
+
+# ---------------------------------------------------------------------------
+# embeddings — served through the shim's /v1/embeddings
+# ---------------------------------------------------------------------------
+
+
+def _embedding_response(vectors: list[list[float]], *, prompt_tokens: int = 7) -> dict:
+    return {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "index": i, "embedding": v}
+            for i, v in enumerate(vectors)
+        ],
+        "model": "embeddinggemma:300m",
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+    }
+
+
+async def _loaded_adapter(handler) -> OllamaHttpAdapter:
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_embed_posts_to_embeddings_path_and_returns_vectors() -> None:
+    seen: list[tuple[str, dict]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json=_embedding_response([[0.1, 0.2], [0.3, 0.4]]))
+
+    adapter = await _loaded_adapter(handler)
+    result = await adapter.embed(["one", "two"])
+
+    assert [path for path, _ in seen] == ["/v1/embeddings"]
+    assert seen[0][1]["input"] == ["one", "two"]
+    assert result.embeddings == [[0.1, 0.2], [0.3, 0.4]]
+    assert result.prompt_tokens == 7
+    assert adapter.last_embed_action == "upstream"
+
+
+@pytest.mark.asyncio
+async def test_embed_orders_vectors_by_index_not_wire_order() -> None:
+    """The contract is one vector per input IN REQUEST ORDER.
+
+    The shim is not obliged to preserve order on the wire, so a response whose
+    entries arrive reversed must still map back onto the caller's inputs.
+    Taking them as-received would silently mis-pair every vector.
+    """
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        payload = _embedding_response([[9.0], [1.0]])
+        payload["data"] = list(reversed(payload["data"]))
+        return httpx.Response(200, json=payload)
+
+    adapter = await _loaded_adapter(handler)
+    result = await adapter.embed(["first", "second"])
+
+    assert result.embeddings == [[9.0], [1.0]]
+
+
+@pytest.mark.asyncio
+async def test_embed_rejects_a_response_with_the_wrong_vector_count() -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_embedding_response([[0.1]]))
+
+    adapter = await _loaded_adapter(handler)
+    with pytest.raises(UpstreamGenerationError) as excinfo:
+        await adapter.embed(["one", "two"])
+    assert excinfo.value.error_type == "upstream_contract_error"
+
+
+@pytest.mark.asyncio
+async def test_embed_short_circuits_on_empty_input_without_calling_upstream() -> None:
+    calls: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(req.url.path)
+        return httpx.Response(200, json=_embedding_response([]))
+
+    adapter = await _loaded_adapter(handler)
+    result = await adapter.embed([])
+
+    assert result.embeddings == []
+    assert result.prompt_tokens == 0
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_embed_maps_upstream_http_error_to_typed_upstream_error() -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "not an embedding model"}})
+
+    adapter = await _loaded_adapter(handler)
+    with pytest.raises(UpstreamGenerationError) as excinfo:
+        await adapter.embed(["one"])
+    assert excinfo.value.error_type == "upstream_http_error"
+    assert excinfo.value.upstream_status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_upstream_501_becomes_embeddings_not_supported_not_a_server_error() -> None:
+    """Ollama answers 501 for a model that is not an embedder at all.
+
+    That is a fact about the model, so it has to reach the route as the typed
+    ``EmbeddingsNotSupportedError`` it already renders as HTTP 501 with the
+    backend name. Letting it escape as a generic upstream error turned a
+    "load a real embedding model" answer into an opaque 500.
+    """
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(501, json={"error": {"message": "does not support embeddings"}})
+
+    adapter = await _loaded_adapter(handler)
+    with pytest.raises(EmbeddingsNotSupportedError):
+        await adapter.embed(["one"])
+
+
+@pytest.mark.asyncio
+async def test_model_level_501_does_not_trip_the_deployment_breaker() -> None:
+    """A non-embedding model must not make the whole deployment look unhealthy.
+
+    Chat on this same endpoint is fine; counting the refusal as a health
+    failure would take the upstream out of candidate selection for everyone.
+    """
+    from inference_engine.registry.breaker import OPEN, get_upstream_breaker
+
+    get_upstream_breaker().reset()
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(501, json={"error": {"message": "does not support embeddings"}})
+
+    adapter = await _loaded_adapter(handler)
+    key = adapter.upstream_deployment_key()
+
+    for _ in range(5):
+        with pytest.raises(EmbeddingsNotSupportedError):
+            await adapter.embed(["one"])
+
+    assert get_upstream_breaker().state(key) != OPEN
