@@ -138,7 +138,11 @@ services:
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-inference-engine}
-      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      # On by default. The engine will refuse to start until the keys file
+      # exists at AUTH_KEYS_FILE, which is mounted from CONFIG_HOST_DIR and is
+      # empty in a fresh clone -- seed it first:
+      #     cp .auth_keys.example.json docker/config/auth_keys.json
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # llama.cpp on CPU inside containers — Metal isn't available here.
       N_GPU_LAYERS: "0"
