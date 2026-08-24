@@ -59,8 +59,22 @@ def resource_key(adapter: InferenceAdapter, model_name: str) -> str:
 
 
 def resource_limit(adapter: InferenceAdapter) -> int:
+    """How many requests may be in flight against one backend+model at once.
+
+    The default of 1 is for backends that serialize internally -- in-process
+    llama.cpp and MLX hold a lock for the whole generation, so a second
+    dispatch would only queue inside ``adapter._lock`` where the scheduler
+    cannot see it or apply fairness.
+
+    Backends that batch get their own cap. vLLM has always had one; ollama_http
+    needs one too now that it is the primary backend rather than a chat-only
+    fallback, because it batches concurrent sequences against a single weight
+    read and a cap of 1 leaves that entirely unused.
+    """
     if adapter.backend_name in {"vllm", "openrouter"}:
         return settings.scheduler_vllm_resource_max_in_flight
+    if adapter.backend_name == "ollama_http":
+        return settings.scheduler_ollama_http_resource_max_in_flight
     return settings.scheduler_resource_max_in_flight
 
 

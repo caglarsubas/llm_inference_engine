@@ -331,6 +331,33 @@ class Settings(BaseSettings):
         ge=1,
         description="Per-model dispatch cap for vLLM-backed models.",
     )
+    scheduler_ollama_http_resource_max_in_flight: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Per-model dispatch cap for Ollama-HTTP-backed models. MUST equal "
+            "the server's OLLAMA_NUM_PARALLEL.\n\n"
+            "Too low and the engine starves slots that are sitting idle. Too "
+            "high is worse: the surplus queues INSIDE Ollama, where this "
+            "scheduler cannot see it. Queue depth, per-tenant fairness and the "
+            "wait-aging that stops bulk work starving interactive work all "
+            "operate on the engine-side queue, so anything parked upstream is "
+            "invisible to every one of them -- a tenant's burst would jump the "
+            "queue simply by already being inside the backend.\n\n"
+            "Default 2 rather than 4 because KV cache scales with "
+            "num_parallel and the ceiling is set by the WORST model, not the "
+            "average one. Measured on an M5 Max (128GB unified): at "
+            "OLLAMA_NUM_PARALLEL=4, gemma4:26b is fine -- sliding-window "
+            "attention keeps its KV at 3.7GB -- but ministral-3:14b is "
+            "full-attention over 40 layers and allocates 20GB of KV for four "
+            "sequences, which tipped the host into swap and took it from "
+            "38.5 tok/s to 5.4. At 2 it stays whole, and ministral-3:8b still "
+            "reaches ~1.9x aggregate throughput under concurrency.\n\n"
+            "Raise it only alongside a measurement of your largest "
+            "full-attention model, and only if the host has headroom for "
+            "num_parallel x context x per-token KV on that model."
+        ),
+    )
     scheduler_max_queue_per_tenant: int = Field(default=64, ge=1)
     scheduler_queue_timeout_seconds: float = Field(default=30.0, ge=0.0)
     scheduler_retry_after_seconds: int = Field(default=2, ge=0)

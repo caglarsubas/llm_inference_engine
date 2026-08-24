@@ -19,6 +19,9 @@ from inference_engine.adapters.base import GenerationResult
 from inference_engine.cancellation import Cancellation, watch_disconnect
 from inference_engine.manager import ModelManager
 from inference_engine.registry import ModelDescriptor
+from types import SimpleNamespace
+from inference_engine.api import _scheduling
+from inference_engine.config import settings
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +256,46 @@ async def test_many_concurrent_watchdogs_are_reaped() -> None:
     assert final_tasks <= initial_tasks + 1, (
         f"watchdog leaked tasks: started={initial_tasks} ended={final_tasks}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-backend dispatch caps
+# ---------------------------------------------------------------------------
+
+
+def _adapter(backend: str):
+    return SimpleNamespace(backend_name=backend)
+
+
+def test_batching_backends_get_their_own_dispatch_cap(monkeypatch) -> None:
+    """Serializing and batching backends must not share one cap.
+
+    llama.cpp and MLX hold a lock for the whole generation, so a second
+    dispatch would queue inside the adapter where the scheduler cannot see it
+    or apply fairness -- 1 is correct there. ollama_http and vLLM batch
+    concurrent sequences against a single weight read, so the same 1 leaves
+    that capability entirely unused.
+    """
+    monkeypatch.setattr(settings, "scheduler_resource_max_in_flight", 1)
+    monkeypatch.setattr(settings, "scheduler_ollama_http_resource_max_in_flight", 2)
+    monkeypatch.setattr(settings, "scheduler_vllm_resource_max_in_flight", 8)
+
+    assert _scheduling.resource_limit(_adapter("llama_cpp")) == 1
+    assert _scheduling.resource_limit(_adapter("mlx")) == 1
+    assert _scheduling.resource_limit(_adapter("ollama_http")) == 2
+    assert _scheduling.resource_limit(_adapter("vllm")) == 8
+    assert _scheduling.resource_limit(_adapter("openrouter")) == 8
+
+
+def test_ollama_http_cap_is_independent_of_the_serializing_default(monkeypatch) -> None:
+    """Changing the local-backend cap must not silently move ollama_http.
+
+    They were one setting until ollama_http became the primary backend. If
+    they collapse back together, tuning one to match OLLAMA_NUM_PARALLEL would
+    also uncap in-process llama.cpp, which cannot honour it.
+    """
+    monkeypatch.setattr(settings, "scheduler_resource_max_in_flight", 6)
+    monkeypatch.setattr(settings, "scheduler_ollama_http_resource_max_in_flight", 2)
+
+    assert _scheduling.resource_limit(_adapter("ollama_http")) == 2
+    assert _scheduling.resource_limit(_adapter("llama_cpp")) == 6

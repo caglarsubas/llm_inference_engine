@@ -112,24 +112,33 @@ async def test_queue_full_rejects_per_tenant(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_one_held_ollama_slot_queues_then_refuses_the_rest(monkeypatch) -> None:
-    """What holding an ``ollama_http`` dispatch slot actually costs everyone else.
+async def test_one_held_serialized_slot_queues_then_refuses_the_rest(monkeypatch) -> None:
+    """What holding a SERIALIZING backend's dispatch slot costs everyone else.
 
     The README's timeout section leans on this, so it is measured rather than
-    asserted. ``ollama_http`` takes the default resource cap of 1, so a second
-    request for the same model cannot dispatch while the first holds the slot —
-    and it does not wait forever either: it is refused with
+    asserted. in-process llama.cpp and MLX hold a lock for the whole
+    generation, so they take the default resource cap of 1: a second request
+    for the same model cannot dispatch while the first holds the slot — and it
+    does not wait forever either: it is refused with
     ``TenantQueueTimeoutError`` (a 503 ``tenant_queue_timeout`` on the wire)
     once it has waited ``SCHEDULER_QUEUE_TIMEOUT_SECONDS``.
+
+    ``ollama_http`` used to be in this group by default. It is not any more —
+    it batches, so it takes its own cap tracking OLLAMA_NUM_PARALLEL — but the
+    refusal path below is unchanged for the backends that really do serialize.
     """
     monkeypatch.setattr(settings, "scheduler_queue_timeout_seconds", 0.2)
-    # The cap the README names: ollama_http takes SCHEDULER_RESOURCE_MAX_IN_FLIGHT
-    # (shipped default 1) while vLLM takes its own, larger, setting.
+    # Serializing backends take SCHEDULER_RESOURCE_MAX_IN_FLIGHT (shipped
+    # default 1); batching backends each take their own, larger, setting.
     assert Settings.model_fields["scheduler_resource_max_in_flight"].default == 1
     assert (
-        resource_limit(_FakeAdapter("ollama_http"))
+        resource_limit(_FakeAdapter("llama_cpp"))
         == settings.scheduler_resource_max_in_flight
         == 1
+    )
+    assert (
+        resource_limit(_FakeAdapter("ollama_http"))
+        == settings.scheduler_ollama_http_resource_max_in_flight
     )
     assert (
         resource_limit(_FakeAdapter("vllm")) == settings.scheduler_vllm_resource_max_in_flight
