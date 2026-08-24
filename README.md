@@ -735,8 +735,9 @@ common ones, so a var missing from that file is still settable:
 | `SCHEDULER_ENABLED`      | `true`                                                                                   | Tenant-aware admission and fair dispatch before backend locks                              |
 | `SCHEDULER_GLOBAL_MAX_IN_FLIGHT` | `32`                                                                            | Max scheduler slots active in one engine replica                                           |
 | `SCHEDULER_TENANT_RESERVED_IN_FLIGHT` | `2`                                                                        | Soft per-tenant active slot reservation; tenants can borrow idle capacity                  |
-| `SCHEDULER_RESOURCE_MAX_IN_FLIGHT` | `1`                                                                              | Default per-model/backend dispatch cap; keeps local serialized adapters fair               |
+| `SCHEDULER_RESOURCE_MAX_IN_FLIGHT` | `1`                                                                              | Per-model dispatch cap for backends that serialize internally (`llama_cpp`, `mlx`); batching backends have their own settings |
 | `SCHEDULER_VLLM_RESOURCE_MAX_IN_FLIGHT` | `8`                                                                         | Per-model dispatch cap for vLLM-backed models                                              |
+| `SCHEDULER_OLLAMA_HTTP_RESOURCE_MAX_IN_FLIGHT` | `2` | Per-model dispatch cap for Ollama-HTTP models. **Must equal the server's `OLLAMA_NUM_PARALLEL`** — set higher and the surplus queues inside Ollama where the scheduler cannot see it, silently defeating per-tenant fairness |
 | `SCHEDULER_MAX_QUEUE_PER_TENANT` | `64`                                                                             | Per-tenant queue depth before `429 tenant_queue_full`                                      |
 | `SCHEDULER_QUEUE_TIMEOUT_SECONDS` | `30`                                                                           | Max wait for scheduler capacity before `503 tenant_queue_timeout`; `0` disables timeout    |
 | `SCHEDULER_RETRY_AFTER_SECONDS` | `2`                                                                              | `Retry-After` header on scheduler admission failures                                       |
@@ -2866,11 +2867,13 @@ adapters, which bound every await on the upstream by what is *left* of the
 budget and start no further read once it is gone.
 
 That matters beyond latency, because the scheduler lease is held for the whole
-call. `ollama_http` takes the default dispatch cap of
-`SCHEDULER_RESOURCE_MAX_IN_FLIGHT=1`, so while one call holds the slot no other
-request for that model dispatches: each waits in the tenant queue and is
-refused with a 503 `tenant_queue_timeout` once it has waited
-`SCHEDULER_QUEUE_TIMEOUT_SECONDS` (30 s by default). Bounding the stream bounds
+call. `ollama_http` takes `SCHEDULER_OLLAMA_HTTP_RESOURCE_MAX_IN_FLIGHT` (2 by
+default, and it must equal the Ollama server's `OLLAMA_NUM_PARALLEL`), so once
+that many calls hold slots no further request for that model dispatches: each
+waits in the tenant queue and is refused with a 503 `tenant_queue_timeout` once
+it has waited `SCHEDULER_QUEUE_TIMEOUT_SECONDS` (30 s by default). In-process
+`llama_cpp` and `mlx` serialize on an adapter lock and keep the stricter
+`SCHEDULER_RESOURCE_MAX_IN_FLIGHT=1`. Bounding the stream bounds
 how long that costs — it does not change how the queue behaves while it lasts,
 and it does not address the separate leak in **Known issue: a leaked
 `ollama_http` dispatch slot** below.
