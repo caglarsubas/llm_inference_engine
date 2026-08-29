@@ -7,6 +7,7 @@ from .breaker import (
 )
 from .composite import CompositeRegistry
 from .mlx import MLXRegistry
+from .mlx_probe import MLXProbeResult, MLXRuntimeProbe, get_mlx_probe
 from .ollama import ModelDescriptor, ModelFormat, OllamaRegistry, SkippedManifest
 from .ollama_http import OllamaHttpRegistry
 from .openrouter import OpenRouterRegistry
@@ -18,7 +19,9 @@ from .vllm_probe import VLLMProbeResult, VLLMUpstreamProbe, get_vllm_probe
 __all__ = [
     "CompositeRegistry",
     "GGUFLoadProbe",
+    "MLXProbeResult",
     "MLXRegistry",
+    "MLXRuntimeProbe",
     "ModelDescriptor",
     "ModelFormat",
     "OllamaHttpRegistry",
@@ -35,6 +38,7 @@ __all__ = [
     "breaker_span_attrs",
     "descriptor_allows",
     "descriptor_deployment_key",
+    "get_mlx_probe",
     "get_openrouter_probe",
     "get_probe",
     "get_upstream_breaker",
