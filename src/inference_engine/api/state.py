@@ -38,6 +38,7 @@ from ..registry import (
     OpenRouterRegistry,
     VLLMRegistry,
     descriptor_allows,
+    get_mlx_probe,
     get_openrouter_probe,
     get_probe,
     get_vllm_probe,
@@ -134,6 +135,10 @@ class AppState:
         def _accept(desc: ModelDescriptor) -> bool:
             if desc.format == "gguf":
                 return get_probe().probe(desc).loadable
+            if desc.format == "mlx":
+                # Needs the optional ``mlx-lm`` runtime, and it is text-only —
+                # VLM checkpoints belong to the sidecar workers, not this adapter.
+                return get_mlx_probe().probe(desc).loadable
             if desc.format == "vllm":
                 return get_vllm_probe().probe(desc).loadable
             if desc.format == "openrouter":

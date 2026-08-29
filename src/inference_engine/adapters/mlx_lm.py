@@ -148,7 +148,29 @@ class MLXAdapter(InferenceAdapter):
         if self._descriptor and self._descriptor.model_path == descriptor.model_path:
             return
 
-        from mlx_lm import load as mlx_load  # noqa: PLC0415
+        # ``mlx-lm`` ships in the optional ``mlx`` extra, so a deployment that
+        # never installed it reaches here with the descriptor looking fine.
+        # ``registry/mlx_probe.py`` normally keeps those models out of the
+        # catalog entirely; this is the backstop for anything that resolves a
+        # descriptor directly. A missing optional runtime is a statement about
+        # model availability, not an engine fault, so it must not surface as a
+        # 500 ``internal_server_error`` — ModelNotFoundError is what the
+        # routing layer already treats as "this model can't serve" (and what
+        # lets it fall through to the next candidate in a signed route).
+        from ..manager import ModelNotFoundError  # noqa: PLC0415 — avoid import cycle at module load
+
+        try:
+            from mlx_lm import load as mlx_load  # noqa: PLC0415
+        except ImportError as exc:
+            log.warning(
+                "mlx_runtime_missing",
+                model=descriptor.qualified_name,
+                error=str(exc),
+            )
+            raise ModelNotFoundError(
+                f"{descriptor.qualified_name}: mlx-lm is not installed in this "
+                "environment (install the 'mlx' extra to serve mlx models)"
+            ) from exc
 
         log.info(
             "loading_model",
@@ -160,9 +182,7 @@ class MLXAdapter(InferenceAdapter):
         )
 
         await self.unload()
-        self._model, self._tokenizer = await asyncio.to_thread(
-            mlx_load, str(descriptor.model_path)
-        )
+        self._model, self._tokenizer = await asyncio.to_thread(mlx_load, str(descriptor.model_path))
         self._descriptor = descriptor
         self._reset_cache()
         log.info("model_loaded", model=descriptor.qualified_name)
@@ -520,7 +540,9 @@ class MLXAdapter(InferenceAdapter):
         sampler = self._make_sampler(params)
         logits_processors = self._make_logits_processors(params)
 
-        queue: asyncio.Queue[StreamChunk | tuple[str, list[int]] | Exception] = asyncio.Queue(maxsize=64)
+        queue: asyncio.Queue[StreamChunk | tuple[str, list[int]] | Exception] = asyncio.Queue(
+            maxsize=64
+        )
         loop = asyncio.get_running_loop()
 
         async with self._lock:

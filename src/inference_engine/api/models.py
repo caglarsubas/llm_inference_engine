@@ -9,6 +9,7 @@ from ..registry import (
     VLLMRegistry,
     descriptor_allows,
     descriptor_deployment_key,
+    get_mlx_probe,
     get_openrouter_probe,
     get_probe,
     get_upstream_breaker,
@@ -109,6 +110,11 @@ def _to_info(desc) -> ModelInfo:
 def _accept_descriptor(desc) -> bool:
     if desc.format == "gguf":
         return get_probe().probe(desc).loadable
+    if desc.format == "mlx":
+        # The in-process mlx adapter needs the optional ``mlx-lm`` runtime and
+        # only handles text architectures; the probe keeps VLM checkpoints and
+        # runtime-less deployments out of ``data``.
+        return get_mlx_probe().probe(desc).loadable
     if desc.format == "vllm":
         return get_vllm_probe().probe(desc).loadable
     if desc.format == "openrouter":
@@ -238,7 +244,7 @@ def _unavailable_entry(desc, *, reason: str, detail: str) -> UnavailableModel:
 def _unavailable_from_rejected(rejected) -> list[UnavailableModel]:
     unavailable: list[UnavailableModel] = []
     for desc in rejected:
-        # GGUF, vLLM and OpenRouter rejections carry a structured probe
+        # GGUF, MLX, vLLM and OpenRouter rejections carry a structured probe
         # reason. ollama_http has no probe, so the only way it lands here is
         # the breaker holding it in cooldown. Any other format is accepted
         # unconditionally by ``_accept_descriptor`` and should not appear —
@@ -249,6 +255,15 @@ def _unavailable_from_rejected(rejected) -> list[UnavailableModel]:
                 _unavailable_entry(
                     desc,
                     reason=result.reason or "load_failed",
+                    detail=result.detail,
+                )
+            )
+        elif desc.format == "mlx":
+            result = get_mlx_probe().probe(desc)
+            unavailable.append(
+                _unavailable_entry(
+                    desc,
+                    reason=result.reason or "mlx_unavailable",
                     detail=result.detail,
                 )
             )

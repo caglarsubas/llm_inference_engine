@@ -47,6 +47,7 @@ from .observability import configure_logging, get_logger
 from .otel import configure_tracing, instrument_fastapi, is_enabled, shutdown_tracing
 from .registry import (
     descriptor_allows,
+    get_mlx_probe,
     get_openrouter_probe,
     get_probe,
     get_vllm_probe,
@@ -107,6 +108,9 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
     def _accept(desc):
         if desc.format == "gguf":
             return probe.probe(desc).loadable
+        if desc.format == "mlx":
+            # Optional ``mlx-lm`` runtime, text architectures only.
+            return get_mlx_probe().probe(desc).loadable
         if desc.format == "vllm":
             return get_vllm_probe().probe(desc).loadable
         if desc.format == "openrouter":
@@ -128,6 +132,15 @@ def _collect_startup_model_summary(n_keys: int) -> dict:
                 {
                     "model": desc.qualified_name,
                     "reason": result.reason or "load_failed",
+                    "detail": result.detail,
+                }
+            )
+        elif desc.format == "mlx":
+            result = get_mlx_probe().probe(desc)
+            unavailable.append(
+                {
+                    "model": desc.qualified_name,
+                    "reason": result.reason or "mlx_unavailable",
                     "detail": result.detail,
                 }
             )
