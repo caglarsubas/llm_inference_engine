@@ -1,11 +1,37 @@
 """Ollama HTTP adapter — proxy chat completions to an Ollama server.
 
-Mirrors :class:`VLLMAdapter` (HTTP client to an OpenAI-compatible upstream)
-but targets the Ollama-bundled endpoint.  Ollama exposes both a native
-``/api/chat`` API and an OpenAI-compatible ``/v1/chat/completions`` shim;
-we use the latter so the request/response shape matches what the rest of
-this codebase already speaks (vLLM, OpenAI cloud, llama-cpp-python's
-``create_chat_completion``).
+Mirrors :class:`VLLMAdapter` (HTTP client to a remote upstream) but targets
+the Ollama-bundled endpoint.  Ollama exposes both a native ``/api/chat`` API
+and an OpenAI-compatible ``/v1/chat/completions`` shim.  Chat goes through
+the NATIVE endpoint; embeddings still go through the shim.
+
+Why chat is not on the OpenAI shim
+----------------------------------
+
+It was, and ``settings.n_ctx`` was silently inert as a result (issue #111).
+The shim accepts only the OpenAI request fields and builds the runtime
+options itself, so there is no way to tell it what KV-cache size to load a
+model at.  Measured against Ollama 0.32.14, all three spellings —
+``options.num_ctx``, a top-level ``num_ctx``, a top-level ``context_length``
+— returned HTTP 200 and loaded the model at the host default anyway; a
+runner pre-loaded at 8192 through ``/api/chat`` was *reloaded* at the host
+default by the very next shim request.  Only ``/api/chat`` carries
+``options``, so only ``/api/chat`` can honour the setting.
+
+That matters well beyond tidiness.  Ollama's default window scales with
+available memory and reaches 262,144 on a large-memory host, and KV cache
+scales linearly with it: ``ministral-3:8b`` measured 41 GB resident — 6 GB
+of weights and 34 GiB of cache — where right-sizing to 32,768 brought the
+same model to 9.8 GB.  Architectures without sliding-window attention pay
+that on every layer, so an 8.9B model can outweigh a 25.8B one, and the
+symptom reaching clients is scheduler starvation (``tenant_queue_timeout``),
+not anything that looks like a context setting.
+
+The cost of the native endpoint is that this adapter owns the translation
+both ways (OpenAI shapes in, OpenAI shapes out) instead of getting it for
+free from the shim.  ``_to_messages`` / ``_native_body`` and
+``_result_from_payload`` / ``_chunk_from_event`` are that seam; everything
+above the adapter still speaks OpenAI.
 
 Why this adapter exists at all
 ------------------------------
@@ -39,12 +65,26 @@ Limits documented honestly:
 * **Blocking generate cancel** is best-effort: closing the client doesn't
   abort an in-flight upstream request.  Same caveat as every other
   adapter's blocking path; agents that need fast cancel use ``stream=true``.
+* **Context overflow is only sometimes an error.**  Ollama truncates an
+  over-long prompt by default and says so nowhere in the response — the
+  ``prompt_eval_count`` it reports is the count *after* truncation, so the
+  condition is not detectable post-hoc, and there is no tokenizer endpoint
+  to pre-count against.  A deployment run with context shift disabled does
+  raise, and :meth:`_as_context_error` maps that to the same typed
+  ``ContextLengthExceededError`` (HTTP 400 ``context_length_exceeded``) the
+  llama.cpp path raises, rather than an opaque 502.  Operators who want the
+  contract everywhere have to turn context shift off upstream.
+* **Images must be inline.**  Native ``/api/chat`` takes raw base64 in
+  ``images``; a ``data:`` URL is unwrapped here.  A remote ``http(s)``
+  image URL is passed through and rejected upstream — the shim did not
+  fetch those either.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Iterable
 from contextlib import AsyncExitStack, aclosing
 
@@ -65,6 +105,7 @@ from ._upstream_retry import (
     plan_retry,
 )
 from .base import (
+    ContextLengthExceededError,
     EmbeddingResult,
     EmbeddingsNotSupportedError,
     GenerationParams,
@@ -77,8 +118,30 @@ from .base import (
 
 log = get_logger("adapter.ollama_http")
 
-_CHAT_PATH = "/v1/chat/completions"
+# Chat is native (it is the only endpoint that accepts ``options``);
+# embeddings stay on the OpenAI shim, which returns the OpenAI shape verbatim
+# and has no context-window decision to make.
+_CHAT_PATH = "/api/chat"
 _EMBEDDINGS_PATH = "/v1/embeddings"
+
+# Ollama's own overflow wording, taken from the server binary rather than
+# guessed. Only the first carries both integers; the rest are matched as
+# substrings so a phrasing change across releases degrades to "we still know
+# it was a context overflow" instead of falling back to an opaque 502.
+_CTX_OVERFLOW_RE = re.compile(
+    r"input length\s*\((\d+)\s*tokens?\).*?context length\s*\((\d+)\s*tokens?\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_CTX_OVERFLOW_PHRASES = (
+    "exceeds the context length",
+    "exceeds maximum context length",
+    "exceeds the available context",
+    "cannot be truncated further",
+)
+
+# ``data:image/png;base64,<payload>`` — native ``/api/chat`` wants only the
+# payload.
+_DATA_URL_RE = re.compile(r"^data:[^;,]*;base64,", re.IGNORECASE)
 
 _JSON_RETRY_MIN_TOKENS = 256
 _JSON_RETRY_SYSTEM_PROMPT = (
@@ -100,14 +163,8 @@ def _deadline_seconds() -> float | None:
 
 
 def _has_image_content(messages: list[dict]) -> bool:
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "image_url":
-                return True
-    return False
+    """True when any already-translated native message carries an image."""
+    return any(message.get("images") for message in messages)
 
 
 def _prepend_json_retry_prompt(messages: list[dict]) -> list[dict]:
@@ -148,6 +205,8 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         self._model_id: str | None = None
         self._client: httpx.AsyncClient | None = None
         self._last_embed_action: str = "none"
+        # Resolved at load(); every request carries it as ``options.num_ctx``.
+        self._num_ctx: int = settings.n_ctx
 
     @property
     def is_loaded(self) -> bool:
@@ -184,6 +243,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         self._descriptor = descriptor
         self._endpoint = descriptor.endpoint
         self._model_id = str(model_id)
+        self._num_ctx = self._resolve_num_ctx(descriptor)
         self._bind_deployment(self._endpoint, self._model_id)
         self._client = httpx.AsyncClient(base_url=self._endpoint, timeout=_chat_timeout())
         log.info(
@@ -191,7 +251,25 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
             model=descriptor.qualified_name,
             endpoint=self._endpoint,
             model_id=self._model_id,
+            n_ctx=self._num_ctx,
+            n_ctx_ceiling=settings.n_ctx,
         )
+
+    def _resolve_num_ctx(self, descriptor: ModelDescriptor) -> int:
+        """This model's effective context window, clamped to what it was trained for.
+
+        The trained window comes from the registry, which already reads it off
+        ``POST /api/show`` and caches it per blob digest — no extra upstream
+        call here. An absent or unparsable value means "unknown" and leaves the
+        configured ceiling alone, exactly as a missed GGUF probe does on the
+        llama.cpp path.
+        """
+        declared = (descriptor.params or {}).get("context_length")
+        try:
+            n_ctx_train = int(declared) if declared is not None else 0
+        except (TypeError, ValueError):
+            n_ctx_train = 0
+        return self._effective_n_ctx(settings.n_ctx, n_ctx_train)
 
     async def unload(self) -> None:
         if self._client is not None:
@@ -204,6 +282,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
             self._descriptor = None
             self._endpoint = None
             self._model_id = None
+            self._num_ctx = settings.n_ctx
             self._clear_deployment()
 
     # ------------------------------------------------------------------
@@ -211,68 +290,128 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _to_messages(messages: Iterable[ChatMessage]) -> list[dict]:
+    def _image_payload(url: str) -> str:
+        """Native ``images`` entries are bare base64, not data URLs."""
+        return _DATA_URL_RE.sub("", url, count=1)
+
+    @classmethod
+    def _split_content(cls, content) -> tuple[str, list[str]]:
+        """OpenAI content parts -> ``(text, images)`` for one native message.
+
+        Native ``/api/chat`` keeps text and images in separate fields, so the
+        text parts are joined and the image parts collected. A plain string
+        content passes through with no images.
+        """
+        if not isinstance(content, list):
+            return ("" if content is None else str(content), [])
+        texts: list[str] = []
+        images: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                texts.append(str(part.get("text") or ""))
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url")
+                if url:
+                    images.append(cls._image_payload(str(url)))
+        return ("\n".join(t for t in texts if t), images)
+
+    @staticmethod
+    def _tool_call_arguments(arguments: str | None):
+        """Native tool calls carry an arguments OBJECT; OpenAI carries a string.
+
+        A non-JSON string (a model that emitted junk, or a caller replaying a
+        transcript) is wrapped rather than dropped: sending it through as-is
+        would lose the turn, and Ollama tolerates a scalar-valued map.
+        """
+        if not arguments:
+            return {}
+        try:
+            decoded = json.loads(arguments)
+        except (TypeError, ValueError):
+            return {"arguments": arguments}
+        return decoded if isinstance(decoded, dict) else {"arguments": decoded}
+
+    @classmethod
+    def _to_messages(cls, messages: Iterable[ChatMessage]) -> list[dict]:
         out: list[dict] = []
         for m in messages:
-            entry: dict = {"role": m.role, "content": dump_chat_content(m.content)}
+            text, images = cls._split_content(dump_chat_content(m.content))
+            entry: dict = {"role": m.role, "content": text}
+            if images:
+                entry["images"] = images
             if m.tool_calls is not None:
                 entry["tool_calls"] = [
                     {
                         "id": tc.id,
-                        "type": tc.type,
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "arguments": cls._tool_call_arguments(tc.function.arguments),
                         },
                     }
                     for tc in m.tool_calls
                 ]
+            # Native messages carry both of these, so a tool result still
+            # points back at the call it answers.
             if m.tool_call_id is not None:
                 entry["tool_call_id"] = m.tool_call_id
             if m.name is not None:
-                entry["name"] = m.name
+                entry["tool_name"] = m.name
             out.append(entry)
         return out
 
-    def _completion_kwargs(self, params: GenerationParams) -> dict:
-        kw: dict = {
-            "model": self._model_id,
+    def _options(self, params: GenerationParams) -> dict:
+        """Native runtime options — including the one this endpoint exists for.
+
+        ``num_ctx`` is the whole reason chat is not on the OpenAI shim: without
+        it Ollama picks a window from available VRAM (up to 262,144) and the
+        deployment's ``N_CTX`` means nothing. See the module docstring.
+        """
+        opts: dict = {
+            "num_ctx": self._num_ctx,
             "temperature": params.temperature,
             "top_p": params.top_p,
-            "max_tokens": params.max_tokens,
+            "num_predict": params.max_tokens,
         }
         if params.top_k > 0:
-            kw["top_k"] = params.top_k
+            opts["top_k"] = params.top_k
         if params.stop:
-            kw["stop"] = params.stop
+            opts["stop"] = list(params.stop)
         if params.seed is not None:
-            kw["seed"] = params.seed
-        if params.json_mode:
-            # Ollama's OpenAI shim understands the json_schema form on recent
-            # releases and ignores the extra key on older ones, degrading to
-            # plain JSON mode rather than erroring.
-            if params.json_schema:
-                kw["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": params.json_schema_name,
-                        "schema": params.json_schema,
-                        "strict": params.json_schema_strict,
-                    },
-                }
-            else:
-                kw["response_format"] = {"type": "json_object"}
-        if params.tools:
-            kw["tools"] = params.tools
-        if params.tool_choice is not None:
-            kw["tool_choice"] = params.tool_choice
+            opts["seed"] = params.seed
         if params.frequency_penalty is not None:
-            kw["frequency_penalty"] = params.frequency_penalty
+            opts["frequency_penalty"] = params.frequency_penalty
         if params.presence_penalty is not None:
-            kw["presence_penalty"] = params.presence_penalty
+            opts["presence_penalty"] = params.presence_penalty
         if params.repetition_penalty is not None:
-            kw["repetition_penalty"] = params.repetition_penalty
-        return kw
+            opts["repeat_penalty"] = params.repetition_penalty
+        return opts
+
+    def _native_body(
+        self,
+        messages: list[dict],
+        params: GenerationParams,
+        *,
+        stream: bool,
+    ) -> dict:
+        body: dict = {
+            "model": self._model_id,
+            "messages": messages,
+            "stream": stream,
+            "options": self._options(params),
+        }
+        if params.json_mode:
+            # Native structured outputs: ``format`` takes the bare schema, and
+            # the string "json" is the schema-less JSON mode. This is the same
+            # sampler the shim's ``response_format`` wraps, reached directly.
+            body["format"] = params.json_schema if params.json_schema else "json"
+        if params.tools:
+            body["tools"] = params.tools
+        # ``tool_choice`` / ``parallel_tool_calls`` have no native equivalent.
+        # The shim dropped them too (Go ignores unknown request fields), so
+        # this is the same behaviour, now visible rather than accidental.
+        return body
 
     # ------------------------------------------------------------------
     # generate / stream
@@ -287,12 +426,9 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         if not self.is_loaded:
             raise RuntimeError("model not loaded")
 
-        body = {
-            **self._completion_kwargs(params),
-            "messages": self._to_messages(messages),
-            "stream": False,
-        }
-        should_retry_empty_json = params.json_mode and _has_image_content(body["messages"])
+        native_messages = self._to_messages(messages)
+        body = self._native_body(native_messages, params, stream=False)
+        should_retry_empty_json = params.json_mode and _has_image_content(native_messages)
         assert self._client is not None
         # One budget for the whole logical call: the transport retries below
         # and the empty-multimodal-JSON reprompt all draw from it, so neither
@@ -307,21 +443,32 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
 
                 if should_retry_empty_json and self._content_from_response(data) == "":
                     retry_body = dict(body)
-                    retry_body.pop("response_format", None)
-                    retry_body["max_tokens"] = max(
-                        int(retry_body.get("max_tokens") or 0),
+                    retry_body.pop("format", None)
+                    retry_options = dict(body["options"])
+                    retry_options["num_predict"] = max(
+                        int(retry_options.get("num_predict") or 0),
                         _JSON_RETRY_MIN_TOKENS,
                     )
-                    retry_body["messages"] = _prepend_json_retry_prompt(body["messages"])
+                    retry_body["options"] = retry_options
+                    retry_body["messages"] = _prepend_json_retry_prompt(native_messages)
                     log.warning(
                         "ollama_http.retry_empty_multimodal_json",
                         model=self._model_id,
-                        original_max_tokens=body.get("max_tokens"),
-                        retry_max_tokens=retry_body["max_tokens"],
+                        original_max_tokens=body["options"].get("num_predict"),
+                        retry_max_tokens=retry_options["num_predict"],
                     )
                     r = await self._post_with_retries(retry_body, deadline)
                     data = r.json()
             except Exception as exc:
+                overflow = self._as_context_error(exc)
+                if overflow is not None:
+                    # A prompt that doesn't fit is a statement about the
+                    # REQUEST, not the health of the deployment — same stance
+                    # as the 501 on embeddings. Counting it would let one
+                    # oversized caller open the breaker for everyone.
+                    self._abandon_upstream()
+                    reported = True
+                    raise overflow from exc
                 self._finish_upstream(exc)
                 reported = True
                 typed = self._as_typed_upstream_error(exc)
@@ -334,24 +481,62 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
             if not reported:
                 self._abandon_upstream()
 
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        usage = data.get("usage") or {}
-        tool_calls = message.get("tool_calls")
+        return self._result_from_payload(data)
 
+    @classmethod
+    def _result_from_payload(cls, data: dict) -> GenerationResult:
+        """Native ``/api/chat`` response -> the OpenAI-shaped internal result."""
+        message = data.get("message") or {}
+        tool_calls = cls._tool_calls_from_native(message.get("tool_calls"))
         return GenerationResult(
             text=message.get("content") or "",
-            finish_reason=choice.get("finish_reason") or "stop",
-            prompt_tokens=int(usage.get("prompt_tokens", 0)),
-            completion_tokens=int(usage.get("completion_tokens", 0)),
-            tool_calls=list(tool_calls) if tool_calls else None,
+            # Native calls it ``done_reason``; "load" appears on a bare preload
+            # response, which is not a completion this adapter ever asks for.
+            finish_reason=data.get("done_reason") or "stop",
+            prompt_tokens=int(data.get("prompt_eval_count") or 0),
+            completion_tokens=int(data.get("eval_count") or 0),
+            tool_calls=tool_calls,
+            reasoning_content=message.get("thinking") or None,
         )
 
     @staticmethod
+    def _tool_calls_from_native(raw, *, offset: int = 0) -> list[dict] | None:
+        """Native tool calls -> the OpenAI shape the chat route reassembles.
+
+        Two differences to close: ``arguments`` is an object upstream and a
+        JSON string in the OpenAI contract, and ``type`` is implicit. Recent
+        Ollama does emit an ``id``; older builds don't, and a synthesized one
+        keeps a subsequent ``tool_call_id`` reply matchable.
+
+        ``offset`` is how many calls this stream has already yielded. The chat
+        route reassembles streamed calls BY INDEX, so two calls arriving in
+        separate frames of one stream must not both fall back to index 0 — that
+        would concatenate two different argument payloads into one call.
+        """
+        if not raw:
+            return None
+        out: list[dict] = []
+        for position, call in enumerate(raw):
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") or {}
+            index = int(fn.get("index", offset + position))
+            arguments = fn.get("arguments")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments if arguments is not None else {})
+            out.append(
+                {
+                    "id": call.get("id") or f"call_{index}",
+                    "type": "function",
+                    "index": index,
+                    "function": {"name": fn.get("name") or "", "arguments": arguments},
+                }
+            )
+        return out or None
+
+    @staticmethod
     def _content_from_response(data: dict) -> str:
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        return (message.get("content") or "").strip()
+        return ((data.get("message") or {}).get("content") or "").strip()
 
     async def stream(
         self,
@@ -362,15 +547,10 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         if not self.is_loaded:
             raise RuntimeError("model not loaded")
 
-        body = {
-            **self._completion_kwargs(params),
-            "messages": self._to_messages(messages),
-            "stream": True,
-            # Ollama's OpenAI shim honours include_usage and emits the same
-            # trailing usage-only chunk; older builds simply omit it and we
-            # fall through with zero counts.
-            "stream_options": {"include_usage": True},
-        }
+        # Native streaming needs no usage opt-in: the final object always
+        # carries ``prompt_eval_count`` / ``eval_count``, which is what the
+        # shim's ``stream_options.include_usage`` was asking for.
+        body = self._native_body(self._to_messages(messages), params, stream=True)
         assert self._client is not None
         deadline = UpstreamDeadline(_deadline_seconds())
         self._begin_upstream()
@@ -405,7 +585,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                             attempt=attempt,
                             plan=plan,
                             exc=exc,
-                            operation="/v1/chat/completions#stream",
+                            operation=f"{_CHAT_PATH}#stream",
                         )
                         await asyncio.sleep(plan.delay_seconds)
                         continue
@@ -415,8 +595,13 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                         attempt=attempt,
                         plan=plan,
                         exc=exc,
-                        operation="/v1/chat/completions#stream",
+                        operation=f"{_CHAT_PATH}#stream",
                     )
+                    overflow = self._as_context_error(exc)
+                    if overflow is not None:
+                        self._abandon_upstream()
+                        reported = True
+                        raise overflow from exc
                     self._finish_upstream(exc)
                     reported = True
                     typed = self._as_typed_upstream_error(exc)
@@ -436,7 +621,12 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         cancel: Cancellation | None,
         deadline: UpstreamDeadline,
     ) -> AsyncIterator[StreamChunk]:
-        """One SSE attempt, raising raw httpx errors for the caller to classify.
+        """One streaming attempt, raising raw httpx errors for the caller to classify.
+
+        Native ``/api/chat`` streams newline-delimited JSON objects rather than
+        SSE ``data:`` frames — one object per token, the last with ``done``
+        true and the token counts on it. There is no ``[DONE]`` sentinel and no
+        usage opt-in to send.
 
         THE BUDGET IS ENFORCED HERE, NOT BY ``httpx.Timeout``. httpx's read
         timeout is per read operation: a stream that drips a token every second
@@ -458,7 +648,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
         async with AsyncExitStack() as stack:
             async with deadline_scope(deadline):
                 resp = await stack.enter_async_context(
-                    self._client.stream("POST", "/v1/chat/completions", json=body)
+                    self._client.stream("POST", _CHAT_PATH, json=body)
                 )
                 if resp.status_code >= 400:
                     # Read the body before raising: on a streamed response it is
@@ -467,6 +657,7 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                     await resp.aread()
             resp.raise_for_status()
             lines = resp.aiter_lines()
+            tool_calls_seen = 0
             while True:
                 async with deadline_scope(deadline):
                     try:
@@ -475,36 +666,44 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                         return
                 if cancel is not None and bool(cancel):
                     return
-                if not raw_line or not raw_line.startswith("data:"):
+                payload = raw_line.strip()
+                if not payload:
                     continue
-                payload = raw_line[5:].strip()
-                if payload == "[DONE]":
-                    return
                 try:
                     event = json.loads(payload)
                 except json.JSONDecodeError:
                     log.warning("ollama_http.stream.bad_json", payload=payload[:200])
                     continue
-                choices = event.get("choices") or []
-                if not choices:
-                    usage = event.get("usage")
-                    if isinstance(usage, dict):
-                        yield StreamChunk(
-                            text="",
-                            prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                            completion_tokens=int(usage.get("completion_tokens", 0)),
-                        )
+                if not isinstance(event, dict):
                     continue
-                choice = choices[0]
-                delta = choice.get("delta") or {}
-                text = delta.get("content") or ""
-                tool_call_deltas = delta.get("tool_calls")
-                finish = choice.get("finish_reason")
-                yield StreamChunk(
-                    text=text,
-                    finish_reason=finish,
-                    tool_call_deltas=list(tool_call_deltas) if tool_call_deltas else None,
+                # An error can arrive mid-stream on a 200 response line; the
+                # transport never sees it, so it is classified here.
+                error = event.get("error")
+                if error:
+                    raise UpstreamGenerationError(
+                        error_type="upstream_http_error",
+                        backend=self.backend_name,
+                        model=self._model_id or "",
+                        detail=str(error)[:500],
+                    )
+                message = event.get("message") or {}
+                tool_call_deltas = self._tool_calls_from_native(
+                    message.get("tool_calls"), offset=tool_calls_seen
                 )
+                if tool_call_deltas:
+                    tool_calls_seen += len(tool_call_deltas)
+                done = bool(event.get("done"))
+                yield StreamChunk(
+                    text=message.get("content") or "",
+                    finish_reason=(event.get("done_reason") or "stop") if done else None,
+                    # The terminal object carries the counts; earlier ones
+                    # don't, and None keeps them out of the route's accounting.
+                    prompt_tokens=int(event.get("prompt_eval_count") or 0) if done else None,
+                    completion_tokens=int(event.get("eval_count") or 0) if done else None,
+                    tool_call_deltas=tool_call_deltas,
+                )
+                if done:
+                    return
 
     # ------------------------------------------------------------------
     # transport — one attempt, the retry loop over it, and error mapping
@@ -565,6 +764,51 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
                     operation=path,
                 )
                 await asyncio.sleep(plan.delay_seconds)
+
+    @staticmethod
+    def _error_text(exc: Exception) -> str:
+        """Whatever the upstream said, flattened to one searchable string."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            try:
+                payload = exc.response.json()
+            except ValueError:
+                return exc.response.text
+            if isinstance(payload, dict):
+                error = payload.get("error")
+                if isinstance(error, dict):
+                    return str(error.get("message") or error)
+                if error is not None:
+                    return str(error)
+            return json.dumps(payload, sort_keys=True)
+        return str(exc)
+
+    def _as_context_error(self, exc: Exception) -> ContextLengthExceededError | None:
+        """Translate Ollama's overflow error into the typed one; else ``None``.
+
+        This is the same contract the llama.cpp path already offers — a
+        deterministic ``400 context_length_exceeded`` rather than an opaque
+        502 — but it can only fire where the upstream actually raises. With
+        context shift enabled (Ollama's default) an over-long prompt is
+        silently truncated instead, and nothing in the response says so: the
+        ``prompt_eval_count`` reported is the count after truncation. See the
+        module docstring.
+        """
+        if not isinstance(exc, httpx.HTTPStatusError | UpstreamGenerationError):
+            return None
+        text = (
+            exc.detail
+            if isinstance(exc, UpstreamGenerationError)
+            else self._error_text(exc)
+        ) or ""
+        lowered = text.lower()
+        match = _CTX_OVERFLOW_RE.search(text)
+        if match is None and not any(p in lowered for p in _CTX_OVERFLOW_PHRASES):
+            return None
+        return ContextLengthExceededError(
+            requested_tokens=int(match.group(1)) if match else None,
+            context_window=int(match.group(2)) if match else self._num_ctx,
+            backend=self.backend_name,
+        )
 
     def _as_typed_upstream_error(self, exc: Exception) -> Exception:
         if isinstance(exc, httpx.TimeoutException | TimeoutError):

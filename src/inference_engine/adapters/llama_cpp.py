@@ -57,11 +57,6 @@ from .base import (
 
 log = get_logger("adapter.llama_cpp")
 
-# Floor for the per-model context clamp. A model whose trained context is below
-# this (rare for chat GGUFs) still loads at its own size; the floor only guards
-# against a bogus/zero ``n_ctx_train`` collapsing the window to nothing.
-_MIN_N_CTX = 512
-
 # llama.cpp raises ``ValueError`` with this shape when the tokenized prompt does
 # not fit ``n_ctx``: "Requested tokens (9001) exceed context window of 8192".
 # We translate that into a typed ContextLengthExceededError so the API answers
@@ -215,26 +210,6 @@ class LlamaCppAdapter(InferenceAdapter):
     @property
     def last_embed_action(self) -> str:
         return self._last_embed_action
-
-    @staticmethod
-    def _effective_n_ctx(requested: int, n_ctx_train: int) -> int:
-        """Clamp the configured context ceiling to what the model supports.
-
-        ``settings.n_ctx`` is a *ceiling* (default 32768), not a fixed size.
-        We size the actual KV cache to ``min(requested, n_ctx_train)`` so:
-
-        * a long-context model (Nemotron, Qwen3) gets the full ceiling rather
-          than the legacy 8192 that was truncating reasoning answers mid-table;
-        * a short-context model (e.g. an 8192-trained GGUF) keeps its own size
-          — no wasted KV memory, no RoPE-extrapolation past the trained window.
-
-        ``n_ctx_train <= 0`` means "unknown" (probe missed / non-llama build),
-        so we fall back to the requested ceiling unchanged. A small floor keeps
-        a bogus zero from collapsing the window.
-        """
-        if n_ctx_train and n_ctx_train > 0:
-            return max(min(requested, n_ctx_train), _MIN_N_CTX)
-        return requested
 
     def _resolve_n_ctx(self, descriptor: ModelDescriptor) -> int:
         """Compute this model's effective context window.

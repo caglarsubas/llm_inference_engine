@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..adapters.llama_cpp import LlamaCppAdapter
+from ..adapters.base import effective_n_ctx
 from ..auth import require_identity
 from ..config import settings
 from ..registry import (
@@ -62,14 +62,20 @@ def _context_lengths(desc) -> tuple[int | None, int | None]:
     """``(context_length, max_model_len)`` for a descriptor.
 
     ``context_length`` is what the model was trained for; ``max_model_len`` is
-    what *this* engine will actually allocate, which for a GGUF is the trained
-    window clamped by the configured ``N_CTX`` ceiling. Reporting both keeps a
-    client from sizing a prompt against a 128k model card when the replica in
-    front of it is serving a 32k window.
+    what *this* engine will actually allocate, which for a locally sized model
+    is the trained window clamped by the configured ``N_CTX`` ceiling.
+    Reporting both keeps a client from sizing a prompt against a 128k model
+    card when the replica in front of it is serving a 32k window.
     """
     params = desc.params or {}
     declared = params.get("context_length")
     if declared is not None:
+        if desc.format == "ollama_http":
+            # We size this one: the adapter sends ``options.num_ctx`` on every
+            # native /api/chat call. The two numbers differ for any model whose
+            # trained window is above the ceiling, and a client that can only
+            # see the advertised one cannot tell (issue #111).
+            return int(declared), effective_n_ctx(settings.n_ctx, int(declared))
         # Upstream-served models (vLLM, OpenRouter) own their own window.
         return int(declared), int(declared)
 
@@ -80,7 +86,7 @@ def _context_lengths(desc) -> tuple[int | None, int | None]:
             return None, None
         if n_ctx_train <= 0:
             return None, None
-        return n_ctx_train, LlamaCppAdapter._effective_n_ctx(settings.n_ctx, n_ctx_train)
+        return n_ctx_train, effective_n_ctx(settings.n_ctx, n_ctx_train)
 
     return None, None
 

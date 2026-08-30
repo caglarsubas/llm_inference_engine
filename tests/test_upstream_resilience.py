@@ -504,6 +504,31 @@ def test_a_stream_is_never_retried_after_a_chunk_has_been_delivered() -> None:
     assert retry_counters.snapshot() == {}
 
 
+def _ollama_chat_body(content: str = "hi") -> dict:
+    """Native ``/api/chat`` non-streaming response — what ollama_http speaks."""
+    return {
+        "model": "gemma4:26b",
+        "message": {"role": "assistant", "content": content},
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": 7,
+        "eval_count": 3,
+    }
+
+
+def _dripping_ndjson(request: httpx.Request, *, chunks: int, gap: float) -> httpx.Response:
+    """``_dripping_sse`` for the native Ollama stream: NDJSON, no [DONE]."""
+
+    async def _body():
+        for _ in range(chunks):
+            await asyncio.sleep(gap)
+            yield json.dumps({"message": {"content": "x"}, "done": False}).encode() + b"\n"
+
+    return httpx.Response(
+        200, content=_body(), headers={"content-type": "application/x-ndjson"}
+    )
+
+
 def _dripping_sse(request: httpx.Request, *, chunks: int, gap: float) -> httpx.Response:
     """An SSE response that keeps arriving — the shape httpx's read timeout misses.
 
@@ -554,7 +579,7 @@ async def test_the_ollama_stream_is_bounded_by_the_same_budget(monkeypatch) -> N
     monkeypatch.setattr(settings, "chat_completion_timeout_seconds", 0.3)
     adapter = OllamaHttpAdapter()
     await adapter.load(_ollama_descriptor())
-    _install_transport(adapter, lambda r: _dripping_sse(r, chunks=200, gap=0.05))
+    _install_transport(adapter, lambda r: _dripping_ndjson(r, chunks=200, gap=0.05))
 
     started = time.monotonic()
     with pytest.raises(GenerationTimeoutError):
@@ -613,7 +638,7 @@ def test_ollama_http_retries_a_transient_upstream_failure() -> None:
         calls.append(1)
         if len(calls) == 1:
             return httpx.Response(502, json={"error": "gateway"})
-        return httpx.Response(200, json=_chat_body("ollama"))
+        return httpx.Response(200, json=_ollama_chat_body("ollama"))
 
     async def run():
         adapter = OllamaHttpAdapter()
@@ -846,7 +871,7 @@ async def test_slow_but_successful_streams_never_open_the_deployment(monkeypatch
 
     adapter = OllamaHttpAdapter()
     await adapter.load(_ollama_descriptor())
-    _install_transport(adapter, lambda r: _dripping_sse(r, chunks=200, gap=0.02))
+    _install_transport(adapter, lambda r: _dripping_ndjson(r, chunks=200, gap=0.02))
     key = adapter.upstream_deployment_key()
 
     delivered = 0

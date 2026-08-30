@@ -257,6 +257,36 @@ class UpstreamGenerationError(Exception):
         return detail
 
 
+# Floor for the per-model context clamp. A model whose trained context is below
+# this (rare for chat GGUFs) still loads at its own size; the floor only guards
+# against a bogus/zero trained context collapsing the window to nothing.
+_MIN_N_CTX = 512
+
+
+def effective_n_ctx(requested: int, n_ctx_train: int) -> int:
+    """Clamp the configured context ceiling to what the model supports.
+
+    ``settings.n_ctx`` is a *ceiling* (default 32768), not a fixed size. The
+    actual KV cache is sized to ``min(requested, n_ctx_train)`` so:
+
+    * a long-context model (Nemotron, Qwen3) gets the full ceiling rather than
+      the legacy 8192 that was truncating reasoning answers mid-table;
+    * a short-context model (e.g. an 8192-trained GGUF) keeps its own size —
+      no wasted KV memory, no RoPE-extrapolation past the trained window.
+
+    ``n_ctx_train <= 0`` means "unknown" (probe missed / upstream didn't say),
+    so we fall back to the requested ceiling unchanged. A small floor keeps a
+    bogus zero from collapsing the window.
+
+    This lives on the base class because it is not a llama.cpp fact: any
+    backend that gets to choose a KV-cache size owes callers the same answer
+    for the same model. ``ollama_http`` sends it as ``options.num_ctx``.
+    """
+    if n_ctx_train and n_ctx_train > 0:
+        return max(min(requested, n_ctx_train), _MIN_N_CTX)
+    return requested
+
+
 class InferenceAdapter(ABC):
     """Abstract base for all inference backends."""
 
@@ -287,6 +317,11 @@ class InferenceAdapter(ABC):
     # deadline. Conservative default: an adapter opts in only when its own
     # implementation makes the promise true.
     generation_is_cancellable: bool = False
+
+    # Shared context-window clamp. Exposed on the class so every adapter —
+    # and ``/v1/models``, which reports the result as ``max_model_len`` —
+    # computes the effective window the same way.
+    _effective_n_ctx = staticmethod(effective_n_ctx)
 
     def deployment_id(self) -> str:
         """Identify this DEPLOYMENT for capability observations.

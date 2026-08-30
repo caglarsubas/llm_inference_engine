@@ -274,7 +274,7 @@ class Settings(BaseSettings):
 
     # llama.cpp runtime
     n_gpu_layers: int = Field(default=-1, description="-1 = offload all layers to GPU (Metal).")
-    # Context-window *ceiling*, not a fixed size. Each GGUF loads at
+    # Context-window *ceiling*, not a fixed size. Each model loads at
     # ``min(n_ctx, n_ctx_train)`` — the model's own trained context caps it,
     # so short-context models don't over-allocate KV cache and long-context
     # reasoning models (Nemotron, Qwen3) get the full window. 8192 was
@@ -282,6 +282,13 @@ class Settings(BaseSettings):
     # reasoning + answer overran it; 32768 gives headroom while staying
     # comfortably within the 60 GB hot-keep budget on the 128 GB target box.
     # Lower it per-deployment via N_CTX if KV memory is tight.
+    #
+    # NOT llama.cpp-only despite living in this block: ``ollama_http`` sends
+    # the same clamped value as ``options.num_ctx`` on every native /api/chat
+    # call. It used to ignore it entirely, which let Ollama size the window
+    # from free VRAM — 262,144 on a large-memory host, and 34 GiB of KV cache
+    # on an 8.9B model (issue #111). ``/v1/models`` reports the result as
+    # ``max_model_len`` next to the model's advertised ``context_length``.
     n_ctx: int = Field(default=32768)
     n_threads: int = Field(default=0, description="0 = auto.")
     n_batch: int = Field(default=512)
