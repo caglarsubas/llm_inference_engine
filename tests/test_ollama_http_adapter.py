@@ -7,16 +7,27 @@ import httpx
 import pytest
 
 from inference_engine.adapters.base import (
+    ContextLengthExceededError,
     EmbeddingsNotSupportedError,
     GenerationParams,
     UpstreamGenerationError,
 )
 from inference_engine.adapters.ollama_http import OllamaHttpAdapter
-from inference_engine.registry import ModelDescriptor
-from inference_engine.schemas import ChatMessage
+from inference_engine.api.models import _context_lengths
+from inference_engine.config import settings
+from inference_engine.registry import ModelDescriptor, get_upstream_breaker
+from inference_engine.registry.breaker import CLOSED
+from inference_engine.schemas import ChatMessage, ToolCall, ToolCallFunction
 
 
-def _make_descriptor(endpoint: str = "http://ollama:11434") -> ModelDescriptor:
+def _make_descriptor(
+    endpoint: str = "http://ollama:11434",
+    *,
+    context_length: int | None = None,
+) -> ModelDescriptor:
+    params: dict = {"model_id": "gemma4:31b"}
+    if context_length is not None:
+        params["context_length"] = context_length
     return ModelDescriptor(
         name="gemma4",
         tag="31b",
@@ -24,7 +35,7 @@ def _make_descriptor(endpoint: str = "http://ollama:11434") -> ModelDescriptor:
         registry="registry.ollama.ai",
         model_path=Path(f"ollama_http://{endpoint}/gemma4:31b"),
         format="ollama_http",
-        params={"model_id": "gemma4:31b"},
+        params=params,
         size_bytes=0,
         endpoint=endpoint,
     )
@@ -40,15 +51,14 @@ def _install_transport(adapter: OllamaHttpAdapter, handler) -> None:
 
 
 def _chat_response(content: str, *, finish_reason: str = "stop") -> dict:
+    """A native ``/api/chat`` non-streaming response."""
     return {
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": finish_reason,
-            }
-        ],
-        "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+        "model": "gemma4:31b",
+        "message": {"role": "assistant", "content": content},
+        "done": True,
+        "done_reason": finish_reason,
+        "prompt_eval_count": 7,
+        "eval_count": 3,
     }
 
 
@@ -100,12 +110,14 @@ async def test_blank_multimodal_json_response_retries_without_hard_json_mode() -
         '"anomaly_score":0.9,"confidence":0.98}'
     )
     assert len(captured) == 2
-    assert captured[0]["response_format"] == {"type": "json_object"}
-    assert captured[0]["max_tokens"] == 128
-    assert "response_format" not in captured[1]
-    assert captured[1]["max_tokens"] == 256
+    assert captured[0]["format"] == "json"
+    assert captured[0]["options"]["num_predict"] == 128
+    assert "format" not in captured[1]
+    assert captured[1]["options"]["num_predict"] == 256
     assert captured[1]["messages"][0]["role"] == "system"
     assert "compact valid JSON object" in captured[1]["messages"][0]["content"]
+    # The image survived the reprompt, unwrapped out of its data URL.
+    assert captured[1]["messages"][-1]["images"] == ["abc"]
 
 
 @pytest.mark.asyncio
@@ -162,22 +174,359 @@ def test_ollama_deployment_id_distinguishes_endpoints() -> None:
 def test_ollama_still_sends_the_schema_it_was_given() -> None:
     """Not trusting the backend is not the same as not asking.
 
-    The request must still carry `response_format`, so a deployment whose
-    Ollama DOES honour it gets constrained decoding; the flag above only
-    governs whether the gateway re-checks the answer.
+    The request must still carry the schema, so a deployment whose Ollama DOES
+    honour it gets constrained decoding; the flag above only governs whether
+    the gateway re-checks the answer. Native ``/api/chat`` takes the bare
+    schema in ``format`` — the same sampler the shim's ``response_format``
+    wraps, reached directly.
     """
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
     adapter = OllamaHttpAdapter()
     params = GenerationParams(
         json_mode=True,
-        json_schema={"type": "object", "properties": {"a": {"type": "integer"}}},
+        json_schema=schema,
         json_schema_name="probe",
         json_schema_strict=True,
     )
-    kwargs = adapter._completion_kwargs(params)
+    body = adapter._native_body([], params, stream=False)
 
-    assert kwargs["response_format"]["type"] == "json_schema"
-    assert kwargs["response_format"]["json_schema"]["name"] == "probe"
-    assert kwargs["response_format"]["json_schema"]["strict"] is True
+    assert body["format"] == schema
+
+
+def test_json_mode_without_a_schema_asks_for_plain_json() -> None:
+    body = OllamaHttpAdapter()._native_body([], GenerationParams(json_mode=True), stream=False)
+    assert body["format"] == "json"
+
+
+# ---------------------------------------------------------------------------
+# context window — settings.n_ctx reaches the upstream (issue #111)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_goes_to_the_native_endpoint_carrying_num_ctx(monkeypatch) -> None:
+    """The whole point of not using the OpenAI shim.
+
+    The shim accepts no runtime options, so a deployment that set N_CTX got
+    whatever window Ollama sized from free VRAM — up to 262,144, and 34 GiB of
+    KV cache on an 8.9B model. Native /api/chat is the only endpoint that takes
+    ``options``.
+    """
+    monkeypatch.setattr(settings, "n_ctx", 32768)
+    seen: list[tuple[str, dict]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json=_chat_response("ok"))
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor(context_length=262144))
+    _install_transport(adapter, handler)
+
+    await adapter.generate(
+        [ChatMessage(role="user", content="hi")], GenerationParams(max_tokens=16)
+    )
+
+    path, body = seen[0]
+    assert path == "/api/chat"
+    assert body["options"]["num_ctx"] == 32768
+    assert body["options"]["num_predict"] == 16
+
+
+@pytest.mark.asyncio
+async def test_num_ctx_is_clamped_to_what_the_model_was_trained_for(monkeypatch) -> None:
+    """A ceiling, not a fixed size — same rule the llama.cpp path applies."""
+    monkeypatch.setattr(settings, "n_ctx", 32768)
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json=_chat_response("ok"))
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor(context_length=8192))
+    _install_transport(adapter, handler)
+
+    await adapter.generate([ChatMessage(role="user", content="hi")], GenerationParams())
+    assert seen[0]["options"]["num_ctx"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_an_unprobed_window_leaves_the_ceiling_alone(monkeypatch) -> None:
+    """No ``context_length`` means the registry couldn't ask, not "zero"."""
+    monkeypatch.setattr(settings, "n_ctx", 16384)
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json=_chat_response("ok"))
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+
+    await adapter.generate([ChatMessage(role="user", content="hi")], GenerationParams())
+    assert seen[0]["options"]["num_ctx"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_models_route_reports_the_window_it_will_actually_serve(monkeypatch) -> None:
+    """The advertised and effective windows differ silently otherwise."""
+    monkeypatch.setattr(settings, "n_ctx", 32768)
+    assert _context_lengths(_make_descriptor(context_length=262144)) == (262144, 32768)
+
+
+# ---------------------------------------------------------------------------
+# context overflow — the typed 400 the llama.cpp path already offers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_upstream_overflow_becomes_the_typed_context_error() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": (
+                    "input length (41000 tokens) exceeds the model's maximum "
+                    "context length (32768 tokens)"
+                )
+            },
+        )
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor(context_length=262144))
+    _install_transport(adapter, handler)
+
+    with pytest.raises(ContextLengthExceededError) as ei:
+        await adapter.generate([ChatMessage(role="user", content="x" * 10)], GenerationParams())
+
+    assert ei.value.requested_tokens == 41000
+    assert ei.value.context_window == 32768
+    assert ei.value.error_detail()["type"] == "context_length_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_an_overflow_without_counts_still_reports_the_window_we_asked_for(
+    monkeypatch,
+) -> None:
+    """Ollama has several overflow phrasings; only one carries the integers."""
+    monkeypatch.setattr(settings, "n_ctx", 32768)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"error": "input exceeds maximum context length and cannot be truncated further"},
+        )
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor(context_length=262144))
+    _install_transport(adapter, handler)
+
+    with pytest.raises(ContextLengthExceededError) as ei:
+        await adapter.generate([ChatMessage(role="user", content="x")], GenerationParams())
+
+    assert ei.value.requested_tokens is None
+    assert ei.value.context_window == 32768
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_prompt_does_not_open_the_breaker(monkeypatch) -> None:
+    """The prompt is the caller's fault; the deployment is fine.
+
+    Counting it would let one oversized caller take a healthy Ollama away
+    from every other tenant on it.
+    """
+    monkeypatch.setattr(settings, "upstream_breaker_failure_threshold", 1)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "the input length exceeds the context length"})
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor(endpoint="http://overflow-host:11434"))
+    _install_transport(adapter, handler)
+
+    for _ in range(3):
+        with pytest.raises(ContextLengthExceededError):
+            await adapter.generate([ChatMessage(role="user", content="x")], GenerationParams())
+
+    assert get_upstream_breaker().state(adapter.upstream_deployment_key()) == CLOSED
+
+
+def test_an_unrelated_upstream_error_is_not_mistaken_for_an_overflow() -> None:
+    adapter = OllamaHttpAdapter()
+    request = httpx.Request("POST", "http://ollama:11434/api/chat")
+    exc = httpx.HTTPStatusError(
+        "boom",
+        request=request,
+        response=httpx.Response(500, json={"error": "model runner has stopped"}, request=request),
+    )
+    assert adapter._as_context_error(exc) is None
+
+
+# ---------------------------------------------------------------------------
+# native <-> OpenAI translation
+# ---------------------------------------------------------------------------
+
+
+def test_tool_calls_are_translated_in_both_directions() -> None:
+    """Native carries arguments as an object; the OpenAI contract as a string."""
+    adapter = OllamaHttpAdapter()
+    sent = adapter._to_messages(
+        [
+            ChatMessage(
+                role="assistant",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        function=ToolCallFunction(name="lookup", arguments='{"city":"Paris"}'),
+                    )
+                ],
+            ),
+            ChatMessage(role="tool", content="sunny", tool_call_id="call_1", name="lookup"),
+        ]
+    )
+    assert sent[0]["tool_calls"][0]["function"]["arguments"] == {"city": "Paris"}
+    assert sent[1]["tool_call_id"] == "call_1"
+    assert sent[1]["tool_name"] == "lookup"
+
+    result = OllamaHttpAdapter._result_from_payload(
+        {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_x", "function": {"name": "lookup", "arguments": {"city": "Paris"}}}
+                ],
+            },
+            "done": True,
+            "done_reason": "stop",
+            "prompt_eval_count": 11,
+            "eval_count": 4,
+        }
+    )
+    assert result.tool_calls == [
+        {
+            "id": "call_x",
+            "type": "function",
+            "index": 0,
+            "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+        }
+    ]
+    assert (result.prompt_tokens, result.completion_tokens) == (11, 4)
+    assert result.finish_reason == "stop"
+
+
+def test_a_tool_call_without_an_upstream_id_still_gets_one() -> None:
+    """Older Ollama omits it, and the agent's reply has to match something."""
+    result = OllamaHttpAdapter._result_from_payload(
+        {
+            "message": {"tool_calls": [{"function": {"name": "f", "arguments": {}}}]},
+            "done": True,
+        }
+    )
+    assert result.tool_calls[0]["id"] == "call_0"
+
+
+@pytest.mark.asyncio
+async def test_the_stream_reads_ndjson_and_the_trailing_counts() -> None:
+    """Native streaming is newline-delimited JSON with no [DONE] sentinel."""
+    frames = [
+        {"message": {"role": "assistant", "content": "hi"}, "done": False},
+        {"message": {"role": "assistant", "content": " there"}, "done": False},
+        {
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "done_reason": "stop",
+            "prompt_eval_count": 21,
+            "eval_count": 5,
+        },
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert json.loads(req.content)["stream"] is True
+        return httpx.Response(
+            200,
+            content=b"".join(json.dumps(f).encode() + b"\n" for f in frames),
+            headers={"content-type": "application/x-ndjson"},
+        )
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+
+    chunks = [
+        piece
+        async for piece in adapter.stream(
+            [ChatMessage(role="user", content="x")], GenerationParams()
+        )
+    ]
+
+    assert "".join(c.text for c in chunks) == "hi there"
+    assert chunks[-1].finish_reason == "stop"
+    assert (chunks[-1].prompt_tokens, chunks[-1].completion_tokens) == (21, 5)
+
+
+@pytest.mark.asyncio
+async def test_two_streamed_tool_calls_keep_separate_indices() -> None:
+    """The route reassembles streamed calls by index.
+
+    Native Ollama emits a whole call per frame rather than argument fragments,
+    so two calls in two frames that both fell back to index 0 would be merged
+    into one with both argument payloads concatenated.
+    """
+    frames = [
+        {"message": {"tool_calls": [{"function": {"name": "a", "arguments": {"x": 1}}}]}},
+        {"message": {"tool_calls": [{"function": {"name": "b", "arguments": {"y": 2}}}]}},
+        {"message": {"content": ""}, "done": True, "done_reason": "stop"},
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"".join(json.dumps(f).encode() + b"\n" for f in frames),
+            headers={"content-type": "application/x-ndjson"},
+        )
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+
+    deltas = [
+        d
+        async for piece in adapter.stream(
+            [ChatMessage(role="user", content="x")], GenerationParams()
+        )
+        for d in (piece.tool_call_deltas or [])
+    ]
+
+    assert [d["index"] for d in deltas] == [0, 1]
+    assert [d["function"]["name"] for d in deltas] == ["a", "b"]
+    assert len({d["id"] for d in deltas}) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_mid_stream_error_object_is_surfaced_not_swallowed() -> None:
+    """A 200 response line can still end in an upstream failure."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = (
+            json.dumps({"message": {"content": "par"}, "done": False}).encode()
+            + b"\n"
+            + json.dumps({"error": "model runner has stopped"}).encode()
+            + b"\n"
+        )
+        return httpx.Response(200, content=body, headers={"content-type": "application/x-ndjson"})
+
+    adapter = OllamaHttpAdapter()
+    await adapter.load(_make_descriptor())
+    _install_transport(adapter, handler)
+
+    with pytest.raises(UpstreamGenerationError):
+        async for _ in adapter.stream(
+            [ChatMessage(role="user", content="x")], GenerationParams()
+        ):
+            pass
 
 
 # ---------------------------------------------------------------------------

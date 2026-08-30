@@ -314,20 +314,26 @@ def _ollama_descriptor() -> ModelDescriptor:
 
 
 @pytest.mark.asyncio
-async def test_ollama_stream_requests_and_parses_usage() -> None:
+async def test_ollama_stream_parses_the_counts_off_the_terminal_object() -> None:
+    """Native streaming needs no ``include_usage``: the last object has them."""
     seen: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen.update(json.loads(req.content))
         body = b"".join(
-            _sse(
-                [
-                    {"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": "stop"}]},
-                    {"choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
-                ]
+            json.dumps(frame).encode() + b"\n"
+            for frame in (
+                {"message": {"content": "hi"}, "done": False},
+                {
+                    "message": {"content": ""},
+                    "done": True,
+                    "done_reason": "stop",
+                    "prompt_eval_count": 12,
+                    "eval_count": 3,
+                },
             )
         )
-        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "application/x-ndjson"})
 
     adapter = OllamaHttpAdapter()
     await adapter.load(_ollama_descriptor())
@@ -340,7 +346,7 @@ async def test_ollama_stream_requests_and_parses_usage() -> None:
         )
     ]
 
-    assert seen["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in seen
     assert chunks[-1].prompt_tokens == 12
     assert chunks[-1].completion_tokens == 3
 
