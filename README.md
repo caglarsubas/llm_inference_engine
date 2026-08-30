@@ -637,7 +637,9 @@ scripts/
 docs/
 ├── PUBLIC_ENDPOINT.md        # shareable usage guide for the public Engine URL
 ├── CONTAINER_IMAGES.md       # image verification, relocation, air-gap, UBI/FIPS boundary
-└── MODEL_DEMAND_SHORTLIST.md # demanded-model backlog behind /v1/models.data unavailable[]
+├── MODEL_DEMAND_SHORTLIST.md # demanded-model backlog behind /v1/models.data unavailable[]
+├── QWEN38_ONBOARDING.md      # served vs routed vs reachable, walked through one model
+└── ORG_BINDING.md            # one engine serves one org; what that costs a multi-org key file
 tests/                          # 67 modules, all run by `make test`
 ├── [registry + catalog]        # test_registry, test_mlx_registry, test_composite_registry,
 │                             #   test_openrouter, test_vllm_probe, test_models_snapshot,

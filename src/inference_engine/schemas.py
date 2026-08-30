@@ -411,7 +411,11 @@ class ChatCompletionResponse(BaseModel):
     object: Literal["chat.completion"] = "chat.completion"
     created: int
     model: str
-    request_key_source: str = "local-inference"
+    # No default: an unset value must read as null, not as a claim that the
+    # request stayed local. Consumers gate residency on this field, and a
+    # defaulted "local-inference" would let a path that forgot to set it
+    # assert locality it never verified. Every construction site sets it.
+    request_key_source: str | None = None
     fallback_from_model: str | None = None
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
@@ -465,7 +469,11 @@ class ChatCompletionChunk(BaseModel):
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
     created: int
     model: str
-    request_key_source: str = "local-inference"
+    # No default: an unset value must read as null, not as a claim that the
+    # request stayed local. Consumers gate residency on this field, and a
+    # defaulted "local-inference" would let a path that forgot to set it
+    # assert locality it never verified. Every construction site sets it.
+    request_key_source: str | None = None
     fallback_from_model: str | None = None
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
@@ -514,7 +522,11 @@ class CompletionResponse(BaseModel):
     object: Literal["text_completion"] = "text_completion"
     created: int
     model: str
-    request_key_source: str = "local-inference"
+    # No default: an unset value must read as null, not as a claim that the
+    # request stayed local. Consumers gate residency on this field, and a
+    # defaulted "local-inference" would let a path that forgot to set it
+    # assert locality it never verified. Every construction site sets it.
+    request_key_source: str | None = None
     fallback_from_model: str | None = None
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
@@ -544,7 +556,11 @@ class EmbeddingResponse(BaseModel):
     object: Literal["list"] = "list"
     data: list[EmbeddingObject]
     model: str
-    request_key_source: str = "local-inference"
+    # No default: an unset value must read as null, not as a claim that the
+    # request stayed local. Consumers gate residency on this field, and a
+    # defaulted "local-inference" would let a path that forgot to set it
+    # assert locality it never verified. Every construction site sets it.
+    request_key_source: str | None = None
     fallback_from_model: str | None = None
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
@@ -581,7 +597,11 @@ class RerankResponse(BaseModel):
     object: Literal["rerank"] = "rerank"
     created: int
     model: str
-    request_key_source: str = "local-inference"
+    # No default: an unset value must read as null, not as a claim that the
+    # request stayed local. Consumers gate residency on this field, and a
+    # defaulted "local-inference" would let a path that forgot to set it
+    # assert locality it never verified. Every construction site sets it.
+    request_key_source: str | None = None
     results: list[RerankResult]
     usage: Usage
 
@@ -863,7 +883,11 @@ class ResponsesResponse(BaseModel):
     metadata: dict[str, str] | None = None
     # Same engine extension fields the other response models carry, so
     # provenance reads identically whichever endpoint served the request.
-    request_key_source: str = "local-inference"
+    # No default: an unset value must read as null, not as a claim that the
+    # request stayed local. Consumers gate residency on this field, and a
+    # defaulted "local-inference" would let a path that forgot to set it
+    # assert locality it never verified. Every construction site sets it.
+    request_key_source: str | None = None
     fallback_from_model: str | None = None
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None

@@ -269,7 +269,29 @@ async def _resolve(
     return resolved.adapter, resolved.model_name
 
 
-@router.post("/v1/chat/completions")
+# Documented, not enforced. The route returns a ChatCompletionResponse or a
+# StreamingResponse depending on ``stream``, so it cannot carry a
+# ``response_model`` without breaking the streaming path. Declaring both shapes
+# under ``responses`` publishes them into the OpenAPI document anyway, which is
+# what a consumer needs: callers gate data residency on ``request_key_source``,
+# and a field absent from the published schema is one a validating proxy is
+# entitled to strip.
+@router.post(
+    "/v1/chat/completions",
+    responses={
+        200: {
+            "model": ChatCompletionResponse,
+            "content": {
+                # Self-contained on purpose: the default ref template embeds
+                # the chunk's nested models under ``$defs`` inside this schema.
+                # Pointing them at ``#/components/schemas`` instead would emit
+                # refs to components FastAPI never registers, because only the
+                # ``model`` above becomes one.
+                "text/event-stream": {"schema": ChatCompletionChunk.model_json_schema()}
+            },
+        }
+    },
+)
 async def chat_completions(
     req: ChatCompletionRequest,
     request: Request,
