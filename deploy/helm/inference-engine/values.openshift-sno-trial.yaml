@@ -1,4 +1,4 @@
-# Source-only model-plane profile for orchestra-ocp-sno-trial-amd64-v1.
+# Source-only model-plane profile for onion-ocp-sno-trial-amd64-v1.
 #
 # This is a non-production, non-certifying single-node render contract. It
 # references operator-created Secrets, ConfigMaps, Valkey, model-backend, and
@@ -7,16 +7,16 @@
 
 engineeringTrialProfile:
   enabled: true
-  profileId: orchestra-ocp-sno-trial-amd64-v1
+  profileId: onion-ocp-sno-trial-amd64-v1
   sourceOnlyAcknowledged: true
 
 productionProfile:
   enabled: false
 
 workloadSurface:
-  profileId: orchestra-model-plane-workload-v1
+  profileId: onion-model-plane-workload-v1
 
-fullnameOverride: orchestra-model-plane
+fullnameOverride: onion-model-plane
 
 image:
   repository: ghcr.io/caglarsubas/llm_inference_engine/inference-engine-ubi
@@ -29,35 +29,35 @@ image:
   pullSecrets: []
 
 replicaCount: 1
-deploymentId: orchestra-sno-model-plane
+deploymentId: onion-sno-model-plane
 targetEnvironment: test
-rolloutId: orchestra-sno-trial-workload-candidate-2026-07-25.1
+rolloutId: onion-sno-trial-workload-candidate-2026-07-25.1
 
 serverTls:
   enabled: true
-  existingSecret: orchestra-model-plane-trial-tls
+  existingSecret: onion-model-plane-trial-tls
   rolloutId: trial-tls-v1
 
 auth:
   enabled: true
-  existingSecretName: orchestra-model-plane-trial-auth
+  existingSecretName: onion-model-plane-trial-auth
 
 routing:
   enabled: true
   policyRequired: true
-  artifactsSecretName: orchestra-model-plane-trial-routing
-  expectedAudience: orchestra-model-plane
+  artifactsSecretName: onion-model-plane-trial-routing
+  expectedAudience: onion-model-plane
   expectedOrgId: tenant-alpha
   rateLimitScope: deployment-shared
   sharedRateLimit:
     backend: direct
-    existingSecretName: orchestra-model-plane-trial-valkey
+    existingSecretName: onion-model-plane-trial-valkey
     allowInsecureRedis: false
     networkPolicyEgress:
       - to:
           - podSelector:
               matchLabels:
-                app.kubernetes.io/name: orchestra-trial-valkey
+                app.kubernetes.io/name: onion-trial-valkey
         ports:
           - protocol: TCP
             port: 6379
@@ -68,7 +68,7 @@ modelBackends:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: orchestra-trial-model-backend
+              app.kubernetes.io/name: onion-trial-model-backend
       ports:
         - protocol: TCP
           port: 8080
@@ -76,16 +76,16 @@ modelBackends:
 observation:
   enabled: true
   version: 2
-  endpoint: https://orchestra-platform.orchestra-platform.svc:443/api/model-routing-observations
-  apiKeySecretName: orchestra-model-plane-trial-observation
+  endpoint: https://onion-platform.onion-platform.svc:443/api/model-routing-observations
+  apiKeySecretName: onion-model-plane-trial-observation
 
 otel:
   enabled: true
   protocol: http/protobuf
-  endpoint: https://orchestra-platform.orchestra-platform.svc:443/api/v2/otlp/v1/traces
-  headersSecretName: orchestra-model-plane-trial-otlp
+  endpoint: https://onion-platform.onion-platform.svc:443/api/v2/otlp/v1/traces
+  headersSecretName: onion-model-plane-trial-otlp
   headersSecretKey: headers
-  serviceName: orchestra-model-plane
+  serviceName: onion-model-plane
 
 persistence:
   enabled: true
@@ -96,14 +96,14 @@ persistence:
 
 trustedCA:
   enabled: true
-  configMapName: orchestra-model-plane-trial-ca
+  configMapName: onion-model-plane-trial-ca
 
 service:
   type: ClusterIP
 
 serviceAccount:
   create: true
-  name: orchestra-model-plane
+  name: onion-model-plane
   automountServiceAccountToken: false
 
 securityContextMode: openshift
@@ -137,15 +137,15 @@ networkPolicy:
   runtimeIngressFrom:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: orchestra-runtime
+          kubernetes.io/metadata.name: onion-runtime
       podSelector:
         matchLabels:
-          app.kubernetes.io/name: prometa-runtime
+          app.kubernetes.io/name: planeon-runtime
   observationEgress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: orchestra-platform
+              kubernetes.io/metadata.name: onion-platform
           podSelector:
             matchLabels:
               app.kubernetes.io/component: app
@@ -156,7 +156,7 @@ networkPolicy:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: orchestra-platform
+              kubernetes.io/metadata.name: onion-platform
           podSelector:
             matchLabels:
               app.kubernetes.io/component: app

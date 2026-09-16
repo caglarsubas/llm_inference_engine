@@ -463,7 +463,7 @@ class _LedgerFlushOnSend:
 
 @app.middleware("http")
 async def model_usage_ledger(request: Request, call_next):
-    """Open and close the per-request ``prometa.model-usage.v2`` record.
+    """Open and close the per-request ``planeon.model-usage.v2`` record.
 
     Defined first so it ends up *innermost*: ``add_middleware`` inserts at
     position 0, which makes the last-defined middleware outermost. Innermost
@@ -528,7 +528,7 @@ async def request_id_header(request: Request, call_next):
     it can observe, including readiness and validation errors, receives the
     server-owned ``x-request-id``. An inbound header with that name is accepted
     for generic-client compatibility but never aliases or overrides the engine
-    id. Orchestra's three headers are exact correlation values, not candidate
+    id. Onion's three headers are exact correlation values, not candidate
     request ids, and invalid values fail closed instead of being truncated.
     """
     engine_request_id = new_engine_request_id()

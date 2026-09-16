@@ -1,4 +1,4 @@
-"""Per-request billing ledger — one ``prometa.model-usage.v2`` record per call.
+"""Per-request billing ledger — one ``planeon.model-usage.v2`` record per call.
 
 Chargeback needs a record that exists for *every* priced request, including the
 ones that never reach a model: a policy denial opens no ``chat.generate`` span,
@@ -54,8 +54,8 @@ from .request_identity import new_usage_record_id
 
 log = get_logger("usage_ledger")
 
-SCHEMA = "prometa.model-usage.v2"
-EVENT = "prometa.model-usage"
+SCHEMA = "planeon.model-usage.v2"
+EVENT = "planeon.model-usage"
 
 # The exact, reviewed key set of an emitted record, in emission order. Anything
 # not listed here is not billing metadata and does not leave the process on this

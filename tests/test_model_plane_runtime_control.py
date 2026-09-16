@@ -47,7 +47,7 @@ from inference_engine.model_routing_runtime import (
 from inference_engine.schemas import ModelInfo, ModelList, UnavailableModel
 
 
-ISSUER = "prometa-platform/runtime-control-lease"
+ISSUER = "planeon-platform/runtime-control-lease"
 KEY_ID = "sha256:" + "ab" * 32
 DEPLOYMENT_ID = "model-plane-staging-a"
 ORG_ID = "org-golden"
@@ -380,7 +380,7 @@ def test_an_envelope_that_disagrees_with_its_own_claims_is_refused(
 ) -> None:
     claims = _claims()
     envelope = signer.envelope(claims)
-    envelope["artifactType"] = "orchestra.model-routing-policy"
+    envelope["artifactType"] = "onion.model-routing-policy"
 
     with pytest.raises(ValueError):
         RuntimeControlLeaseEnvelope.model_validate(envelope, strict=True)
@@ -388,7 +388,7 @@ def test_an_envelope_that_disagrees_with_its_own_claims_is_refused(
 
 @pytest.mark.parametrize(
     "allowed_artifact_types",
-    [["orchestra.routing-policy"], ["orchestra.bundle", "orchestra.promotion"], None],
+    [["onion.routing-policy"], ["onion.bundle", "onion.promotion"], None],
 )
 def test_a_key_that_is_not_a_runtime_control_key_cannot_sign_a_lease(
     tmp_path: Path,
@@ -1119,7 +1119,7 @@ def observation_config(version: int = 1):
         SimpleNamespace(
             model_plane_observation_enabled=True,
             model_plane_observation_endpoint=(
-                "https://orchestra.example/api/model-routing-observations"
+                "https://onion.example/api/model-routing-observations"
             ),
             model_plane_observation_api_key="pk_model_plane_test",
             model_plane_observation_api_key_file="",

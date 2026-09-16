@@ -74,7 +74,7 @@
       "id": 2,
       "targets": [
         {
-          "expr": "count(sum by(prometa_tenant)(increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__range}])))",
+          "expr": "count(sum by(planeon_tenant)(increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__range}])))",
           "refId": "A"
         }
       ],
@@ -312,8 +312,8 @@
       "id": 6,
       "targets": [
         {
-          "expr": "sum by (prometa_tenant) (increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__rate_interval}]))",
-          "legendFormat": "{{prometa_tenant}}",
+          "expr": "sum by (planeon_tenant) (increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\"}[${__rate_interval}]))",
+          "legendFormat": "{{planeon_tenant}}",
           "refId": "A"
         }
       ],
@@ -540,8 +540,8 @@
       "id": 11,
       "targets": [
         {
-          "expr": "sum by (prometa_tenant) (rate(inference_tokens_input_total[${__rate_interval}]))",
-          "legendFormat": "{{prometa_tenant}}",
+          "expr": "sum by (planeon_tenant) (rate(inference_tokens_input_total[${__rate_interval}]))",
+          "legendFormat": "{{planeon_tenant}}",
           "refId": "A"
         }
       ],
@@ -581,8 +581,8 @@
       "id": 12,
       "targets": [
         {
-          "expr": "sum by (prometa_tenant) (rate(inference_tokens_output_total[${__rate_interval}]))",
-          "legendFormat": "{{prometa_tenant}}",
+          "expr": "sum by (planeon_tenant) (rate(inference_tokens_output_total[${__rate_interval}]))",
+          "legendFormat": "{{planeon_tenant}}",
           "refId": "A"
         }
       ],
@@ -681,7 +681,7 @@
       "id": 14,
       "targets": [
         {
-          "expr": "sum by (prometa_tenant, gen_ai_request_model, gen_ai_system) (increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\",gen_ai_request_model!=\"unknown\"}[${__range}]))",
+          "expr": "sum by (planeon_tenant, gen_ai_request_model, gen_ai_system) (increase(traces_spanmetrics_calls_total{span_name=~\"chat[.].*|completions[.]run|embeddings[.]run|rerank[.]run\",gen_ai_request_model!=\"unknown\"}[${__range}]))",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -700,7 +700,7 @@
               "span_kind": true
             },
             "renameByName": {
-              "prometa_tenant": "Tenant",
+              "planeon_tenant": "Tenant",
               "gen_ai_request_model": "Model",
               "gen_ai_system": "Backend",
               "Value": "Requests"
@@ -917,7 +917,7 @@
   "schemaVersion": 38,
   "tags": [
     "inference",
-    "prometa"
+    "planeon"
   ],
   "templating": {
     "list": []

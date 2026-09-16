@@ -1,41 +1,41 @@
-{{- define "orchestra-inference-engine.name" -}}
+{{- define "onion-inference-engine.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "orchestra-inference-engine.fullname" -}}
+{{- define "onion-inference-engine.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name (include "orchestra-inference-engine.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name (include "onion-inference-engine.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestra-inference-engine.chart" -}}
+{{- define "onion-inference-engine.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "orchestra-inference-engine.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestra-inference-engine.name" . }}
+{{- define "onion-inference-engine.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "onion-inference-engine.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: model-plane
 {{- end -}}
 
-{{- define "orchestra-inference-engine.labels" -}}
-helm.sh/chart: {{ include "orchestra-inference-engine.chart" . }}
-{{ include "orchestra-inference-engine.selectorLabels" . }}
+{{- define "onion-inference-engine.labels" -}}
+helm.sh/chart: {{ include "onion-inference-engine.chart" . }}
+{{ include "onion-inference-engine.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 
-{{- define "orchestra-inference-engine.serviceAccountName" -}}
+{{- define "onion-inference-engine.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
-{{- default (include "orchestra-inference-engine.fullname" .) .Values.serviceAccount.name -}}
+{{- default (include "onion-inference-engine.fullname" .) .Values.serviceAccount.name -}}
 {{- else -}}
 {{- required "serviceAccount.name is required when serviceAccount.create=false" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestra-inference-engine.image" -}}
+{{- define "onion-inference-engine.image" -}}
 {{- $repository := required "image.repository is required" .Values.image.repository -}}
 {{- if .Values.image.digest -}}
 {{- if not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.image.digest) -}}
@@ -50,7 +50,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestra-inference-engine.validate" -}}
+{{- define "onion-inference-engine.validate" -}}
 {{- $environment := required "targetEnvironment is required" .Values.targetEnvironment -}}
 {{- if not (has $environment (list "dev" "test" "staging" "prod")) -}}
 {{- fail "targetEnvironment must be one of dev, test, staging, or prod" -}}
@@ -175,8 +175,8 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if not (has .Values.modelBackends.mode (list "remote" "mounted" "hybrid")) -}}
 {{- fail "modelBackends.mode must be remote, mounted, or hybrid" -}}
 {{- end -}}
-{{- if not (has .Values.workloadSurface.profileId (list "unrestricted" "orchestra-model-plane-workload-v1")) -}}
-{{- fail "workloadSurface.profileId must be unrestricted or orchestra-model-plane-workload-v1" -}}
+{{- if not (has .Values.workloadSurface.profileId (list "unrestricted" "onion-model-plane-workload-v1")) -}}
+{{- fail "workloadSurface.profileId must be unrestricted or onion-model-plane-workload-v1" -}}
 {{- end -}}
 {{- $managedEnv := list "HOST" "PORT" "AUTH_ENABLED" "AUTH_KEYS_FILE" "OTEL_ENABLED" "OTEL_EXPORTER_OTLP_ENDPOINT" "OTEL_EXPORTER_OTLP_PROTOCOL" "OTEL_EXPORTER_OTLP_HEADERS" "OTEL_SERVICE_NAME" "OLLAMA_MODELS_DIR" "MLX_MODELS_DIR" "HF_VLM_MODELS_DIR" "SSL_CERT_FILE" "MODEL_PLANE_WORKLOAD_SURFACE" "INFERENCE_ENGINE_SERVER_TLS_CERT_FILE" "INFERENCE_ENGINE_SERVER_TLS_KEY_FILE" "INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE" "INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE" "INFERENCE_ENGINE_PROBE_TLS_CERT_FILE" "INFERENCE_ENGINE_PROBE_TLS_KEY_FILE" "INFERENCE_ENGINE_PROBE_TLS_CA_FILE" -}}
 {{- range $key, $_ := .Values.extraEnv -}}
@@ -184,13 +184,13 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- fail (printf "extraEnv cannot override chart-managed variable %s" $key) -}}
 {{- end -}}
 {{- end -}}
-{{- $selectorLabels := list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "prometa.io/production-profile-id" -}}
+{{- $selectorLabels := list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "planeon.io/production-profile-id" -}}
 {{- range $key, $_ := .Values.podLabels -}}
 {{- if has $key $selectorLabels -}}
 {{- fail (printf "podLabels cannot override chart-managed label %s" $key) -}}
 {{- end -}}
 {{- end -}}
-{{- if or (hasKey .Values.podAnnotations "orchestra.prometa.ai/rollout-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/deployment-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/server-tls-rollout-id") -}}
+{{- if or (hasKey .Values.podAnnotations "onion.planeon.ai/rollout-id") (hasKey .Values.podAnnotations "onion.planeon.ai/deployment-id") (hasKey .Values.podAnnotations "onion.planeon.ai/server-tls-rollout-id") -}}
 {{- fail "podAnnotations cannot override rollout, deployment, or server TLS identity" -}}
 {{- end -}}
 
@@ -198,8 +198,8 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- fail "productionProfile and engineeringTrialProfile are mutually exclusive" -}}
 {{- end -}}
 {{- if .Values.engineeringTrialProfile.enabled -}}
-{{- if ne .Values.engineeringTrialProfile.profileId "orchestra-ocp-sno-trial-amd64-v1" -}}
-{{- fail "the engineering trial profile ID must be orchestra-ocp-sno-trial-amd64-v1" -}}
+{{- if ne .Values.engineeringTrialProfile.profileId "onion-ocp-sno-trial-amd64-v1" -}}
+{{- fail "the engineering trial profile ID must be onion-ocp-sno-trial-amd64-v1" -}}
 {{- end -}}
 {{- if not .Values.engineeringTrialProfile.sourceOnlyAcknowledged -}}
 {{- fail "the engineering trial profile requires source-only acknowledgement" -}}
@@ -213,7 +213,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if not .Values.image.digest -}}
 {{- fail "the engineering trial profile requires an immutable image digest" -}}
 {{- end -}}
-{{- if ne .Values.workloadSurface.profileId "orchestra-model-plane-workload-v1" -}}
+{{- if ne .Values.workloadSurface.profileId "onion-model-plane-workload-v1" -}}
 {{- fail "the engineering trial profile requires the bounded workload surface" -}}
 {{- end -}}
 {{- if not (and .Values.auth.enabled .Values.routing.enabled .Values.routing.policyRequired) -}}
@@ -300,14 +300,14 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 
 {{- if .Values.productionProfile.enabled -}}
-{{- if ne .Values.productionProfile.profileId "orchestra-ocp-4.20-amd64-v1" -}}
-{{- fail "the OpenShift production profile ID must be orchestra-ocp-4.20-amd64-v1" -}}
+{{- if ne .Values.productionProfile.profileId "onion-ocp-4.20-amd64-v1" -}}
+{{- fail "the OpenShift production profile ID must be onion-ocp-4.20-amd64-v1" -}}
 {{- end -}}
 {{- if ne .Values.productionProfile.imageFlavor "ubi9" -}}
 {{- fail "the OpenShift production profile requires imageFlavor=ubi9" -}}
 {{- end -}}
-{{- if ne .Values.workloadSurface.profileId "orchestra-model-plane-workload-v1" -}}
-{{- fail "the OpenShift production profile requires workloadSurface.profileId=orchestra-model-plane-workload-v1" -}}
+{{- if ne .Values.workloadSurface.profileId "onion-model-plane-workload-v1" -}}
+{{- fail "the OpenShift production profile requires workloadSurface.profileId=onion-model-plane-workload-v1" -}}
 {{- end -}}
 {{- if not .Values.productionProfile.namespaceDefaultDenyAcknowledged -}}
 {{- fail "the OpenShift production profile requires a pre-created namespace-wide default deny" -}}
@@ -366,8 +366,8 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- if ne (int .Values.observation.version) 2 -}}
 {{- fail "the OpenShift production profile requires observation contract v2" -}}
 {{- end -}}
-{{- if ne .Values.routing.expectedAudience "orchestra-model-plane" -}}
-{{- fail "the OpenShift production profile requires the orchestra-model-plane audience" -}}
+{{- if ne .Values.routing.expectedAudience "onion-model-plane" -}}
+{{- fail "the OpenShift production profile requires the onion-model-plane audience" -}}
 {{- end -}}
 {{- if or (not .Values.otel.enabled) (not (hasPrefix "https://" .Values.otel.endpoint)) -}}
 {{- fail "the OpenShift production profile requires HTTPS OTLP export" -}}

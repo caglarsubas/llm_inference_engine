@@ -97,7 +97,7 @@ def settings_for(**overrides):
         "model_routing_rate_limit_redis_url_file": "",
         "model_routing_rate_limit_sentinel_config_file": "",
         "model_routing_rate_limit_allow_insecure_redis": False,
-        "model_routing_rate_limit_key_prefix": "orchestra:model-routing",
+        "model_routing_rate_limit_key_prefix": "onion:model-routing",
         "model_routing_rate_limit_connect_timeout_seconds": 0.1,
         "model_routing_rate_limit_operation_timeout_seconds": 0.1,
     }
@@ -226,7 +226,7 @@ def test_shared_scope_reads_a_mounted_url_and_allows_explicit_non_tls_test_mode(
 def sentinel_config(**overrides) -> dict:
     values = {
         "configVersion": 1,
-        "serviceName": "orchestra-model-routing",
+        "serviceName": "onion-model-routing",
         "sentinels": [
             {"host": f"sentinel-{index}.tenant.svc.cluster.local", "port": 26379}
             for index in range(3)
@@ -236,7 +236,7 @@ def sentinel_config(**overrides) -> dict:
         "password": "data-secret",
         "sentinelPassword": "sentinel-secret",
         "tls": True,
-        "caFile": "/etc/orchestra/ca/ca-bundle.crt",
+        "caFile": "/etc/onion/ca/ca-bundle.crt",
         "requiredReplicaAcks": 1,
         "replicaAckTimeoutMilliseconds": 750,
     }
@@ -290,9 +290,9 @@ def test_shared_scope_builds_tls_sentinel_client_and_requires_replica_acknowledg
     assert kwargs["password"] == "data-secret"
     assert kwargs["ssl"] is True
     assert kwargs["ssl_check_hostname"] is True
-    assert kwargs["ssl_ca_certs"] == "/etc/orchestra/ca/ca-bundle.crt"
+    assert kwargs["ssl_ca_certs"] == "/etc/onion/ca/ca-bundle.crt"
     assert kwargs["sentinel_kwargs"]["password"] == "sentinel-secret"
-    assert captured["service_name"] == "orchestra-model-routing"
+    assert captured["service_name"] == "onion-model-routing"
     assert captured["master_kwargs"] == {"check_connection": True}
     assert master.wait_calls == [(1, 750)]
     assert master.closed
@@ -382,7 +382,7 @@ def test_sentinel_source_reports_missing_file_without_path_or_secret() -> None:
 def test_sentinel_limiter_fails_closed_when_replica_acknowledgement_is_missing() -> None:
     limiter = RedisModelRoutingRateLimiter(
         FakeRedis(acknowledged_replicas=0),
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
         required_replica_acks=1,
         replica_ack_timeout_milliseconds=50,
     )
@@ -397,7 +397,7 @@ def test_sentinel_limiter_fails_closed_when_replica_acknowledgement_is_missing()
 
 def test_shared_limiter_uses_only_a_hashed_identity_key() -> None:
     client = FakeRedis()
-    limiter = RedisModelRoutingRateLimiter(client, key_prefix="orchestra:test")
+    limiter = RedisModelRoutingRateLimiter(client, key_prefix="onion:test")
 
     consume(limiter)
 
@@ -405,7 +405,7 @@ def test_shared_limiter_uses_only_a_hashed_identity_key() -> None:
     call = client.eval_calls[0]
     assert call[1] == 1
     key = call[2]
-    assert key.startswith("orchestra:test:rpm:")
+    assert key.startswith("onion:test:rpm:")
     assert len(key.rsplit(":", 1)[-1]) == 64
     serialized = repr(call)
     for sensitive in (
@@ -420,7 +420,7 @@ def test_shared_limiter_uses_only_a_hashed_identity_key() -> None:
 def test_shared_limiter_returns_a_bounded_retry_after() -> None:
     limiter = RedisModelRoutingRateLimiter(
         FakeRedis(result=[0, 1_501, b"rate_limit_exceeded"]),
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
     )
 
     with pytest.raises(ModelRoutingEnforcementError) as raised:
@@ -432,7 +432,7 @@ def test_shared_limiter_returns_a_bounded_retry_after() -> None:
 
 def test_shared_limiter_admits_every_dimension_in_one_round_trip() -> None:
     client = FakeRedis()
-    limiter = RedisModelRoutingRateLimiter(client, key_prefix="orchestra:test")
+    limiter = RedisModelRoutingRateLimiter(client, key_prefix="onion:test")
 
     reservation = consume_budget(limiter)
 
@@ -440,10 +440,10 @@ def test_shared_limiter_admits_every_dimension_in_one_round_trip() -> None:
     call = client.eval_calls[0]
     assert call[1] == 5
     window_keys = call[2:7]
-    assert window_keys[0].startswith("orchestra:test:rpm:")
-    assert window_keys[1].startswith("orchestra:test:tpm:")
+    assert window_keys[0].startswith("onion:test:rpm:")
+    assert window_keys[1].startswith("onion:test:tpm:")
     assert window_keys[2] == f"{window_keys[1]}:amounts"
-    assert window_keys[3].startswith("orchestra:test:spend:")
+    assert window_keys[3].startswith("onion:test:spend:")
     assert window_keys[4] == f"{window_keys[3]}:amounts"
     for key in window_keys:
         assert len(key.split(":")[3]) == 64
@@ -458,7 +458,7 @@ def test_shared_limiter_admits_every_dimension_in_one_round_trip() -> None:
 
 def test_shared_limiter_settles_only_the_amount_dimensions() -> None:
     client = FakeRedis()
-    limiter = RedisModelRoutingRateLimiter(client, key_prefix="orchestra:test")
+    limiter = RedisModelRoutingRateLimiter(client, key_prefix="onion:test")
     reservation = consume_budget(limiter)
     assert reservation is not None
 
@@ -468,8 +468,8 @@ def test_shared_limiter_settles_only_the_amount_dimensions() -> None:
     assert len(client.eval_calls) == 2
     settle = client.eval_calls[1]
     assert settle[1] == 4
-    assert settle[2].startswith("orchestra:test:tpm:")
-    assert settle[4].startswith("orchestra:test:spend:")
+    assert settle[2].startswith("onion:test:tpm:")
+    assert settle[4].startswith("onion:test:spend:")
     assert settle[6] == reservation.nonce
     assert settle[7] == 2
     assert settle[8] == 120
@@ -497,7 +497,7 @@ def test_shared_limiter_reports_which_window_denied(
 ) -> None:
     limiter = RedisModelRoutingRateLimiter(
         FakeRedis(result=[0, 500, denial]),
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
     )
 
     with pytest.raises(ModelRoutingEnforcementError) as raised:
@@ -512,7 +512,7 @@ def test_shared_limiter_reports_which_window_denied(
 def test_shared_limiter_fails_closed_on_the_new_dimensions_too() -> None:
     limiter = RedisModelRoutingRateLimiter(
         FakeRedis(error=RedisConnectionError("unavailable")),
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
     )
 
     with pytest.raises(ModelRoutingEnforcementError) as raised:
@@ -524,7 +524,7 @@ def test_shared_limiter_fails_closed_on_the_new_dimensions_too() -> None:
 
 def test_shared_limiter_skips_the_store_when_no_limit_is_signed() -> None:
     client = FakeRedis()
-    limiter = RedisModelRoutingRateLimiter(client, key_prefix="orchestra:test")
+    limiter = RedisModelRoutingRateLimiter(client, key_prefix="onion:test")
 
     assert consume_budget(limiter, limit=None, tokens_limit=None, spend_limit=None) is None
     assert client.eval_calls == []
@@ -533,7 +533,7 @@ def test_shared_limiter_skips_the_store_when_no_limit_is_signed() -> None:
 def test_shared_limiter_fails_closed_when_backend_is_unavailable() -> None:
     limiter = RedisModelRoutingRateLimiter(
         FakeRedis(error=RedisConnectionError("unavailable")),
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
     )
 
     with pytest.raises(ModelRoutingRuntimeConfigError) as startup_error:
@@ -549,7 +549,7 @@ def test_shared_limiter_fails_closed_when_backend_is_unavailable() -> None:
 @pytest.mark.skipif(not os.getenv("TEST_VALKEY_URL"), reason="TEST_VALKEY_URL is not configured")
 def test_shared_limiter_is_atomic_across_clients() -> None:
     url = os.environ["TEST_VALKEY_URL"]
-    prefix = f"orchestra:test:{uuid4().hex}"
+    prefix = f"onion:test:{uuid4().hex}"
     first = RedisModelRoutingRateLimiter(Redis.from_url(url), key_prefix=prefix)
     second = RedisModelRoutingRateLimiter(Redis.from_url(url), key_prefix=prefix)
     first.ping()
@@ -577,7 +577,7 @@ def test_shared_limiter_is_atomic_across_clients() -> None:
 @pytest.mark.skipif(not os.getenv("TEST_VALKEY_URL"), reason="TEST_VALKEY_URL is not configured")
 def test_shared_token_and_spend_windows_are_atomic_across_clients() -> None:
     url = os.environ["TEST_VALKEY_URL"]
-    prefix = f"orchestra:test:{uuid4().hex}"
+    prefix = f"onion:test:{uuid4().hex}"
     first = RedisModelRoutingRateLimiter(Redis.from_url(url), key_prefix=prefix)
     second = RedisModelRoutingRateLimiter(Redis.from_url(url), key_prefix=prefix)
     first.ping()
@@ -615,7 +615,7 @@ def test_shared_token_and_spend_windows_are_atomic_across_clients() -> None:
 @pytest.mark.skipif(not os.getenv("TEST_VALKEY_URL"), reason="TEST_VALKEY_URL is not configured")
 def test_shared_settlement_returns_over_reserved_budget_to_the_window() -> None:
     url = os.environ["TEST_VALKEY_URL"]
-    prefix = f"orchestra:test:{uuid4().hex}"
+    prefix = f"onion:test:{uuid4().hex}"
     limiter = RedisModelRoutingRateLimiter(Redis.from_url(url), key_prefix=prefix)
     limiter.ping()
 
@@ -638,7 +638,7 @@ def test_shared_settlement_returns_over_reserved_budget_to_the_window() -> None:
 @pytest.mark.skipif(not os.getenv("TEST_VALKEY_URL"), reason="TEST_VALKEY_URL is not configured")
 def test_shared_amount_window_refuses_to_retain_unbounded_reservations() -> None:
     url = os.environ["TEST_VALKEY_URL"]
-    prefix = f"orchestra:test:{uuid4().hex}"
+    prefix = f"onion:test:{uuid4().hex}"
     limiter = RedisModelRoutingRateLimiter(
         Redis.from_url(url),
         key_prefix=prefix,
@@ -819,7 +819,7 @@ def limiter_at_a_five_entry_ceiling(request):
     else:
         limiter = RedisModelRoutingRateLimiter(
             Redis.from_url(os.environ["TEST_VALKEY_URL"]),
-            key_prefix=f"orchestra:test:{uuid4().hex}",
+            key_prefix=f"onion:test:{uuid4().hex}",
             max_window_entries=5,
         )
         limiter.ping()
@@ -964,7 +964,7 @@ def limiter_on_a_wall_clock(request):
     else:
         limiter = RedisModelRoutingRateLimiter(
             Redis.from_url(os.environ["TEST_VALKEY_URL"]),
-            key_prefix=f"orchestra:test:{uuid4().hex}",
+            key_prefix=f"onion:test:{uuid4().hex}",
         )
         limiter.ping()
     try:
@@ -1005,7 +1005,7 @@ def test_shared_expiry_sweep_is_bounded_and_amortised_across_admissions() -> Non
     sweep = model_routing_runtime.MODEL_ROUTING_RATE_LIMIT_EXPIRY_SWEEP_LIMIT
     backlog = sweep * 3
     client = Redis.from_url(os.environ["TEST_VALKEY_URL"])
-    prefix = f"orchestra:test:{uuid4().hex}"
+    prefix = f"onion:test:{uuid4().hex}"
     limiter = RedisModelRoutingRateLimiter(client, key_prefix=prefix)
     admit = dict(limit=None, tokens=10, tokens_limit=1_000_000, spend_limit=None)
     try:
@@ -1038,7 +1038,7 @@ def test_shared_limiter_carries_the_window_entry_ceiling_into_the_script() -> No
     client = FakeRedis()
     limiter = RedisModelRoutingRateLimiter(
         client,
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
         max_window_entries=64,
     )
 
@@ -1052,7 +1052,7 @@ def test_shared_limiter_carries_the_window_entry_ceiling_into_the_script() -> No
 def test_shared_limiter_fails_closed_on_a_window_at_its_entry_ceiling() -> None:
     limiter = RedisModelRoutingRateLimiter(
         FakeRedis(result=[0, 60_000, b"rate_limit_state_capacity"]),
-        key_prefix="orchestra:test",
+        key_prefix="onion:test",
     )
 
     with pytest.raises(ModelRoutingEnforcementError) as raised:

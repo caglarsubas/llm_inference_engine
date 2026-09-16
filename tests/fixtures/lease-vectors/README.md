@@ -93,7 +93,7 @@ observation carried no such key), and `expect.outcome` is `accepted` with a
 
 `trust[]` entries carry `allowedArtifactTypes` — the key's purpose. A verifier
 must refuse a lease whose key does not name
-`orchestra.runtime-control-lease` there. `lease-wrong-key-purpose` supplies a
+`onion.runtime-control-lease` there. `lease-wrong-key-purpose` supplies a
 genuine, correctly-signed lease under the routing-policy key: the signature is
 valid, and it must still be refused.
 

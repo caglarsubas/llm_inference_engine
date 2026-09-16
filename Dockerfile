@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
-# Orchestra inference engine - Debian runtime image.
+# Onion inference engine - Debian runtime image.
 #
 # The builder contains compilers needed by llama-cpp-python. The final image
 # contains only the locked virtual environment and runtime libraries. The base
@@ -70,12 +70,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MODEL_ROUTING_TRUST_STORE_FILE=/config/model_routing_trust.json \
     MODEL_ROUTING_PRICING_FILE=/config/model_routing_pricing.json
 
-LABEL org.opencontainers.image.title="Orchestra Inference Engine" \
-      org.opencontainers.image.description="Tenant-deployed OpenAI-compatible Orchestra model plane" \
+LABEL org.opencontainers.image.title="Onion Inference Engine" \
+      org.opencontainers.image.description="Tenant-deployed OpenAI-compatible Onion model plane" \
       org.opencontainers.image.source="https://github.com/caglarsubas/llm_inference_engine" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      io.prometa.image.variant="debian"
+      io.planeon.image.variant="debian"
 
 # GID 0 permissions support OpenShift arbitrary UIDs.
 RUN apt-get update \

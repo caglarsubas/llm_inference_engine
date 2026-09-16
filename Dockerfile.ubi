@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
-# Orchestra inference engine - Red Hat UBI9 runtime image.
+# Onion inference engine - Red Hat UBI9 runtime image.
 #
 # This is functionally equivalent to Dockerfile, with a UBI build/runtime pair
 # for OpenShift estates. UBI is not itself a Red Hat certification or a claim
@@ -64,12 +64,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MODEL_ROUTING_TRUST_STORE_FILE=/config/model_routing_trust.json \
     MODEL_ROUTING_PRICING_FILE=/config/model_routing_pricing.json
 
-LABEL org.opencontainers.image.title="Orchestra Inference Engine (UBI9)" \
-      org.opencontainers.image.description="Tenant-deployed OpenAI-compatible Orchestra model plane on Red Hat UBI9" \
+LABEL org.opencontainers.image.title="Onion Inference Engine (UBI9)" \
+      org.opencontainers.image.description="Tenant-deployed OpenAI-compatible Onion model plane on Red Hat UBI9" \
       org.opencontainers.image.source="https://github.com/caglarsubas/llm_inference_engine" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      io.prometa.image.variant="ubi9"
+      io.planeon.image.variant="ubi9"
 
 RUN microdnf install -y libgomp \
  && microdnf clean all \

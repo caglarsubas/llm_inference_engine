@@ -2,7 +2,7 @@
 
 The reporter is deliberately outside the inference request path. It reports
 locally observed health, model inventory digests, and signed routing-policy
-identity to an Orchestra control plane without making that plane a runtime
+identity to an Onion control plane without making that plane a runtime
 dependency.
 """
 
@@ -39,7 +39,7 @@ from .model_routing_status import build_model_routing_status
 from .observability import get_logger, span
 from .schemas import ModelList
 
-MODEL_PLANE_OBSERVATION_TYPE = "orchestra.model-plane-observation"
+MODEL_PLANE_OBSERVATION_TYPE = "onion.model-plane-observation"
 MODEL_PLANE_OBSERVATION_VERSION_V1 = 1
 MODEL_PLANE_OBSERVATION_VERSION_V2 = 2
 _OBSERVATION_PATH = "/api/model-routing-observations"
@@ -101,7 +101,7 @@ def _reject(code: str, message: str) -> Never:
 
 def _validate_identifier(value: str, field: str) -> str:
     if not _IDENTIFIER.fullmatch(value):
-        _reject("invalid_identifier", f"{field} must be a bounded Orchestra identifier")
+        _reject("invalid_identifier", f"{field} must be a bounded Onion identifier")
     return value
 
 
@@ -389,8 +389,8 @@ def model_plane_observation_span_attrs(
         "model_plane.observation_id": observation["observationId"],
         "model_plane.deployment_id": observation["deploymentId"],
         "model_plane.environment": observation["targetEnvironment"],
-        "prometa.deployment.id": observation["deploymentId"],
-        "prometa.environment": observation["targetEnvironment"],
+        "planeon.deployment.id": observation["deploymentId"],
+        "planeon.environment": observation["targetEnvironment"],
     }
     routing = observation.get("routingPolicy")
     if isinstance(routing, Mapping) and routing.get("active") is True:
@@ -399,10 +399,10 @@ def model_plane_observation_span_attrs(
         if isinstance(digest, str) and isinstance(release_id, str):
             attrs.update(
                 {
-                    "prometa.artifact.type": "model-routing-policy",
-                    "prometa.artifact.digest": digest,
-                    "prometa.policy.digest": digest,
-                    "prometa.release.id": release_id,
+                    "planeon.artifact.type": "model-routing-policy",
+                    "planeon.artifact.digest": digest,
+                    "planeon.policy.digest": digest,
+                    "planeon.release.id": release_id,
                 }
             )
     return attrs

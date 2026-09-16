@@ -182,7 +182,7 @@ def test_max_completion_tokens_overrides_max_tokens() -> None:
 
 
 def test_legacy_max_tokens_still_honoured() -> None:
-    """The orchestra-python-sdk model gateway sends max_tokens, not the new name."""
+    """The onion-python-sdk model gateway sends max_tokens, not the new name."""
     req = ChatCompletionRequest(
         model="m",
         messages=[ChatMessage(role="user", content="hi")],
@@ -202,14 +202,14 @@ _SDK_SCHEMA = {
 
 
 def test_json_schema_response_format_reaches_generation_params() -> None:
-    """This is the exact body orchestra-python-sdk's model gateway sends."""
+    """This is the exact body onion-python-sdk's model gateway sends."""
     req = ChatCompletionRequest(
         model="m",
         messages=[ChatMessage(role="user", content="hi")],
         response_format={
             "type": "json_schema",
             "json_schema": {
-                "name": "orchestra_runtime_output",
+                "name": "onion_runtime_output",
                 "strict": True,
                 "schema": _SDK_SCHEMA,
             },
@@ -218,7 +218,7 @@ def test_json_schema_response_format_reaches_generation_params() -> None:
     params = _params_from_request(req)
     assert params.json_mode is True
     assert params.json_schema == _SDK_SCHEMA
-    assert params.json_schema_name == "orchestra_runtime_output"
+    assert params.json_schema_name == "onion_runtime_output"
     assert params.json_schema_strict is True
 
 
@@ -261,14 +261,14 @@ def test_vllm_forwards_native_json_schema_shape() -> None:
         GenerationParams(
             json_mode=True,
             json_schema=_SDK_SCHEMA,
-            json_schema_name="orchestra_runtime_output",
+            json_schema_name="onion_runtime_output",
             json_schema_strict=True,
         )
     )
     assert kwargs["response_format"] == {
         "type": "json_schema",
         "json_schema": {
-            "name": "orchestra_runtime_output",
+            "name": "onion_runtime_output",
             "schema": _SDK_SCHEMA,
             "strict": True,
         },

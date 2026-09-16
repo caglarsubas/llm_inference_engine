@@ -68,7 +68,7 @@ routing:
   policyKey: model_routing_policy.json
   trustStoreKey: model_routing_trust.json
   pricingKey: model_routing_pricing.json
-  expectedAudience: orchestra-model-plane
+  expectedAudience: onion-model-plane
   expectedOrgId: ""
   clockSkewSeconds: 30
   inputTokenReserve: 1024
@@ -81,13 +81,13 @@ routing:
     redisUrlKey: redis-url
     sentinelConfigKey: sentinel-config.json
     allowInsecureRedis: false
-    keyPrefix: orchestra:model-routing
+    keyPrefix: onion:model-routing
     connectTimeoutSeconds: 1
     operationTimeoutSeconds: 1
     # Full NetworkPolicy egress rules, kept separate from model/backend egress.
     networkPolicyEgress: []
 
-# Payload-free asynchronous control-plane evidence. This does not put Orchestra
+# Payload-free asynchronous control-plane evidence. This does not put Onion
 # in the synchronous inference path.
 observation:
   enabled: true
@@ -115,11 +115,11 @@ otel:
   enabled: false
   endpoint: ""
   protocol: grpc # grpc | http/protobuf
-  # Optional purpose-scoped exporter headers, for example an Orchestra OTLP
+  # Optional purpose-scoped exporter headers, for example an Onion OTLP
   # API key. The chart references this Secret and never creates it.
   headersSecretName: ""
   headersSecretKey: headers
-  serviceName: orchestra-model-plane
+  serviceName: onion-model-plane
 
 # One LKG volume per StatefulSet replica. The customer storage operator owns
 # backup, restore, snapshots, and disaster-recovery verification.

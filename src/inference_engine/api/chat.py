@@ -176,8 +176,8 @@ def _genai_request_attrs(
     """OTel GenAI semantic-convention request attributes.
 
     ``gen_ai.system`` is kept alongside the newer ``gen_ai.provider.name``:
-    recent semconv versions renamed it, but the orchestra-python-sdk's own
-    instrumentation (``prometa/integrations/openai.py``) still writes
+    recent semconv versions renamed it, but the onion-python-sdk's own
+    instrumentation (``planeon/integrations/openai.py``) still writes
     ``gen_ai.system``, and dropping it would split existing dashboards across
     two attribute names mid-flight. Emitting both costs one attribute and keeps
     old and new queries working.
@@ -197,11 +197,11 @@ def _genai_request_attrs(
 def _identity_attrs(identity: Identity) -> dict:
     """Span attributes that flag the calling tenant on every inference span."""
     attrs = {
-        "prometa.tenant": identity.tenant,
-        "prometa.key_id": identity.key_id,
+        "planeon.tenant": identity.tenant,
+        "planeon.key_id": identity.key_id,
     }
     if identity.org_id is not None:
-        attrs["prometa.org_id"] = identity.org_id
+        attrs["planeon.org_id"] = identity.org_id
     return attrs
 
 
@@ -459,7 +459,7 @@ def _resolve_auto_eval(
     """Pick the effective auto-eval spec.
 
     Server-side policy wins when it matches — the request's ``auto_eval`` is
-    ignored in that case. This keeps Prometa's policy plane authoritative
+    ignored in that case. This keeps Planeon's policy plane authoritative
     over compliance/safety rubrics. Returns ``(spec, policy_or_None)`` so
     callers can stamp provenance onto spans.
     """

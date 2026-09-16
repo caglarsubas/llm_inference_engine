@@ -23,7 +23,7 @@ class EvalRequest(BaseModel):
     judge_model: str | None = None
 
     # Provenance fields — not interpreted by the runner, just stamped onto spans
-    # and the response so Prometa can correlate evals back to candidate signals.
+    # and the response so Planeon can correlate evals back to candidate signals.
     candidate_model: str | None = None
     candidate_completion_id: str | None = None
     # Pairwise: identifies the second candidate's chat completion id for joining.

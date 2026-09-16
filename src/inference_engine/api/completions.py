@@ -44,9 +44,9 @@ router = APIRouter()
 
 
 def _identity_attrs(identity: Identity) -> dict:
-    attrs = {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    attrs = {"planeon.tenant": identity.tenant, "planeon.key_id": identity.key_id}
     if identity.org_id is not None:
-        attrs["prometa.org_id"] = identity.org_id
+        attrs["planeon.org_id"] = identity.org_id
     return attrs
 
 

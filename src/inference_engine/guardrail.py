@@ -1,4 +1,4 @@
-"""Engine-side client for the ``orchestra-guardrail-evaluate-v1`` contract.
+"""Engine-side client for the ``onion-guardrail-evaluate-v1`` contract.
 
 The engine is the one enforcement point a caller reaches without going through
 the SDK runtime, so without this seam ``/v1/chat/completions`` is unguarded by

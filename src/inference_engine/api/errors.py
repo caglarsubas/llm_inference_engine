@@ -1,7 +1,7 @@
 """OpenAI-shaped error envelope.
 
 Every OpenAI SDK — and everything built on one (LangChain, LlamaIndex, the
-Vercel AI SDK, the orchestra-python-sdk's model gateway) — reads failures out
+Vercel AI SDK, the onion-python-sdk's model gateway) — reads failures out
 of a top-level ``error`` object::
 
     {"error": {"message": ..., "type": ..., "param": ..., "code": ...}}
@@ -13,7 +13,7 @@ nested under the wrong key, so ``APIStatusError.body`` came back empty and
 ``BadRequestError``/``RateLimitError`` lost their ``.code``.
 
 These handlers emit **both**: ``error`` for OpenAI-compatible clients, and the
-original ``detail`` unchanged so existing Prometa consumers and the admin
+original ``detail`` unchanged so existing Planeon consumers and the admin
 tooling keep working. Nothing is taken away.
 """
 

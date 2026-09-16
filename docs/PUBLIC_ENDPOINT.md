@@ -2,7 +2,7 @@
 
 This engine speaks the **OpenAI HTTP API**. Once it's exposed on a public URL
 (via ngrok or Cloudflare Tunnel), any OpenAI-compatible client — the OpenAI
-SDKs, LangChain, `curl`, or the **Prometa platform** — can talk to it by
+SDKs, LangChain, `curl`, or the **Planeon platform** — can talk to it by
 pointing `base_url` at that URL.
 
 This document is meant to be handed to a consumer of the endpoint. It covers
@@ -19,7 +19,7 @@ route for any model, plus the configuration knobs that change behaviour.
 - [8. Rerank](#8-rerank)
 - [9. Health & metrics](#9-health--metrics)
 - [10. Use it from an SDK](#10-use-it-from-an-sdk)
-- [11. Wire it into Prometa](#11-wire-it-into-prometa)
+- [11. Wire it into Planeon](#11-wire-it-into-planeon)
 - [12. Errors & troubleshooting](#12-errors--troubleshooting)
 - [13. Security checklist](#13-security-checklist)
 
@@ -97,7 +97,7 @@ scripts/share_endpoint.sh --domain my-name.ngrok-free.dev   # stable URL
 **Stable vs. ephemeral URL**
 
 - An **ephemeral** ngrok run (no `--domain`) gives a URL that can change between
-  sessions — fine for a quick test, annoying once it's pasted into Prometa.
+  sessions — fine for a quick test, annoying once it's pasted into Planeon.
 - The **ngrok free plan includes one reserved static domain** (shown under
   *Domains* in the dashboard, current format `my-name.ngrok-free.dev`). Pass it
   with `make share NGROK_DOMAIN=my-name.ngrok-free.dev` (or `--domain`) for a
@@ -586,19 +586,19 @@ llm = ChatOpenAI(base_url="https://abc123.ngrok.app/v1", api_key="sk-...",
 
 ---
 
-## 11. Wire it into Prometa
+## 11. Wire it into Planeon
 
-In Prometa: **Settings → Primary LLM Provider → Self-hosted
+In Planeon: **Settings → Primary LLM Provider → Self-hosted
 (llm_inference_engine)**.
 
 | Field          | Value                                                           |
 |----------------|-----------------------------------------------------------------|
-| **ENGINE URL** | the public host **without** `/v1` — e.g. `https://abc123.ngrok.app` (Prometa appends the OpenAI path itself) |
+| **ENGINE URL** | the public host **without** `/v1` — e.g. `https://abc123.ngrok.app` (Planeon appends the OpenAI path itself) |
 | **ENGINE TOKEN** | a bearer key from `.auth_keys.json` when auth is on; leave blank when off |
 | **CANDIDATE MODEL** | an id from `/v1/models`, e.g. `gemma4:26b`, `llama3.2:3b` |
 
-Prometa then routes its judge / assist / synthetic-data calls to your engine
-on that URL. Verify the wiring from Prometa's side, or directly:
+Planeon then routes its judge / assist / synthetic-data calls to your engine
+on that URL. Verify the wiring from Planeon's side, or directly:
 
 ```bash
 curl -s https://abc123.ngrok.app/v1/models | jq '.data[].id'
@@ -628,7 +628,7 @@ the ENGINE URL after each restart, or use your reserved domain
 ### Public judge endpoints
 
 Do not expose a multi-minute judge model through a free ngrok tunnel and expect
-Prometa scoring runs to complete. For judge candidates such as `gemma4:26b`,
+Planeon scoring runs to complete. For judge candidates such as `gemma4:26b`,
 measure single-call latency locally first:
 
 ```bash

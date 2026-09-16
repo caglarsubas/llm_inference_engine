@@ -146,18 +146,18 @@ jobs:
       - name: Prove fail-closed OpenShift render
         run: |
           deploy/helm/inference-engine/ci/render-production-profile.sh \
-            "$RUNNER_TEMP/orchestra-model-plane-profile.yaml"
+            "$RUNNER_TEMP/onion-model-plane-profile.yaml"
 
       - name: Prove source-only OpenShift SNO trial render
         run: |
           deploy/helm/inference-engine/ci/render-sno-trial-profile.sh \
-            "$RUNNER_TEMP/orchestra-model-plane-sno-trial.yaml"
+            "$RUNNER_TEMP/onion-model-plane-sno-trial.yaml"
 
       - name: Retain synthetic render evidence
         uses: actions/upload-artifact@v4
         with:
-          name: orchestra-model-plane-openshift-render
+          name: onion-model-plane-openshift-render
           path: |
-            ${{ runner.temp }}/orchestra-model-plane-profile.yaml
-            ${{ runner.temp }}/orchestra-model-plane-sno-trial.yaml
+            ${{ runner.temp }}/onion-model-plane-profile.yaml
+            ${{ runner.temp }}/onion-model-plane-sno-trial.yaml
           if-no-files-found: error

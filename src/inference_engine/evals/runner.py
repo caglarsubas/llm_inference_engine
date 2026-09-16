@@ -107,7 +107,7 @@ class EvalRunner:
         if rubric.pairwise:
             attrs["eval.pairwise"] = True
         if tenant:
-            attrs["prometa.tenant"] = tenant
+            attrs["planeon.tenant"] = tenant
 
         with span("eval.run", **attrs) as s:
             result = await adapter.generate(messages, params)

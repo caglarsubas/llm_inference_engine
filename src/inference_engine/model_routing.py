@@ -1,6 +1,6 @@
 """Verified desired-state policy for the tenant-deployed model plane.
 
-The Prometa control plane signs policy bytes out of band. This module verifies
+The Planeon control plane signs policy bytes out of band. This module verifies
 and activates those bytes locally; it never calls the control plane.
 """
 
@@ -26,7 +26,7 @@ from pydantic.alias_generators import to_camel
 
 from .config import settings
 
-MODEL_ROUTING_POLICY_TYPE = "orchestra.model-routing-policy"
+MODEL_ROUTING_POLICY_TYPE = "onion.model-routing-policy"
 MODEL_ROUTING_POLICY_VERSION_V1 = 1
 MODEL_ROUTING_POLICY_VERSION_V2 = 2
 
@@ -37,7 +37,7 @@ ModelRoutingPolicyVersion = Literal[
 MODEL_ROUTING_POLICY_VERSIONS: tuple[int, ...] = get_args(ModelRoutingPolicyVersion)
 
 MODEL_ROUTING_POLICY_CANONICALIZATION = "signed-payload-json-v1"
-MODEL_ROUTING_POLICY_AUDIENCE = "orchestra-model-plane"
+MODEL_ROUTING_POLICY_AUDIENCE = "onion-model-plane"
 MAX_MODEL_ROUTING_ROUTES = 128
 MAX_MODEL_ROUTING_FALLBACKS = 8
 MAX_MODEL_ROUTING_BUDGET_WINDOW_SECONDS = 86_400
@@ -491,7 +491,7 @@ def load_model_routing_envelope(
 class SignedEnvelope(Protocol):
     """The envelope fields the trust store and Ed25519 check actually read.
 
-    Every Orchestra artifact this engine verifies — routing policy today,
+    Every Onion artifact this engine verifies — routing policy today,
     runtime-control lease alongside it — carries these four fields under the
     same canonicalization, so one trust resolution and one signature check
     serve all of them.

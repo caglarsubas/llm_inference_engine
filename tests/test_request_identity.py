@@ -40,9 +40,9 @@ def test_all_upstream_identities_are_optional() -> None:
 def test_upstream_identities_are_independent_and_preserved_exactly() -> None:
     identity = read_upstream_invocation_identity(
         _headers(
-            (b"x-orchestra-runtime-request-id", b"runtime/A:1@tenant"),
-            (b"x-orchestra-model-invocation-id", b"same-prefix.invocation"),
-            (b"x-orchestra-model-attempt-id", b"same-prefix.attempt"),
+            (b"x-onion-runtime-request-id", b"runtime/A:1@tenant"),
+            (b"x-onion-model-invocation-id", b"same-prefix.invocation"),
+            (b"x-onion-model-attempt-id", b"same-prefix.attempt"),
         )
     )
 
@@ -55,7 +55,7 @@ def test_external_identity_accepts_the_exact_maximum_without_truncating() -> Non
     value = "z" * MAX_EXTERNAL_IDENTITY_LENGTH
 
     identity = read_upstream_invocation_identity(
-        _headers((b"x-orchestra-runtime-request-id", value.encode("ascii")))
+        _headers((b"x-onion-runtime-request-id", value.encode("ascii")))
     )
 
     assert identity.runtime_request_id == value
@@ -65,8 +65,8 @@ def test_external_identity_accepts_the_exact_maximum_without_truncating() -> Non
 def test_runtime_and_invocation_is_a_valid_ordered_prefix() -> None:
     identity = read_upstream_invocation_identity(
         _headers(
-            (b"x-orchestra-runtime-request-id", b"runtime-1"),
-            (b"x-orchestra-model-invocation-id", b"invocation-1"),
+            (b"x-onion-runtime-request-id", b"runtime-1"),
+            (b"x-onion-model-invocation-id", b"invocation-1"),
         )
     )
 
@@ -88,10 +88,10 @@ def test_runtime_and_invocation_is_a_valid_ordered_prefix() -> None:
 def test_invalid_external_identity_is_rejected_not_normalized(raw: bytes, reason: str) -> None:
     with pytest.raises(InvalidInvocationIdentity, match=reason) as caught:
         read_upstream_invocation_identity(
-            _headers((b"x-orchestra-model-invocation-id", raw))
+            _headers((b"x-onion-model-invocation-id", raw))
         )
 
-    assert caught.value.header == "x-orchestra-model-invocation-id"
+    assert caught.value.header == "x-onion-model-invocation-id"
 
 
 @pytest.mark.parametrize(
@@ -114,15 +114,15 @@ def test_invalid_external_identity_is_rejected_not_normalized(raw: bytes, reason
 def test_flattened_null_sentinels_are_reserved_case_insensitively(value: str) -> None:
     with pytest.raises(InvalidInvocationIdentity, match="reserved") as caught:
         read_upstream_invocation_identity(
-            _headers((b"x-orchestra-runtime-request-id", value.encode("ascii")))
+            _headers((b"x-onion-runtime-request-id", value.encode("ascii")))
         )
 
-    assert caught.value.header == "x-orchestra-runtime-request-id"
+    assert caught.value.header == "x-onion-runtime-request-id"
 
 
 def test_sentinel_prefixes_and_suffixes_remain_exact_valid_identities() -> None:
     identity = read_upstream_invocation_identity(
-        _headers((b"x-orchestra-runtime-request-id", b"null-runtime"))
+        _headers((b"x-onion-runtime-request-id", b"null-runtime"))
     )
 
     assert identity.runtime_request_id == "null-runtime"
@@ -132,8 +132,8 @@ def test_duplicate_identity_header_lines_are_rejected_as_ambiguous() -> None:
     with pytest.raises(InvalidInvocationIdentity, match="at most once"):
         read_upstream_invocation_identity(
             _headers(
-                (b"x-orchestra-model-attempt-id", b"attempt-1"),
-                (b"x-orchestra-model-attempt-id", b"attempt-2"),
+                (b"x-onion-model-attempt-id", b"attempt-1"),
+                (b"x-onion-model-attempt-id", b"attempt-2"),
             )
         )
 
@@ -142,26 +142,26 @@ def test_duplicate_identity_header_lines_are_rejected_as_ambiguous() -> None:
     ("pairs", "invalid_header"),
     [
         (
-            ((b"x-orchestra-model-invocation-id", b"invocation-1"),),
-            "x-orchestra-model-invocation-id",
+            ((b"x-onion-model-invocation-id", b"invocation-1"),),
+            "x-onion-model-invocation-id",
         ),
         (
-            ((b"x-orchestra-model-attempt-id", b"attempt-1"),),
-            "x-orchestra-model-attempt-id",
-        ),
-        (
-            (
-                (b"x-orchestra-runtime-request-id", b"runtime-1"),
-                (b"x-orchestra-model-attempt-id", b"attempt-1"),
-            ),
-            "x-orchestra-model-attempt-id",
+            ((b"x-onion-model-attempt-id", b"attempt-1"),),
+            "x-onion-model-attempt-id",
         ),
         (
             (
-                (b"x-orchestra-model-invocation-id", b"invocation-1"),
-                (b"x-orchestra-model-attempt-id", b"attempt-1"),
+                (b"x-onion-runtime-request-id", b"runtime-1"),
+                (b"x-onion-model-attempt-id", b"attempt-1"),
             ),
-            "x-orchestra-model-invocation-id",
+            "x-onion-model-attempt-id",
+        ),
+        (
+            (
+                (b"x-onion-model-invocation-id", b"invocation-1"),
+                (b"x-onion-model-attempt-id", b"attempt-1"),
+            ),
+            "x-onion-model-invocation-id",
         ),
     ],
 )

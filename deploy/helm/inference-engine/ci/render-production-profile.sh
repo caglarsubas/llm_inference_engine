@@ -5,7 +5,7 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 chart=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 helm_bin=${HELM_BIN:-helm}
 output=${1:-}
-workdir=$(mktemp -d "${TMPDIR:-/tmp}/orchestra-model-plane-chart.XXXXXX")
+workdir=$(mktemp -d "${TMPDIR:-/tmp}/onion-model-plane-chart.XXXXXX")
 trap 'rm -rf "$workdir"' EXIT HUP INT TERM
 
 manifest=${output:-"$workdir/openshift-model-plane.yaml"}
@@ -13,7 +13,7 @@ if [ -n "$output" ]; then
   mkdir -p "$(dirname -- "$output")"
 fi
 
-if "$helm_bin" template orchestra-model-plane "$chart" \
+if "$helm_bin" template onion-model-plane "$chart" \
   -f "$chart/values.openshift-production.yaml" >/dev/null 2>&1; then
   echo "OpenShift production values rendered without customer inputs" >&2
   exit 1
@@ -25,7 +25,7 @@ base=(
   --set rolloutId=staging-v1
   --set auth.existingSecretName=engine-auth
   --set routing.artifactsSecretName=engine-routing
-  --set observation.endpoint=https://orchestra.example.test/api/model-routing-observations
+  --set observation.endpoint=https://onion.example.test/api/model-routing-observations
   --set observation.apiKeySecretName=engine-observer
 )
 "$helm_bin" lint "$chart" "${base[@]}"
@@ -58,7 +58,7 @@ grep -qF 'name: MODEL_PLANE_RUNTIME_CONTROL_TRUST_STORE_FILE' \
 
 required=(
   --set productionProfile.namespaceDefaultDenyAcknowledged=true
-  --set image.repository=registry.example.test/orchestra/inference-engine-ubi
+  --set image.repository=registry.example.test/onion/inference-engine-ubi
   --set image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   --set deploymentId=tenant-model-plane
   --set rolloutId=release-2026-07
@@ -74,7 +74,7 @@ required=(
   --set 'routing.sharedRateLimit.networkPolicyEgress[1].to[0].ipBlock.cidr=10.40.0.0/16'
   --set 'routing.sharedRateLimit.networkPolicyEgress[1].ports[0].protocol=TCP'
   --set 'routing.sharedRateLimit.networkPolicyEgress[1].ports[0].port=6379'
-  --set observation.endpoint=https://orchestra.platform.svc/api/model-routing-observations
+  --set observation.endpoint=https://onion.platform.svc/api/model-routing-observations
   --set observation.apiKeySecretName=engine-observer
   --set otel.endpoint=https://otel-collector.observability.svc:4317
   --set modelBackends.mode=remote
@@ -83,9 +83,9 @@ required=(
   --set 'modelBackends.networkPolicyEgress[0].ports[0].port=8443'
   --set persistence.storageClassName=ocs-storagecluster-ceph-rbd
   --set persistence.externalBackupAcknowledged=true
-  --set trustedCA.configMapName=orchestra-model-plane-ca
+  --set trustedCA.configMapName=onion-model-plane-ca
   --set 'networkPolicy.runtimeIngressFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=tenant-runtime'
-  --set 'networkPolicy.runtimeIngressFrom[0].podSelector.matchLabels.app\.kubernetes\.io/name=orchestra-runtime'
+  --set 'networkPolicy.runtimeIngressFrom[0].podSelector.matchLabels.app\.kubernetes\.io/name=onion-runtime'
   --set 'networkPolicy.monitoringIngressFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=openshift-user-workload-monitoring'
   --set 'networkPolicy.observationEgress[0].to[0].ipBlock.cidr=10.50.0.0/16'
   --set 'networkPolicy.observationEgress[0].ports[0].protocol=TCP'
@@ -93,13 +93,13 @@ required=(
   --set 'networkPolicy.otelEgress[0].to[0].ipBlock.cidr=10.70.0.0/16'
   --set 'networkPolicy.otelEgress[0].ports[0].protocol=TCP'
   --set 'networkPolicy.otelEgress[0].ports[0].port=4317'
-  --set metrics.serviceMonitor.tls.serverName=orchestra-model-plane.orchestra-model-plane.svc
+  --set metrics.serviceMonitor.tls.serverName=onion-model-plane.onion-model-plane.svc
   --set metrics.serviceMonitor.tls.caSecretName=engine-monitoring-ca
 )
 
 render_profile() {
-  "$helm_bin" template orchestra-model-plane "$chart" \
-    --namespace orchestra-model-plane \
+  "$helm_bin" template onion-model-plane "$chart" \
+    --namespace onion-model-plane \
     --api-versions monitoring.coreos.com/v1 \
     -f "$chart/values.openshift-production.yaml" \
     "${required[@]}" "$@"
@@ -120,14 +120,14 @@ render_profile >"$manifest"
 
 grep -qF 'kind: StatefulSet' "$manifest"
 grep -qF 'replicas: 2' "$manifest"
-grep -qF 'prometa.io/production-profile-id: "orchestra-ocp-4.20-amd64-v1"' "$manifest"
-grep -qF 'image: registry.example.test/orchestra/inference-engine-ubi@sha256:aaaaaaaa' "$manifest"
-grep -qF 'orchestra.prometa.ai/rollout-id: "release-2026-07"' "$manifest"
-grep -qF 'orchestra.prometa.ai/server-tls-rollout-id: "engine-cert-v1"' "$manifest"
+grep -qF 'planeon.io/production-profile-id: "onion-ocp-4.20-amd64-v1"' "$manifest"
+grep -qF 'image: registry.example.test/onion/inference-engine-ubi@sha256:aaaaaaaa' "$manifest"
+grep -qF 'onion.planeon.ai/rollout-id: "release-2026-07"' "$manifest"
+grep -qF 'onion.planeon.ai/server-tls-rollout-id: "engine-cert-v1"' "$manifest"
 grep -qF 'name: INFERENCE_ENGINE_SERVER_TLS_CERT_FILE' "$manifest"
 grep -qF 'secretName: "engine-server-tls"' "$manifest"
 grep -qF 'scheme: HTTPS' "$manifest"
-grep -qF 'serverName: "orchestra-model-plane.orchestra-model-plane.svc"' "$manifest"
+grep -qF 'serverName: "onion-model-plane.onion-model-plane.svc"' "$manifest"
 grep -qF 'name: "engine-monitoring-ca"' "$manifest"
 grep -qF 'automountServiceAccountToken: false' "$manifest"
 grep -qF 'readOnlyRootFilesystem: true' "$manifest"
@@ -135,7 +135,7 @@ grep -qF 'allowPrivilegeEscalation: false' "$manifest"
 grep -qF 'type: RuntimeDefault' "$manifest"
 grep -qF 'MODEL_ROUTING_RATE_LIMIT_SENTINEL_CONFIG_FILE' "$manifest"
 grep -qF 'name: MODEL_PLANE_WORKLOAD_SURFACE' "$manifest"
-grep -qF 'value: "orchestra-model-plane-workload-v1"' "$manifest"
+grep -qF 'value: "onion-model-plane-workload-v1"' "$manifest"
 grep -qF 'MODEL_PLANE_OBSERVATION_VERSION' "$manifest"
 grep -qF 'OTEL_EXPORTER_OTLP_ENDPOINT' "$manifest"
 grep -qF 'name: OTEL_EXPORTER_OTLP_PROTOCOL' "$manifest"
@@ -145,12 +145,12 @@ grep -qF 'secretName: engine-routing' "$manifest"
 grep -qF 'secretName: engine-observer' "$manifest"
 grep -qF 'secretName: engine-sentinel' "$manifest"
 grep -qF 'configMap:' "$manifest"
-grep -qF 'name: orchestra-model-plane-ca' "$manifest"
+grep -qF 'name: onion-model-plane-ca' "$manifest"
 grep -qF 'storageClassName: "ocs-storagecluster-ceph-rbd"' "$manifest"
 grep -qF 'whenDeleted: Retain' "$manifest"
 grep -qF 'whenScaled: Retain' "$manifest"
 grep -qF 'dns.operator.openshift.io/daemonset-dns: default' "$manifest"
-grep -qF 'app.kubernetes.io/instance: orchestra-model-plane' "$manifest"
+grep -qF 'app.kubernetes.io/instance: onion-model-plane' "$manifest"
 for port in 26379 6379 8443 443 4317; do
   grep -qF "port: $port" "$manifest"
 done

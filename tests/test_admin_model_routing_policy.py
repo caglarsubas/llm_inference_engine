@@ -112,7 +112,7 @@ def test_status_is_payload_free_and_reports_active_identity() -> None:
         "revision": 1,
         "policy_version": 1,
         "accepted_policy_versions": [1, 2],
-        "digest": "sha256:b320a77f8c2a14916c0776a051eca6be614fbdb52ac6854783e651680c6973be",
+        "digest": "sha256:76e93406e1a802eb27f7388126b25a810a21277da88df147a1b99bd9457930ad",
         "source": "last-known-good",
         "org_id": "org-golden",
         "environment": "staging",

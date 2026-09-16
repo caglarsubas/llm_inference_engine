@@ -40,7 +40,7 @@ router = APIRouter()
 
 
 def _identity_attrs(identity: Identity) -> dict:
-    return {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    return {"planeon.tenant": identity.tenant, "planeon.key_id": identity.key_id}
 
 
 def _request_key_source(adapter: InferenceAdapter) -> str:

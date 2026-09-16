@@ -1,7 +1,7 @@
 # Org binding — one engine, one org
 
 Captured 2026-08-24, from a question that had no answer written down: this
-deployment carries auth keys for two customer orgs (`org-prometa` and `org-2`),
+deployment carries auth keys for two customer orgs (`org-planeon` and `org-2`),
 and someone was about to activate a signed model-routing policy on it.
 
 The short version: **a policy-enforcing engine process serves exactly one org.**
@@ -39,8 +39,8 @@ spanning two orgs there are only three reachable states:
 
 | Active policy | Result |
 |---|---|
-| bound to `org-prometa` | every `org-2` tenant refused — `org_identity_mismatch` |
-| bound to `org-2` | every `org-prometa` tenant refused — same error |
+| bound to `org-planeon` | every `org-2` tenant refused — `org_identity_mismatch` |
+| bound to `org-2` | every `org-planeon` tenant refused — same error |
 | none | no governed routing for anyone; all traffic passes |
 
 The third row is where this deployment sits today: `GET
@@ -79,7 +79,7 @@ even on an unenforced deployment. It flows into:
 
 - the **usage ledger** ([`api/_usage.py:101`](../src/inference_engine/api/_usage.py#L101)),
   so per-org token accounting and any rollup built on it are already split;
-- **span attributes** as `prometa.org_id` on chat, completions, and embeddings;
+- **span attributes** as `planeon.org_id` on chat, completions, and embeddings;
 - the **guardrail subject** payload, as `{"tenant": ..., "orgId": ...}`
   ([`guardrail.py:457`](../src/inference_engine/guardrail.py#L457)).
 
@@ -89,11 +89,11 @@ An `org_id` that is wrong today is invisible until it is suddenly an outage.
 
 | Org | Tenants |
 |---|---|
-| `org-prometa` | `dev`, `evals`, `prometa`, `declarai-auto-ml`, `deepfaked-claims-detection-v1`, `aishraq-platform-assistant`, `merge-forensics`, `gcp-audit`, `manufacturing-quality-management` |
+| `org-planeon` | `dev`, `evals`, `planeon`, `declarai-auto-ml`, `deepfaked-claims-detection-v1`, `aishraq-platform-assistant`, `merge-forensics`, `gcp-audit`, `manufacturing-quality-management` |
 | `org-2` | `football-transfer-copilot` |
 
 `org-2` is a real second customer org, not a placeholder. Do not "fix" it to
-`org-prometa` — that would file a customer's usage under the wrong org and give
+`org-planeon` — that would file a customer's usage under the wrong org and give
 them access under a policy written for someone else.
 
 ## When governed routing goes live

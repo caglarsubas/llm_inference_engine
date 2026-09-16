@@ -1,7 +1,7 @@
-# Standalone Orchestra model-plane chart
+# Standalone Onion model-plane chart
 
 This chart deploys `llm_inference_engine` as a tenant-owned model-plane service.
-It is deliberately separate from the Orchestra control-plane release and the
+It is deliberately separate from the Onion control-plane release and the
 tenant runtime-host release.
 
 The resulting request path is:
@@ -9,10 +9,10 @@ The resulting request path is:
 ```text
 tenant runtime -> internal model-plane Service -> approved model backends
                          |
-                         +-> asynchronous evidence to Orchestra
+                         +-> asynchronous evidence to Onion
 ```
 
-Orchestra remains outside synchronous production inference. Tenant CI/CD or
+Onion remains outside synchronous production inference. Tenant CI/CD or
 GitOps owns installation, policy activation, Secret rotation, upgrade, and
 rollback.
 
@@ -29,14 +29,14 @@ The chart creates only:
 - an optional ServiceMonitor.
 
 It creates no Secret, external datastore, public Route/Ingress, tenant runtime,
-or Orchestra control-plane workload. The customer pre-creates every referenced
+or Onion control-plane workload. The customer pre-creates every referenced
 Secret, ConfigMap, PVC, StorageClass, namespace-wide default deny, and external
 dependency.
 
 ## OpenShift production contract
 
 [`values.openshift-production.yaml`](values.openshift-production.yaml) is the
-model-plane overlay for `orchestra-ocp-4.20-amd64-v1`. It is intentionally not
+model-plane overlay for `onion-ocp-4.20-amd64-v1`. It is intentionally not
 renderable unchanged. A customer overlay must provide:
 
 - a mirrored UBI9 image by exact digest and its pull Secret;
@@ -56,7 +56,7 @@ delegation, a read-only root filesystem, dropped capabilities,
 `RuntimeDefault` seccomp, persistent LKG state, signed policy enforcement,
 deployment-shared Sentinel limits, HTTPS observation/OTLP, a PDB, topology
 spread, resource bounds, a ServiceMonitor, and the exact
-`orchestra-model-plane-workload-v1` execution surface.
+`onion-model-plane-workload-v1` execution surface.
 
 Server TLS is mandatory in this profile and optional elsewhere. Enabling
 `serverTls.requireClientCertificate` also requires a separate in-pod probe
@@ -81,7 +81,7 @@ on the pinned cluster profile, the status remains `declared-not-certified`.
 
 [`values.openshift-sno-trial.yaml`](values.openshift-sno-trial.yaml) is a
 separate source-only render contract for
-`orchestra-ocp-sno-trial-amd64-v1`. It is intentionally incompatible with the
+`onion-ocp-sno-trial-amd64-v1`. It is intentionally incompatible with the
 production profile and fixes one replica, the OpenShift-assigned UID model,
 the bounded workload surface, signed routing, TLS, authenticated OTLP/HTTP,
 and the resource envelope from the reference-lab capacity candidate.
@@ -101,7 +101,7 @@ Run its adversarial render proof with:
 
 ```bash
 ./deploy/helm/inference-engine/ci/render-sno-trial-profile.sh \
-  /tmp/orchestra-model-plane-sno-trial.yaml
+  /tmp/onion-model-plane-sno-trial.yaml
 ```
 
 The script injects a synthetic digest after first proving the values file fails
@@ -114,7 +114,7 @@ evidence, or a campaign slot.
 Engine version tags publish this chart as a signed OCI artifact:
 
 ```text
-oci://ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine
+oci://ghcr.io/caglarsubas/llm_inference_engine/charts/onion-inference-engine
 ```
 
 Chart and engine application versions are independent. `Chart.version` names
@@ -140,7 +140,7 @@ in `values.yaml`.
 | `auth.existingSecretName` | `auth_keys.json` | Engine bearer/admin keys and rotation metadata |
 | `routing.artifactsSecretName` | `model_routing_policy.json`, `model_routing_trust.json`, `model_routing_pricing.json` | Signed desired state, purpose-specific trust, and cost catalog |
 | `observation.apiKeySecretName` | `api-key` | Deployment-bound `model-plane:observe` credential |
-| `otel.headersSecretName` | configured `headersSecretKey` | Purpose-scoped OTLP headers such as the Orchestra ingest API key |
+| `otel.headersSecretName` | configured `headersSecretKey` | Purpose-scoped OTLP headers such as the Onion ingest API key |
 | `routing.sharedRateLimit.existingSecretName` | `sentinel-config.json` | Strict Sentinel discovery, TLS, credentials, and replica-ack contract |
 | `serverTls.existingSecret` | `tls.crt`, `tls.key`, plus `ca.crt` for mTLS | Model-plane listener identity and optional client trust |
 | `serverTls.probeClient.existingSecret` | `tls.crt`, `tls.key`, `ca.crt` | In-pod health identity when listener mTLS is enabled |
@@ -159,7 +159,7 @@ render from claiming a model plane without declaring how inference is reached.
 
 The Sentinel document must select TLS, at least three discovery endpoints, and
 a satisfiable peer threshold. Its `caFile` should resolve to
-`/etc/orchestra/ca/ca-bundle.crt`. The engine validates that document and fails
+`/etc/onion/ca/ca-bundle.crt`. The engine validates that document and fails
 closed; the chart does not provision or promote Sentinel/Valkey nodes.
 
 ## Render and install
@@ -173,8 +173,8 @@ helm lint ./deploy/helm/inference-engine \
   -f ./deploy/helm/inference-engine/values.openshift-production.yaml \
   -f ./customer-model-plane.yaml
 
-helm template orchestra-model-plane ./deploy/helm/inference-engine \
-  --namespace orchestra-model-plane \
+helm template onion-model-plane ./deploy/helm/inference-engine \
+  --namespace onion-model-plane \
   --api-versions monitoring.coreos.com/v1 \
   -f ./deploy/helm/inference-engine/values.openshift-production.yaml \
   -f ./customer-model-plane.yaml > rendered-model-plane.yaml
@@ -183,8 +183,8 @@ helm template orchestra-model-plane ./deploy/helm/inference-engine \
 Inspect the render and apply customer admission/signature policy before install:
 
 ```bash
-helm upgrade --install orchestra-model-plane ./deploy/helm/inference-engine \
-  --namespace orchestra-model-plane \
+helm upgrade --install onion-model-plane ./deploy/helm/inference-engine \
+  --namespace onion-model-plane \
   --atomic --wait --timeout 20m \
   -f ./deploy/helm/inference-engine/values.openshift-production.yaml \
   -f ./customer-model-plane.yaml
@@ -194,7 +194,7 @@ The repository CI contract can be repeated locally without credentials:
 
 ```bash
 ./deploy/helm/inference-engine/ci/render-production-profile.sh \
-  /tmp/orchestra-model-plane-profile.yaml
+  /tmp/onion-model-plane-profile.yaml
 ```
 
 That script uses synthetic references, proves the strict render, and verifies
