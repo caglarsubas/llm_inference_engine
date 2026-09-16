@@ -21,7 +21,7 @@ Making this model serve was operational, not a source change.
 | Step | Detail |
 |---|---|
 | Runtime floor | The registry config declares `"requires": "0.32.12"`. Homebrew's ollama was 0.32.8 — below the floor. Upstream v0.32.14 is installed at `~/.local/ollama-0.32.14/`. |
-| Managed daemon | `com.prometa.ollama` launchd agent now runs that binary. Port `11434` and store `~/.cache/inference_engine/ollama` are unchanged, so engine config stayed valid. |
+| Managed daemon | `com.planeon.ollama` launchd agent now runs that binary. Port `11434` and store `~/.cache/inference_engine/ollama` are unchanged, so engine config stayed valid. |
 | Weights | `ollama pull qwen3.8:27b` — 17.74 GB (16.81 GB model + 0.93 GB projector). |
 | Fallback wiring | `OLLAMA_HTTP_ENDPOINT` was absent from `.env`. It is now set. Without it neither `qwen3.8:27b` nor the pre-existing `qwen3.6:27b` can serve at all. |
 
@@ -92,7 +92,7 @@ Three traps, each of which fails differently:
    `org_identity_missing` before it looks at any route when `identity.org_id`
    is `None`, and `org_identity_mismatch` when it differs from the policy's
    `orgId`. Seven of the eight keys in `.auth_keys.json` carried no `org_id`;
-   all eight now carry `org-prometa`. Confirm that matches the `orgId` the
+   all eight now carry `org-planeon`. Confirm that matches the `orgId` the
    control plane signs, and `MODEL_ROUTING_EXPECTED_ORG_ID` if it is set.
 
 ## Known limitation — vision survives only via `ollama_http`

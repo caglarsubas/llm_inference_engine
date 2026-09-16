@@ -49,7 +49,7 @@ def test_http_exporter_appends_standard_trace_path_and_parses_headers(
     monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", Exporter)
     exporter = otel._build_otlp_exporter(
         config(
-            "https://orchestra.example.test/api/v2/otlp",
+            "https://onion.example.test/api/v2/otlp",
             "http/protobuf",
             "x-api-key=prm_test,tenant=alpha",
         )
@@ -57,7 +57,7 @@ def test_http_exporter_appends_standard_trace_path_and_parses_headers(
 
     assert isinstance(exporter, Exporter)
     assert captured == {
-        "endpoint": "https://orchestra.example.test/api/v2/otlp",
+        "endpoint": "https://onion.example.test/api/v2/otlp",
         "headers": {"x-api-key": "prm_test", "tenant": "alpha"},
     }
 
@@ -130,7 +130,7 @@ def test_exporter_rejects_malformed_or_duplicate_headers(headers: str) -> None:
     with pytest.raises(ValueError, match="otel_exporter_headers_invalid"):
         otel._build_otlp_exporter(
             config(
-                "https://orchestra.example.test/api/v2/otlp/v1/traces",
+                "https://onion.example.test/api/v2/otlp/v1/traces",
                 "http/protobuf",
                 headers,
             )

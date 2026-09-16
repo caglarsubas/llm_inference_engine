@@ -10,11 +10,11 @@
   },
   "trust": [
     {
-      "issuer": "prometa-platform/runtime-control-lease",
+      "issuer": "planeon-platform/runtime-control-lease",
       "keyId": "runtime-control-lease-key-1",
       "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
       "allowedArtifactTypes": [
-        "orchestra.runtime-control-lease"
+        "onion.runtime-control-lease"
       ],
       "allowedOrgIds": [
         "org-golden"
@@ -59,14 +59,14 @@
       "action": "apply",
       "at": "2026-08-11T09:00:01.000Z",
       "lease": {
-        "artifactType": "orchestra.runtime-control-lease",
+        "artifactType": "onion.runtime-control-lease",
         "leaseVersion": 1,
         "algorithm": "ed25519",
         "canonicalization": "signed-payload-json-v1",
-        "issuer": "prometa-platform/runtime-control-lease",
+        "issuer": "planeon-platform/runtime-control-lease",
         "keyId": "runtime-control-lease-key-1",
-        "signedPayload": "{\"artifactType\":\"orchestra.runtime-control-lease\",\"controls\":[{\"reasonCode\":\"incident-4711\",\"scope\":\"deployment\",\"state\":\"quarantined\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"prometa-platform/runtime-control-lease\",\"jti\":\"jti-lease-golden-6\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-golden\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":6,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
-        "signature": "zZ7GRKDanyfQ6nFxafD8h0KEAUY/iKneKbNfeTLFnvSfBskh19gpb0btisv2Chw1/gOE7pMiGaroiXWIWwvtCA==",
+        "signedPayload": "{\"artifactType\":\"onion.runtime-control-lease\",\"controls\":[{\"reasonCode\":\"incident-4711\",\"scope\":\"deployment\",\"state\":\"quarantined\",\"subjectId\":\"deployment-golden\"}],\"expiresAt\":\"2026-08-11T09:05:00.000Z\",\"issuedAt\":\"2026-08-11T09:00:00.000Z\",\"issuer\":\"planeon-platform/runtime-control-lease\",\"jti\":\"jti-lease-golden-6\",\"keyId\":\"runtime-control-lease-key-1\",\"leaseId\":\"lease-golden\",\"leaseVersion\":1,\"mode\":\"enforcing\",\"notBefore\":\"2026-08-11T09:00:00.000Z\",\"orgId\":\"org-golden\",\"revision\":6,\"staleAction\":\"continue\",\"targetEnvironment\":\"staging\"}",
+        "signature": "YY0e472Ad5kD4BLETpS221R2vTDKMyqQbENfSt0adg0MfrabH1kLvDh0MMk6KTXJYool4GdYPfbdcduYa6hPDg==",
         "signed": true
       },
       "expect": {

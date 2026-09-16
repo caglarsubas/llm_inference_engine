@@ -30,7 +30,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.prometa.ollama</string>
+    <string>com.planeon.ollama</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -73,8 +73,8 @@
     <integer>5</integer>
 
     <key>StandardOutPath</key>
-    <string>/tmp/prometa-ollama.out.log</string>
+    <string>/tmp/planeon-ollama.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/prometa-ollama.err.log</string>
+    <string>/tmp/planeon-ollama.err.log</string>
 </dict>
 </plist>

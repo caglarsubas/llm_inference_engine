@@ -25,7 +25,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.prometa.tunnel-probe</string>
+    <string>com.planeon.tunnel-probe</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -45,13 +45,13 @@
         <!-- Unauthenticated, so a healthy engine answers 200 on /v1/health
              without a key. Point this at a different path only if that
              changes. -->
-        <key>PROMETA_TUNNEL_HEALTH_PATH</key>
+        <key>PLANEON_TUNNEL_HEALTH_PATH</key>
         <string>/v1/health</string>
         <!-- Generous relative to a warm tunnel (~0.8 s) because ngrok's free
              tier parks an idle tunnel: the first request after a quiet spell
              has been observed taking 20 s. A tighter timeout would report
              that as an outage. -->
-        <key>PROMETA_TUNNEL_TIMEOUT</key>
+        <key>PLANEON_TUNNEL_TIMEOUT</key>
         <string>30</string>
     </dict>
 
@@ -66,8 +66,8 @@
     <!-- The probe writes one line per run; a state change is marked CHANGE,
          so `grep CHANGE` on this file is the outage history. -->
     <key>StandardOutPath</key>
-    <string>/tmp/prometa-tunnel-probe.out.log</string>
+    <string>/tmp/planeon-tunnel-probe.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/prometa-tunnel-probe.err.log</string>
+    <string>/tmp/planeon-tunnel-probe.err.log</string>
 </dict>
 </plist>

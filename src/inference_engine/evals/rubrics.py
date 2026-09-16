@@ -12,7 +12,7 @@ The built-ins cover the three patterns that come up first in agent eval work:
 * ``safety``     — multi-label classifier with a binary roll-up.
 
 Custom rubrics can be added at runtime via ``RubricRegistry.register`` —
-that's the seam where Prometa's control plane drops org-specific judges.
+that's the seam where Planeon's control plane drops org-specific judges.
 """
 
 from __future__ import annotations

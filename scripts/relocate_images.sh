@@ -4,13 +4,13 @@
 # the source and destination first.
 set -euo pipefail
 
-SOURCE="${ORCHESTRA_ENGINE_SOURCE:-ghcr.io/caglarsubas/llm_inference_engine}"
-TAG="${ORCHESTRA_ENGINE_TAG:-v0.1.0}"
+SOURCE="${ONION_ENGINE_SOURCE:-ghcr.io/caglarsubas/llm_inference_engine}"
+TAG="${ONION_ENGINE_TAG:-v0.1.0}"
 IMAGES=(inference-engine inference-engine-ubi)
-INCLUDE_CHART="${ORCHESTRA_INCLUDE_CHART:-false}"
-CHART_SOURCE="${ORCHESTRA_CHART_SOURCE:-${SOURCE}/charts}"
-CHART_NAME="${ORCHESTRA_CHART_NAME:-orchestra-inference-engine}"
-CHART_VERSION="${ORCHESTRA_CHART_VERSION:-0.1.0}"
+INCLUDE_CHART="${ONION_INCLUDE_CHART:-false}"
+CHART_SOURCE="${ONION_CHART_SOURCE:-${SOURCE}/charts}"
+CHART_NAME="${ONION_CHART_NAME:-onion-inference-engine}"
+CHART_VERSION="${ONION_CHART_VERSION:-0.1.0}"
 
 usage() {
   cat <<'EOF'
@@ -19,12 +19,12 @@ usage: relocate_images.sh copy <destination-namespace>
        relocate_images.sh load <destination-namespace> [directory]
 
 Environment:
-  ORCHESTRA_ENGINE_SOURCE  source namespace
-  ORCHESTRA_ENGINE_TAG     source/destination tag
-  ORCHESTRA_INCLUDE_CHART  true to include the signed Helm chart (default false)
-  ORCHESTRA_CHART_SOURCE   chart source namespace (default <engine source>/charts)
-  ORCHESTRA_CHART_NAME     chart OCI repository name
-  ORCHESTRA_CHART_VERSION  chart source/destination version
+  ONION_ENGINE_SOURCE  source namespace
+  ONION_ENGINE_TAG     source/destination tag
+  ONION_INCLUDE_CHART  true to include the signed Helm chart (default false)
+  ONION_CHART_SOURCE   chart source namespace (default <engine source>/charts)
+  ONION_CHART_NAME     chart OCI repository name
+  ONION_CHART_VERSION  chart source/destination version
 EOF
 }
 
@@ -37,7 +37,7 @@ need_cosign() {
 
 case "${INCLUDE_CHART}" in
   true|false) ;;
-  *) echo "ERROR: ORCHESTRA_INCLUDE_CHART must be true or false" >&2; exit 1 ;;
+  *) echo "ERROR: ONION_INCLUDE_CHART must be true or false" >&2; exit 1 ;;
 esac
 
 copy_chart() {
@@ -81,7 +81,7 @@ case "${1:-}" in
     copy_chart "${destination}"
     ;;
   save)
-    directory="${2:-./orchestra-engine-images}"
+    directory="${2:-./onion-engine-images}"
     need_cosign
     mkdir -p "${directory}"
     for image in "${IMAGES[@]}"; do
@@ -91,7 +91,7 @@ case "${1:-}" in
     ;;
   load)
     destination="${2:-}"
-    directory="${3:-./orchestra-engine-images}"
+    directory="${3:-./onion-engine-images}"
     [ -n "${destination}" ] || { usage >&2; exit 1; }
     need_cosign
     for image in "${IMAGES[@]}"; do

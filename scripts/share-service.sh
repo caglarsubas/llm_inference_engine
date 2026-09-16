@@ -42,13 +42,13 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/launchd"
 INSTALL_DIR="$HOME/Library/LaunchAgents"
 
-LABEL="com.prometa.ngrok-tunnel"
+LABEL="com.planeon.ngrok-tunnel"
 PLIST="$INSTALL_DIR/$LABEL.plist"
 # The tunnel is the one hop no engine-side signal can see: over one eleven-day
 # window it dropped its session 402 times while /v1/health reported ok
 # throughout, because from localhost it was. This probes the public URL end to
 # end and records what a caller on the internet would have got.
-PROBE_LABEL="com.prometa.tunnel-probe"
+PROBE_LABEL="com.planeon.tunnel-probe"
 PROBE_PLIST="$INSTALL_DIR/$PROBE_LABEL.plist"
 USER_DOMAIN="gui/$(id -u)"
 
@@ -194,8 +194,8 @@ cmd_install() {
     bootstrap_probe
     log "Installed.  Public endpoint will be:"
     note "    https://$DOMAIN"
-    note "    logs:  /tmp/prometa-ngrok-tunnel.{out,err}.log"
-    note "    probe: /tmp/prometa-tunnel-probe.out.log  (grep CHANGE for outages)"
+    note "    logs:  /tmp/planeon-ngrok-tunnel.{out,err}.log"
+    note "    probe: /tmp/planeon-tunnel-probe.out.log  (grep CHANGE for outages)"
     log "It now auto-starts on login and respawns on crash/reboot."
 }
 
@@ -251,10 +251,10 @@ cmd_status() {
     fi
     # The probe keeps running totals in its state file; report them rather than
     # making the operator reconstruct availability from the log.
-    if [[ -f /tmp/prometa-tunnel-probe.state.json ]]; then
+    if [[ -f /tmp/planeon-tunnel-probe.state.json ]]; then
         python3 - <<'PROBE_STATE' 2>/dev/null || true
 import json
-s = json.load(open("/tmp/prometa-tunnel-probe.state.json"))
+s = json.load(open("/tmp/planeon-tunnel-probe.state.json"))
 total = s.get("probes_total", 0)
 fails = s.get("failures_total", 0)
 pct = 100.0 * (total - fails) / total if total else 0.0
@@ -266,14 +266,14 @@ PROBE_STATE
     fi
 
     printf '\nLog files:\n'
-    ls -lh /tmp/prometa-ngrok-tunnel.*.log /tmp/prometa-tunnel-probe.*.log 2>/dev/null \
+    ls -lh /tmp/planeon-ngrok-tunnel.*.log /tmp/planeon-tunnel-probe.*.log 2>/dev/null \
         | awk '{printf "    %s  %s  %s\n", $5, $6" "$7" "$8, $9}' || true
 }
 
 cmd_logs() {
     case "${1:-tunnel}" in
-        tunnel|TUNNEL) tail -F /tmp/prometa-ngrok-tunnel.{out,err}.log ;;
-        probe|PROBE)   tail -F /tmp/prometa-tunnel-probe.out.log ;;
+        tunnel|TUNNEL) tail -F /tmp/planeon-ngrok-tunnel.{out,err}.log ;;
+        probe|PROBE)   tail -F /tmp/planeon-tunnel-probe.out.log ;;
         *) err "logs takes 'tunnel' or 'probe'"; exit 2 ;;
     esac
 }

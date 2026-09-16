@@ -250,7 +250,7 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int | None = Field(default=512, ge=1)
     # OpenAI renamed ``max_tokens`` to ``max_completion_tokens`` for chat. Both
     # are accepted; ``_merge_max_tokens`` below collapses them so the rest of
-    # the engine keeps reading ``max_tokens``. The orchestra-python-sdk model
+    # the engine keeps reading ``max_tokens``. The onion-python-sdk model
     # gateway still sends ``max_tokens``, so the old name must keep working.
     max_completion_tokens: int | None = Field(default=None, ge=1)
     stream: bool = False

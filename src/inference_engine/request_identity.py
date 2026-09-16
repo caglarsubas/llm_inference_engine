@@ -8,7 +8,7 @@ or alias either server-owned value.
 External identifiers are intentionally validated rather than shortened.  A
 prefix slice turns two distinct upstream values into the same billing
 correlation key, which is worse than rejecting the request.  The accepted wire
-alphabet and length match ``contracts/prometa-model-usage-v2.schema.json``.
+alphabet and length match ``contracts/planeon-model-usage-v2.schema.json``.
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ _RESERVED_EXTERNAL_IDENTITY_VALUES = frozenset(
     {"null", "none", "nil", "undefined"}
 )
 
-RUNTIME_REQUEST_ID_HEADER = "x-orchestra-runtime-request-id"
-MODEL_INVOCATION_ID_HEADER = "x-orchestra-model-invocation-id"
-MODEL_ATTEMPT_ID_HEADER = "x-orchestra-model-attempt-id"
-USAGE_RECORD_ID_HEADER = "x-orchestra-usage-record-id"
+RUNTIME_REQUEST_ID_HEADER = "x-onion-runtime-request-id"
+MODEL_INVOCATION_ID_HEADER = "x-onion-model-invocation-id"
+MODEL_ATTEMPT_ID_HEADER = "x-onion-model-attempt-id"
+USAGE_RECORD_ID_HEADER = "x-onion-usage-record-id"
 ENGINE_REQUEST_ID_HEADER = "x-request-id"
 
 _UPSTREAM_HEADERS = (

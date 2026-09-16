@@ -5,7 +5,7 @@
   Keeps the engine's public HTTPS endpoint alive across crashes, logout,
   and reboot by running ``ngrok http`` as a user agent with
   ``RunAtLoad=true`` + ``KeepAlive=true``.  Pair it with
-  ``com.prometa.inference-engine`` so the engine and its public URL both
+  ``com.planeon.inference-engine`` so the engine and its public URL both
   come back automatically after a restart — "truly always-on".
 
   A reserved domain is required so the URL is stable: an ephemeral tunnel
@@ -30,7 +30,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.prometa.ngrok-tunnel</string>
+    <string>com.planeon.ngrok-tunnel</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -67,8 +67,8 @@
     <integer>5</integer>
 
     <key>StandardOutPath</key>
-    <string>/tmp/prometa-ngrok-tunnel.out.log</string>
+    <string>/tmp/planeon-ngrok-tunnel.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/prometa-ngrok-tunnel.err.log</string>
+    <string>/tmp/planeon-ngrok-tunnel.err.log</string>
 </dict>
 </plist>

@@ -12,13 +12,13 @@
   },
   "signingKeys": {
     "runtimeControlLease": {
-      "issuer": "prometa-platform/runtime-control-lease",
+      "issuer": "planeon-platform/runtime-control-lease",
       "keyId": "runtime-control-lease-key-1",
       "privateKeySeedBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
       "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
     },
     "routingPolicy": {
-      "issuer": "prometa-platform/routing-policy",
+      "issuer": "planeon-platform/routing-policy",
       "keyId": "routing-policy-key-1",
       "privateKeySeedBase64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
       "publicKeySpkiDerBase64": "MCowBQYDK2VwAyEAKay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc="

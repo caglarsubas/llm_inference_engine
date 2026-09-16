@@ -2,13 +2,13 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "orchestra-inference-engine.fullname" . }}
+  name: {{ include "onion-inference-engine.fullname" . }}
   labels:
-    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+    {{- include "onion-inference-engine.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      {{- include "orchestra-inference-engine.selectorLabels" . | nindent 6 }}
+      {{- include "onion-inference-engine.selectorLabels" . | nindent 6 }}
   policyTypes:
     - Ingress
     - Egress

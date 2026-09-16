@@ -5,7 +5,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-CERTIFIED_MODEL_WORKLOAD_SURFACE = "orchestra-model-plane-workload-v1"
+CERTIFIED_MODEL_WORKLOAD_SURFACE = "onion-model-plane-workload-v1"
 
 
 class Settings(BaseSettings):
@@ -389,7 +389,7 @@ class Settings(BaseSettings):
     memory_budget_gb: float = Field(default=60.0)
 
     # OpenTelemetry. Disabled by default. Both OTLP/gRPC and OTLP/HTTP are
-    # supported so tenant deployments can export directly to Orchestra or to a
+    # supported so tenant deployments can export directly to Onion or to a
     # collector without changing application instrumentation.
     otel_enabled: bool = Field(default=False)
     otel_exporter_otlp_endpoint: str = Field(default="http://localhost:4317")
@@ -424,7 +424,7 @@ class Settings(BaseSettings):
     model_routing_last_known_good_file: Path = Field(default=Path(".model_routing_policy.lkg.json"))
     model_routing_trust_store_file: Path = Field(default=Path(".model_routing_trust.json"))
     model_routing_pricing_file: Path = Field(default=Path(".model_routing_pricing.json"))
-    model_routing_expected_audience: str = Field(default="orchestra-model-plane")
+    model_routing_expected_audience: str = Field(default="onion-model-plane")
     model_routing_expected_environment: str = Field(default="")
     model_routing_expected_org_id: str = Field(default="")
     model_routing_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
@@ -439,7 +439,7 @@ class Settings(BaseSettings):
     model_routing_rate_limit_redis_url_file: str = Field(default="")
     model_routing_rate_limit_sentinel_config_file: str = Field(default="")
     model_routing_rate_limit_allow_insecure_redis: bool = Field(default=False)
-    model_routing_rate_limit_key_prefix: str = Field(default="orchestra:model-routing")
+    model_routing_rate_limit_key_prefix: str = Field(default="onion:model-routing")
     model_routing_rate_limit_connect_timeout_seconds: float = Field(
         default=1.0,
         gt=0.0,
@@ -451,15 +451,15 @@ class Settings(BaseSettings):
         le=30.0,
     )
 
-    # Named execution surface used by the pinned Orchestra production profile.
+    # Named execution surface used by the pinned Onion production profile.
     # Development remains unrestricted. The certified surface deliberately
     # excludes rerank, standalone eval, and chat-attached auto-eval until their
     # signed routing and evidence semantics are part of a later contract.
     model_plane_workload_surface: Literal[
-        "unrestricted", "orchestra-model-plane-workload-v1"
+        "unrestricted", "onion-model-plane-workload-v1"
     ] = Field(default="unrestricted")
 
-    # Asynchronous observed-state reporting to the Orchestra control plane.
+    # Asynchronous observed-state reporting to the Onion control plane.
     # Off by default: standalone/observe-only deployments never make this
     # control-plane call unless an operator explicitly configures it.
     model_plane_observation_enabled: bool = Field(default=False)
@@ -512,7 +512,7 @@ class Settings(BaseSettings):
             "Ed25519 trust store used to verify runtime-control leases. "
             "Defaults to the model-routing trust store so one trust decision "
             "covers both artifacts; the entry that signs leases must name "
-            "'orchestra.runtime-control-lease' in its allowedArtifactTypes."
+            "'onion.runtime-control-lease' in its allowedArtifactTypes."
         ),
     )
     # A ceiling on how long a single lease may claim to be valid, not a timer:
@@ -542,7 +542,7 @@ class Settings(BaseSettings):
         le=1_048_576,
     )
 
-    # Guardrail call-out (orchestra-guardrail-evaluate-v1). Off is the default:
+    # Guardrail call-out (onion-guardrail-evaluate-v1). Off is the default:
     # the engine builds no client, takes no branch, and behaves exactly as it
     # did before the seam existed. Turn it on and the generation routes gain
     # pre-dispatch and post-generation evaluation. The two settings must agree

@@ -41,10 +41,10 @@ Usage
     python3 scripts/rotate_logs.py --dry-run   # report what would happen
 
 Tunables (env, all overridable by flags):
-    PROMETA_LOG_DIR        directory to scan            (default /tmp)
-    PROMETA_LOG_PREFIX     basename prefix to match     (default prometa-)
-    PROMETA_LOG_MAX_BYTES  rotate above this size       (default 64 MiB)
-    PROMETA_LOG_KEEP       gzipped generations to keep  (default 5)
+    PLANEON_LOG_DIR        directory to scan            (default /tmp)
+    PLANEON_LOG_PREFIX     basename prefix to match     (default planeon-)
+    PLANEON_LOG_MAX_BYTES  rotate above this size       (default 64 MiB)
+    PLANEON_LOG_KEEP       gzipped generations to keep  (default 5)
 """
 
 from __future__ import annotations
@@ -115,12 +115,12 @@ def rotate_one(log: Path, *, max_bytes: int, keep: int, force: bool, dry_run: bo
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--log-dir", default=os.environ.get("PROMETA_LOG_DIR", "/tmp"))
-    parser.add_argument("--prefix", default=os.environ.get("PROMETA_LOG_PREFIX", "prometa-"))
+    parser.add_argument("--log-dir", default=os.environ.get("PLANEON_LOG_DIR", "/tmp"))
+    parser.add_argument("--prefix", default=os.environ.get("PLANEON_LOG_PREFIX", "planeon-"))
     parser.add_argument("--max-bytes", type=int,
-                        default=int(os.environ.get("PROMETA_LOG_MAX_BYTES", DEFAULT_MAX_BYTES)))
+                        default=int(os.environ.get("PLANEON_LOG_MAX_BYTES", DEFAULT_MAX_BYTES)))
     parser.add_argument("--keep", type=int,
-                        default=int(os.environ.get("PROMETA_LOG_KEEP", DEFAULT_KEEP)))
+                        default=int(os.environ.get("PLANEON_LOG_KEEP", DEFAULT_KEEP)))
     parser.add_argument("--force", action="store_true", help="rotate regardless of size")
     parser.add_argument("--dry-run", action="store_true", help="report without changing anything")
     args = parser.parse_args(argv)

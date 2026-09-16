@@ -82,15 +82,15 @@ class StreamGuardStep:
 def new_request_id(request: Any = None) -> str:
     """The identifier kernel evidence joins this evaluation on.
 
-    #94 left this open: the span key is ``prometa.runtime.request_id``, but the
+    #94 left this open: the span key is ``planeon.runtime.request_id``, but the
     value returned was the engine's own id, and which of the two the kernel
     joins against had not been checked end to end. Checked now, in
-    orchestra-python-sdk, and it is the runtime's. ``RuntimeKernel.execute``
+    onion-python-sdk, and it is the runtime's. ``RuntimeKernel.execute``
     runs one request under one id and spends that id twice — it binds it as
-    ``prometa.runtime.request_id`` on its ``runtime.guard.<stage>`` events
+    ``planeon.runtime.request_id`` on its ``runtime.guard.<stage>`` events
     (``kernel.py``, via ``runtime_release_identity_attributes``), and it passes
     it to the model call, where the gateway sends it here as
-    ``x-orchestra-runtime-request-id`` (``model_gateway.py``). The engine id
+    ``x-onion-runtime-request-id`` (``model_gateway.py``). The engine id
     never crosses back to the kernel, so it cannot appear on either side of the
     join; #93 already captures the value that can into
     ``request.state.runtime_request_id``. That is what this prefers.
@@ -121,27 +121,27 @@ def _span_attrs(outcome: GuardrailOutcome, identity: Identity, request_id: str) 
         # The kernel binds this exact key on its ``runtime.guard.<stage>``
         # events; checklist E4's join is on the value, so both have to match.
         # Which value that is, and why, is :func:`new_request_id`.
-        "prometa.runtime.request_id": request_id,
-        "prometa.guardrail.stage": outcome.stage,
-        "prometa.guardrail.verdict": outcome.verdict,
-        "prometa.guardrail.profile": getattr(getattr(client, "config", None), "profile", ""),
-        "prometa.guardrail.reason_code": outcome.reason_code,
-        "prometa.guardrail.evaluated": outcome.evaluated_count,
-        "prometa.guardrail.findings": outcome.findings_count,
-        "prometa.guardrail.unknown_fields_dropped": outcome.unknown_fields_dropped,
-        "prometa.guardrail.request_fields_dropped_by_server": (
+        "planeon.runtime.request_id": request_id,
+        "planeon.guardrail.stage": outcome.stage,
+        "planeon.guardrail.verdict": outcome.verdict,
+        "planeon.guardrail.profile": getattr(getattr(client, "config", None), "profile", ""),
+        "planeon.guardrail.reason_code": outcome.reason_code,
+        "planeon.guardrail.evaluated": outcome.evaluated_count,
+        "planeon.guardrail.findings": outcome.findings_count,
+        "planeon.guardrail.unknown_fields_dropped": outcome.unknown_fields_dropped,
+        "planeon.guardrail.request_fields_dropped_by_server": (
             outcome.request_fields_dropped_by_server
         ),
-        "prometa.guardrail.fail_open": outcome.failed_open,
-        "prometa.tenant": identity.tenant,
-        "prometa.key_id": identity.key_id,
+        "planeon.guardrail.fail_open": outcome.failed_open,
+        "planeon.tenant": identity.tenant,
+        "planeon.key_id": identity.key_id,
     }
     if outcome.detector_digest is not None:
-        attrs["prometa.guardrail.detector_digest"] = outcome.detector_digest
+        attrs["planeon.guardrail.detector_digest"] = outcome.detector_digest
     if outcome.latency_ms is not None:
-        attrs["prometa.guardrail.latency_ms"] = outcome.latency_ms
+        attrs["planeon.guardrail.latency_ms"] = outcome.latency_ms
     if identity.org_id is not None:
-        attrs["prometa.org_id"] = identity.org_id
+        attrs["planeon.org_id"] = identity.org_id
     return attrs
 
 

@@ -5,7 +5,7 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 chart=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 helm_bin=${HELM_BIN:-helm}
 output=${1:-}
-workdir=$(mktemp -d "${TMPDIR:-/tmp}/orchestra-model-plane-sno.XXXXXX")
+workdir=$(mktemp -d "${TMPDIR:-/tmp}/onion-model-plane-sno.XXXXXX")
 trap 'rm -rf "$workdir"' EXIT HUP INT TERM
 
 manifest=${output:-"$workdir/openshift-sno-model-plane.yaml"}
@@ -13,8 +13,8 @@ if [ -n "$output" ]; then
   mkdir -p "$(dirname -- "$output")"
 fi
 
-if "$helm_bin" template orchestra-model-plane "$chart" \
-  --namespace orchestra-model-plane \
+if "$helm_bin" template onion-model-plane "$chart" \
+  --namespace onion-model-plane \
   -f "$chart/values.openshift-sno-trial.yaml" >/dev/null 2>&1; then
   echo "OpenShift SNO trial values rendered without a released image digest" >&2
   exit 1
@@ -25,8 +25,8 @@ required=(
 )
 
 render_profile() {
-  "$helm_bin" template orchestra-model-plane "$chart" \
-    --namespace orchestra-model-plane \
+  "$helm_bin" template onion-model-plane "$chart" \
+    --namespace onion-model-plane \
     -f "$chart/values.openshift-sno-trial.yaml" "${required[@]}" "$@"
 }
 
@@ -46,7 +46,7 @@ render_profile >"$manifest"
 grep -qF 'kind: StatefulSet' "$manifest"
 grep -qF 'replicas: 1' "$manifest"
 grep -qF \
-  'prometa.io/engineering-trial-profile-id: "orchestra-ocp-sno-trial-amd64-v1"' \
+  'planeon.io/engineering-trial-profile-id: "onion-ocp-sno-trial-amd64-v1"' \
   "$manifest"
 grep -qF \
   'image: ghcr.io/caglarsubas/llm_inference_engine/inference-engine-ubi@sha256:aaaaaaaa' \
@@ -54,7 +54,7 @@ grep -qF \
 grep -qF 'name: OTEL_EXPORTER_OTLP_PROTOCOL' "$manifest"
 grep -qF 'value: "http/protobuf"' "$manifest"
 grep -qF 'name: OTEL_EXPORTER_OTLP_HEADERS' "$manifest"
-grep -qF 'name: "orchestra-model-plane-trial-otlp"' "$manifest"
+grep -qF 'name: "onion-model-plane-trial-otlp"' "$manifest"
 grep -qF 'cpu: 500m' "$manifest"
 grep -qF 'memory: 4096Mi' "$manifest"
 grep -qF 'cpu: 1500m' "$manifest"
@@ -76,7 +76,7 @@ if grep -Eq '^kind: (Secret|Route|Ingress|Deployment|PodDisruptionBudget|Service
   echo "SNO trial render emitted a forbidden object" >&2
   exit 1
 fi
-if grep -qF 'prometa.io/production-profile-id:' "$manifest"; then
+if grep -qF 'planeon.io/production-profile-id:' "$manifest"; then
   echo "SNO trial render claimed the production profile" >&2
   exit 1
 fi

@@ -22,7 +22,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.prometa.log-rotate</string>
+    <string>com.planeon.log-rotate</string>
 
     <!-- Run under the venv interpreter, not /bin/bash. When the repository
          lives under a TCC-protected directory (~/Desktop, ~/Documents) the
@@ -48,9 +48,9 @@
              sidecar compresses roughly 20:1, so this bounds the whole set at
              well under 100 MB while holding far more history than the single
              unbounded file it replaces. -->
-        <key>PROMETA_LOG_MAX_BYTES</key>
+        <key>PLANEON_LOG_MAX_BYTES</key>
         <string>67108864</string>
-        <key>PROMETA_LOG_KEEP</key>
+        <key>PLANEON_LOG_KEEP</key>
         <string>5</string>
     </dict>
 
@@ -61,11 +61,11 @@
     <key>StartInterval</key>
     <integer>3600</integer>
 
-    <!-- Deliberately not /tmp/prometa-*.log: the rotator must not rotate its
+    <!-- Deliberately not /tmp/planeon-*.log: the rotator must not rotate its
          own log out from under itself mid-run. -->
     <key>StandardOutPath</key>
-    <string>/tmp/prometa-logrotate.out</string>
+    <string>/tmp/planeon-logrotate.out</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/prometa-logrotate.err</string>
+    <string>/tmp/planeon-logrotate.err</string>
 </dict>
 </plist>

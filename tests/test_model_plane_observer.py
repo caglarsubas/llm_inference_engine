@@ -80,7 +80,7 @@ def settings_for(**overrides):
     values = {
         "model_plane_observation_enabled": True,
         "model_plane_observation_endpoint": (
-            "https://orchestra.example/api/model-routing-observations"
+            "https://onion.example/api/model-routing-observations"
         ),
         "model_plane_observation_api_key": "pk_model_plane_test",
         "model_plane_observation_api_key_file": "",
@@ -148,9 +148,9 @@ def test_disabled_observer_ignores_unconfigured_fields() -> None:
 @pytest.mark.parametrize(
     ("overrides", "code"),
     [
-        ({"model_plane_observation_endpoint": "http://orchestra.example/api/model-routing-observations"}, "insecure_endpoint"),
-        ({"model_plane_observation_endpoint": "https://orchestra.example/wrong"}, "invalid_endpoint"),
-        ({"model_plane_observation_endpoint": "https://user:pass@orchestra.example/api/model-routing-observations"}, "invalid_endpoint"),
+        ({"model_plane_observation_endpoint": "http://onion.example/api/model-routing-observations"}, "insecure_endpoint"),
+        ({"model_plane_observation_endpoint": "https://onion.example/wrong"}, "invalid_endpoint"),
+        ({"model_plane_observation_endpoint": "https://user:pass@onion.example/api/model-routing-observations"}, "invalid_endpoint"),
         ({"model_plane_observation_target_environment": "production"}, "invalid_environment"),
         ({"model_plane_observation_engine_instance_id": "bad instance"}, "invalid_identifier"),
         ({"model_plane_observation_version": 3}, "invalid_observation_version"),
@@ -235,7 +235,7 @@ def test_observation_matches_exact_platform_shape_without_inventory_names() -> N
         "observedAt",
         "routingPolicy",
     }
-    assert payload["artifactType"] == "orchestra.model-plane-observation"
+    assert payload["artifactType"] == "onion.model-plane-observation"
     assert payload["observationVersion"] == 1
     assert payload["healthStatus"] == "ready"
     assert payload["observedAt"] == "2026-07-13T12:30:00.000Z"
@@ -318,12 +318,12 @@ def test_observation_v2_binds_payload_free_route_readiness_to_active_policy() ->
         "unavailable_route_count": 1,
     }
     attrs = model_plane_observation_span_attrs(payload)
-    assert attrs["prometa.artifact.type"] == "model-routing-policy"
-    assert attrs["prometa.artifact.digest"] == policy.digest
-    assert attrs["prometa.policy.digest"] == policy.digest
-    assert attrs["prometa.release.id"] == "release-golden-model-v1"
-    assert attrs["prometa.deployment.id"] == "model-plane-golden-v1"
-    assert attrs["prometa.environment"] == "staging"
+    assert attrs["planeon.artifact.type"] == "model-routing-policy"
+    assert attrs["planeon.artifact.digest"] == policy.digest
+    assert attrs["planeon.policy.digest"] == policy.digest
+    assert attrs["planeon.release.id"] == "release-golden-model-v1"
+    assert attrs["planeon.deployment.id"] == "model-plane-golden-v1"
+    assert attrs["planeon.environment"] == "staging"
     serialized = json.dumps(payload)
     assert "qwen3:32b" not in serialized
     assert "llama3.3:70b:openrouter" not in serialized
@@ -372,8 +372,8 @@ def test_not_ready_state_is_reported_without_raising() -> None:
     )
     assert payload["healthStatus"] == "not_ready"
     attrs = model_plane_observation_span_attrs(payload)
-    assert attrs["prometa.deployment.id"] == "model-plane-staging-a"
-    assert "prometa.artifact.digest" not in attrs
+    assert attrs["planeon.deployment.id"] == "model-plane-staging-a"
+    assert "planeon.artifact.digest" not in attrs
 
 
 def test_active_policy_scope_mismatch_fails_closed(monkeypatch) -> None:
@@ -507,7 +507,7 @@ async def test_redirect_is_not_followed_or_retried_as_same_payload() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         assert await reporter.report_once(client) is False
 
-    assert calls == ["https://orchestra.example/api/model-routing-observations"]
+    assert calls == ["https://onion.example/api/model-routing-observations"]
     assert reporter.status().pending_observation_id is None
 
 

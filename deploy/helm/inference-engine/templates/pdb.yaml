@@ -2,12 +2,12 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "orchestra-inference-engine.fullname" . }}
+  name: {{ include "onion-inference-engine.fullname" . }}
   labels:
-    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+    {{- include "onion-inference-engine.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "orchestra-inference-engine.selectorLabels" . | nindent 6 }}
+      {{- include "onion-inference-engine.selectorLabels" . | nindent 6 }}
 {{- end }}

@@ -1,7 +1,7 @@
 # Release artifacts and supply-chain contract
 
 The inference engine is a tenant-deployed model-plane component. Publishing an
-artifact does not place the Orchestra control plane in the synchronous inference
+artifact does not place the Onion control plane in the synchronous inference
 path, and the platform does not gain rollout authority.
 
 ## Published variants
@@ -18,7 +18,7 @@ workflow summary's `repository@sha256:<digest>` reference is the production
 deployment identity.
 
 Version tags also package and publish the chart at
-`oci://ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine`.
+`oci://ghcr.io/caglarsubas/llm_inference_engine/charts/onion-inference-engine`.
 Manual dispatches remain image-only so a branch ref cannot replace a chart
 version. The chart has its own version because deployment contract changes and
 engine application releases do not have the same cadence. The workflow rejects
@@ -122,7 +122,7 @@ Verify the chart before rendering it. Replace the sample versions and digest
 with the values printed by the release workflow:
 
 ```bash
-CHART_REPOSITORY=ghcr.io/caglarsubas/llm_inference_engine/charts/orchestra-inference-engine
+CHART_REPOSITORY=ghcr.io/caglarsubas/llm_inference_engine/charts/onion-inference-engine
 CHART_VERSION=0.1.4
 CHART_DIGEST=sha256:<digest-from-publish-workflow>
 CHART_REF="${CHART_REPOSITORY}@${CHART_DIGEST}"
@@ -155,24 +155,24 @@ signatures and attestations:
 cosign login ghcr.io -u <source-user> -p <source-token>
 cosign login registry.customer.example -u <destination-user> -p <destination-token>
 
-ORCHESTRA_ENGINE_TAG=v0.1.12 \
-ORCHESTRA_INCLUDE_CHART=true \
-ORCHESTRA_CHART_VERSION=0.1.4 \
-  ./scripts/relocate_images.sh copy registry.customer.example/orchestra
+ONION_ENGINE_TAG=v0.1.13 \
+ONION_INCLUDE_CHART=true \
+ONION_CHART_VERSION=0.1.4 \
+  ./scripts/relocate_images.sh copy registry.customer.example/onion
 ```
 
 For disconnected transfer:
 
 ```bash
-ORCHESTRA_ENGINE_TAG=v0.1.12 \
-ORCHESTRA_INCLUDE_CHART=true \
-ORCHESTRA_CHART_VERSION=0.1.4 \
+ONION_ENGINE_TAG=v0.1.13 \
+ONION_INCLUDE_CHART=true \
+ONION_CHART_VERSION=0.1.4 \
   ./scripts/relocate_images.sh save ./engine-release
 # Move ./engine-release across the boundary.
-ORCHESTRA_ENGINE_TAG=v0.1.12 \
-ORCHESTRA_INCLUDE_CHART=true \
-ORCHESTRA_CHART_VERSION=0.1.4 \
-  ./scripts/relocate_images.sh load registry.airgap.example/orchestra ./engine-release
+ONION_ENGINE_TAG=v0.1.13 \
+ONION_INCLUDE_CHART=true \
+ONION_CHART_VERSION=0.1.4 \
+  ./scripts/relocate_images.sh load registry.airgap.example/onion ./engine-release
 ```
 
 Verify the destination digest and signature after relocation. If the air-gap
@@ -184,5 +184,5 @@ tenant's offline key and enforce that key at admission.
 The engine image, signed routing policy, trust store, pricing catalog, and
 runtime credentials are separate release inputs. Tenant CI/CD or GitOps pins
 and deploys them, calls the engine reload endpoint when appropriate, and owns
-rollback. Orchestra may issue policy and evaluate observed state; it remains
+rollback. Onion may issue policy and evaluate observed state; it remains
 outside the request-time model path.

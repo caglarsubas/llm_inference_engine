@@ -218,7 +218,7 @@ def test_a_retried_request_emits_exactly_one_ledger_record(monkeypatch) -> None:
     # answer — the failed attempt generated none.
     assert record["input_tokens"] == 7
     assert record["output_tokens"] == 3
-    assert record["usage_record_id"] == response.headers["x-orchestra-usage-record-id"]
+    assert record["usage_record_id"] == response.headers["x-onion-usage-record-id"]
 
 
 def test_fallback_still_happens_when_the_retry_does_not_recover(monkeypatch) -> None:

@@ -1,5 +1,5 @@
-{{- $name := include "orchestra-inference-engine.fullname" . -}}
-{{- $image := include "orchestra-inference-engine.image" . -}}
+{{- $name := include "onion-inference-engine.fullname" . -}}
+{{- $image := include "onion-inference-engine.image" . -}}
 {{- $rateLimitScope := default "process-replica" .Values.routing.rateLimitScope -}}
 {{- $shared := .Values.routing.sharedRateLimit -}}
 {{- $sharedBackend := default "direct" $shared.backend -}}
@@ -15,12 +15,12 @@ kind: StatefulSet
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+    {{- include "onion-inference-engine.labels" . | nindent 4 }}
     {{- if .Values.productionProfile.enabled }}
-    prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+    planeon.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
     {{- end }}
     {{- if .Values.engineeringTrialProfile.enabled }}
-    prometa.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
+    planeon.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
     {{- end }}
 spec:
   serviceName: {{ $name }}-headless
@@ -37,31 +37,31 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "orchestra-inference-engine.selectorLabels" . | nindent 6 }}
+      {{- include "onion-inference-engine.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
-        orchestra.prometa.ai/rollout-id: {{ .Values.rolloutId | quote }}
-        orchestra.prometa.ai/deployment-id: {{ .Values.deploymentId | quote }}
+        onion.planeon.ai/rollout-id: {{ .Values.rolloutId | quote }}
+        onion.planeon.ai/deployment-id: {{ .Values.deploymentId | quote }}
         {{- with .Values.serverTls.rolloutId }}
-        orchestra.prometa.ai/server-tls-rollout-id: {{ . | quote }}
+        onion.planeon.ai/server-tls-rollout-id: {{ . | quote }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "orchestra-inference-engine.selectorLabels" . | nindent 8 }}
+        {{- include "onion-inference-engine.selectorLabels" . | nindent 8 }}
         {{- if .Values.productionProfile.enabled }}
-        prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+        planeon.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
         {{- end }}
         {{- if .Values.engineeringTrialProfile.enabled }}
-        prometa.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
+        planeon.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
         {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "orchestra-inference-engine.serviceAccountName" . }}
+      serviceAccountName: {{ include "onion-inference-engine.serviceAccountName" . }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.image.pullSecrets }}
@@ -93,20 +93,20 @@ spec:
               value: {{ .Values.port | quote }}
             {{- if .Values.serverTls.enabled }}
             - name: INFERENCE_ENGINE_SERVER_TLS_CERT_FILE
-              value: /etc/orchestra/server-tls/tls.crt
+              value: /etc/onion/server-tls/tls.crt
             - name: INFERENCE_ENGINE_SERVER_TLS_KEY_FILE
-              value: /etc/orchestra/server-tls/tls.key
+              value: /etc/onion/server-tls/tls.key
             - name: INFERENCE_ENGINE_SERVER_TLS_REQUIRE_CLIENT_CERTIFICATE
               value: {{ .Values.serverTls.requireClientCertificate | quote }}
             {{- if .Values.serverTls.requireClientCertificate }}
             - name: INFERENCE_ENGINE_SERVER_TLS_CLIENT_CA_FILE
-              value: /etc/orchestra/server-tls/client-ca.crt
+              value: /etc/onion/server-tls/client-ca.crt
             - name: INFERENCE_ENGINE_PROBE_TLS_CERT_FILE
-              value: /etc/orchestra/probe-tls/tls.crt
+              value: /etc/onion/probe-tls/tls.crt
             - name: INFERENCE_ENGINE_PROBE_TLS_KEY_FILE
-              value: /etc/orchestra/probe-tls/tls.key
+              value: /etc/onion/probe-tls/tls.key
             - name: INFERENCE_ENGINE_PROBE_TLS_CA_FILE
-              value: /etc/orchestra/probe-tls/ca.crt
+              value: /etc/onion/probe-tls/ca.crt
             {{- end }}
             {{- end }}
             - name: AUTH_ENABLED
@@ -213,7 +213,7 @@ spec:
               value: /models/hf-vlm
             {{- if .Values.trustedCA.enabled }}
             - name: SSL_CERT_FILE
-              value: /etc/orchestra/ca/{{ .Values.trustedCA.key }}
+              value: /etc/onion/ca/{{ .Values.trustedCA.key }}
             {{- end }}
             {{- range $key, $value := .Values.extraEnv }}
             - name: {{ $key }}
@@ -234,7 +234,7 @@ spec:
               command:
                 - python
                 - -c
-                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/orchestra/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/orchestra/probe-tls/tls.crt','/etc/orchestra/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/ready');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.startup.timeoutSeconds) | quote }}
+                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/onion/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/onion/probe-tls/tls.crt','/etc/onion/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/ready');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.startup.timeoutSeconds) | quote }}
             {{- else }}
             httpGet:
               path: /v1/ready
@@ -252,7 +252,7 @@ spec:
               command:
                 - python
                 - -c
-                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/orchestra/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/orchestra/probe-tls/tls.crt','/etc/orchestra/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/health');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.liveness.timeoutSeconds) | quote }}
+                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/onion/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/onion/probe-tls/tls.crt','/etc/onion/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/health');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.liveness.timeoutSeconds) | quote }}
             {{- else }}
             httpGet:
               path: /v1/health
@@ -271,7 +271,7 @@ spec:
               command:
                 - python
                 - -c
-                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/orchestra/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/orchestra/probe-tls/tls.crt','/etc/orchestra/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/ready');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.readiness.timeoutSeconds) | quote }}
+                - {{ printf "import http.client,ssl,sys;c=ssl.create_default_context(cafile='/etc/onion/probe-tls/ca.crt');c.check_hostname=False;c.load_cert_chain('/etc/onion/probe-tls/tls.crt','/etc/onion/probe-tls/tls.key');h=http.client.HTTPSConnection('127.0.0.1',%d,timeout=%d,context=c);h.request('GET','/v1/ready');r=h.getresponse();sys.exit(0 if r.status == 200 else 1)" (int .Values.port) (int .Values.probes.readiness.timeoutSeconds) | quote }}
             {{- else }}
             httpGet:
               path: /v1/ready
@@ -292,11 +292,11 @@ spec:
               mountPath: /state
             {{- if .Values.serverTls.enabled }}
             - name: server-tls
-              mountPath: /etc/orchestra/server-tls
+              mountPath: /etc/onion/server-tls
               readOnly: true
             {{- if .Values.serverTls.requireClientCertificate }}
             - name: probe-client-tls
-              mountPath: /etc/orchestra/probe-tls
+              mountPath: /etc/onion/probe-tls
               readOnly: true
             {{- end }}
             {{- end }}
@@ -337,7 +337,7 @@ spec:
             {{- end }}
             {{- if .Values.trustedCA.enabled }}
             - name: trusted-ca
-              mountPath: /etc/orchestra/ca
+              mountPath: /etc/onion/ca
               readOnly: true
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
@@ -457,7 +457,7 @@ spec:
           whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
           labelSelector:
             matchLabels:
-              {{- include "orchestra-inference-engine.selectorLabels" . | nindent 14 }}
+              {{- include "onion-inference-engine.selectorLabels" . | nindent 14 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -476,7 +476,7 @@ spec:
     - metadata:
         name: model-routing-state
         labels:
-          {{- include "orchestra-inference-engine.labels" . | nindent 10 }}
+          {{- include "onion-inference-engine.labels" . | nindent 10 }}
       spec:
         accessModes:
           {{- toYaml .Values.persistence.accessModes | nindent 10 }}

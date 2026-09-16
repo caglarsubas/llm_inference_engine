@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "orchestra-inference-engine.fullname" . }}
+  name: {{ include "onion-inference-engine.fullname" . }}
   labels:
-    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+    {{- include "onion-inference-engine.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,14 +12,14 @@ spec:
       targetPort: {{ ternary "https" "http" .Values.serverTls.enabled }}
       protocol: TCP
   selector:
-    {{- include "orchestra-inference-engine.selectorLabels" . | nindent 4 }}
+    {{- include "onion-inference-engine.selectorLabels" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "orchestra-inference-engine.fullname" . }}-headless
+  name: {{ include "onion-inference-engine.fullname" . }}-headless
   labels:
-    {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
+    {{- include "onion-inference-engine.labels" . | nindent 4 }}
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -29,4 +29,4 @@ spec:
       targetPort: {{ ternary "https" "http" .Values.serverTls.enabled }}
       protocol: TCP
   selector:
-    {{- include "orchestra-inference-engine.selectorLabels" . | nindent 4 }}
+    {{- include "onion-inference-engine.selectorLabels" . | nindent 4 }}

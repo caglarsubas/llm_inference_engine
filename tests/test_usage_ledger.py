@@ -1,4 +1,4 @@
-"""Per-request billing ledger — ``prometa.model-usage.v2``.
+"""Per-request billing ledger — ``planeon.model-usage.v2``.
 
 Exercised through the real ASGI app so the middleware, the ContextVar
 accumulator, and the SSE generator hand-off are all in the path. The governed
@@ -175,7 +175,7 @@ def test_ledger_is_off_by_default_and_emits_nothing(monkeypatch) -> None:
     response = TestClient(app).post(CHAT, json={"model": "reasoning", "messages": _MESSAGES})
 
     assert response.status_code == 200, response.text
-    assert "x-orchestra-usage-record-id" not in response.headers
+    assert "x-onion-usage-record-id" not in response.headers
     assert usage_ledger.begin(engine_request_id="req_x", route=CHAT) is None
     assert _drain() == []
 
@@ -192,7 +192,7 @@ def test_blocking_chat_emits_one_fully_attributed_record(monkeypatch) -> None:
     record = _one()
     assert record["schema"] == usage_ledger.SCHEMA
     assert record["engine_request_id"] == response.headers["x-request-id"]
-    assert record["usage_record_id"] == response.headers["x-orchestra-usage-record-id"]
+    assert record["usage_record_id"] == response.headers["x-onion-usage-record-id"]
     assert re.fullmatch(r"req_[0-9a-f]{32}", record["engine_request_id"])
     assert re.fullmatch(r"usage_[0-9a-f]{32}", record["usage_record_id"])
     assert record["runtime_request_id"] is None
@@ -258,18 +258,18 @@ def test_same_runtime_request_keeps_distinct_invocation_and_attempt_identities(
         CHAT,
         json={"model": "reasoning", "messages": _MESSAGES},
         headers={
-            "x-orchestra-runtime-request-id": "runtime-constant",
-            "x-orchestra-model-invocation-id": "invocation-1",
-            "x-orchestra-model-attempt-id": "attempt-1",
+            "x-onion-runtime-request-id": "runtime-constant",
+            "x-onion-model-invocation-id": "invocation-1",
+            "x-onion-model-attempt-id": "attempt-1",
         },
     )
     second = client.post(
         CHAT,
         json={"model": "reasoning", "messages": _MESSAGES},
         headers={
-            "x-orchestra-runtime-request-id": "runtime-constant",
-            "x-orchestra-model-invocation-id": "invocation-2",
-            "x-orchestra-model-attempt-id": "attempt-2",
+            "x-onion-runtime-request-id": "runtime-constant",
+            "x-onion-model-invocation-id": "invocation-2",
+            "x-onion-model-attempt-id": "attempt-2",
         },
     )
 
@@ -289,8 +289,8 @@ def test_same_runtime_request_keeps_distinct_invocation_and_attempt_identities(
     ]
     assert first_record["usage_record_id"] != second_record["usage_record_id"]
     assert first_record["engine_request_id"] != second_record["engine_request_id"]
-    assert first.headers["x-orchestra-usage-record-id"] == first_record["usage_record_id"]
-    assert second.headers["x-orchestra-usage-record-id"] == second_record["usage_record_id"]
+    assert first.headers["x-onion-usage-record-id"] == first_record["usage_record_id"]
+    assert second.headers["x-onion-usage-record-id"] == second_record["usage_record_id"]
 
 
 def test_blocking_fallback_records_the_model_that_served(monkeypatch) -> None:
@@ -327,7 +327,7 @@ def test_streaming_chat_is_flushed_by_the_generator_not_the_middleware(monkeypat
         json={"model": "reasoning", "messages": _MESSAGES, "stream": True},
     ) as response:
         assert response.status_code == 200
-        usage_record_id = response.headers["x-orchestra-usage-record-id"]
+        usage_record_id = response.headers["x-onion-usage-record-id"]
         body = "".join(response.iter_text())
 
     assert "[DONE]" in body
@@ -483,7 +483,7 @@ def test_bounds_denial_is_recorded_as_denied_without_token_fields(monkeypatch) -
     assert record["input_tokens"] is None
     assert record["output_tokens"] is None
     assert record["cost_micros"] is None
-    assert response.headers["x-orchestra-usage-record-id"] == record["usage_record_id"]
+    assert response.headers["x-onion-usage-record-id"] == record["usage_record_id"]
 
 
 def test_org_binding_denial_is_recorded_as_denied(monkeypatch) -> None:
@@ -556,7 +556,7 @@ def test_backend_error_is_recorded_as_error(monkeypatch) -> None:
     record = _one()
     assert record["outcome"] == "error"
     assert record["error_type"] == "upstream_error"
-    assert response.headers["x-orchestra-usage-record-id"] == record["usage_record_id"]
+    assert response.headers["x-onion-usage-record-id"] == record["usage_record_id"]
 
 
 def test_a_rejected_structured_output_still_bills_both_attempts(monkeypatch) -> None:
@@ -661,7 +661,7 @@ def test_an_unauthenticated_request_produces_no_record(monkeypatch) -> None:
 
     assert response.status_code == 401
     assert response.headers["x-request-id"].startswith("req_")
-    assert "x-orchestra-usage-record-id" not in response.headers
+    assert "x-onion-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -672,7 +672,7 @@ def test_a_body_the_schema_rejects_produces_no_record(monkeypatch) -> None:
 
     assert response.status_code == 422
     assert response.headers["x-request-id"].startswith("req_")
-    assert "x-orchestra-usage-record-id" not in response.headers
+    assert "x-onion-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -684,7 +684,7 @@ def test_an_empty_prompt_list_is_rejected_before_the_seam_and_records_nothing(
     response = TestClient(app).post("/v1/completions", json={"model": "reasoning", "prompt": []})
 
     assert response.status_code == 400
-    assert "x-orchestra-usage-record-id" not in response.headers
+    assert "x-onion-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -696,7 +696,7 @@ def test_an_empty_input_list_is_rejected_before_the_seam_and_records_nothing(
     response = TestClient(app).post("/v1/embeddings", json={"model": "reasoning", "input": []})
 
     assert response.status_code == 400
-    assert "x-orchestra-usage-record-id" not in response.headers
+    assert "x-onion-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -716,7 +716,7 @@ def test_an_unhandled_pre_bind_failure_has_no_usage_record_header(monkeypatch) -
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "internal_server_error"
     assert response.headers["x-request-id"].startswith("req_")
-    assert "x-orchestra-usage-record-id" not in response.headers
+    assert "x-onion-usage-record-id" not in response.headers
     assert _drain() == []
 
 
@@ -761,7 +761,7 @@ def test_unbillable_traffic_cannot_evict_a_billed_record(monkeypatch) -> None:
             client.post(
                 CHAT,
                 json={"model": "reasoning", "messages": _MESSAGES},
-                headers={"x-orchestra-runtime-request-id": f"billed-{index}"},
+                headers={"x-onion-runtime-request-id": f"billed-{index}"},
             ).status_code
             == 200
         )
@@ -788,7 +788,7 @@ def test_a_full_buffer_refuses_the_arriving_record_not_the_buffered_ones(monkeyp
             client.post(
                 CHAT,
                 json={"model": "reasoning", "messages": _MESSAGES},
-                headers={"x-orchestra-runtime-request-id": f"billed-{index}"},
+                headers={"x-onion-runtime-request-id": f"billed-{index}"},
             ).status_code
             == 200
         )
@@ -827,7 +827,7 @@ def test_an_unhandled_exception_records_the_status_the_client_got(monkeypatch) -
     assert record["outcome"] == "error"
     assert response.json()["error"]["code"] == "internal_server_error"
     assert response.headers["x-request-id"] == record["engine_request_id"]
-    assert response.headers["x-orchestra-usage-record-id"] == record["usage_record_id"]
+    assert response.headers["x-onion-usage-record-id"] == record["usage_record_id"]
 
 
 # --- buffer, sink, and blast radius -----------------------------------------
@@ -881,39 +881,39 @@ def test_versioned_contract_fixture_matches_the_emitter_and_wire_identity_contra
     contract_path = (
         Path(__file__).resolve().parents[1]
         / "contracts"
-        / "prometa-model-usage-v2.schema.json"
+        / "planeon-model-usage-v2.schema.json"
     )
     raw = contract_path.read_bytes()
     contract = json.loads(raw)
 
     assert hashlib.sha256(raw).hexdigest() == (
-        "845f830df424f1626717e60a5dbd05e01187f84e2e96223527cceda521f3d55a"
+        "9c206b94998d674003348d1b9b8c9a55ca82a1db44d4de296abf7089bed7e5b4"
     )
     assert contract["properties"]["schema"]["const"] == usage_ledger.SCHEMA
     assert contract["properties"]["event"]["const"] == usage_ledger.EVENT
     assert contract["required"] == list(usage_ledger._SCHEMA_FIELD_ORDER)
     assert set(contract["properties"]) == usage_ledger.SCHEMA_FIELDS
     assert "request_id" not in contract["properties"]
-    assert contract["x-prometa-identity-order"] == [
+    assert contract["x-planeon-identity-order"] == [
         "usage_record_id",
         "engine_request_id",
         "runtime_request_id",
         "model_invocation_id",
         "model_attempt_id",
     ]
-    assert contract["x-prometa-header-mapping"] == {
+    assert contract["x-planeon-header-mapping"] == {
         "request": {
-            "x-orchestra-runtime-request-id": "runtime_request_id",
-            "x-orchestra-model-invocation-id": "model_invocation_id",
-            "x-orchestra-model-attempt-id": "model_attempt_id",
+            "x-onion-runtime-request-id": "runtime_request_id",
+            "x-onion-model-invocation-id": "model_invocation_id",
+            "x-onion-model-attempt-id": "model_attempt_id",
         },
         "response": {
             "x-request-id": "engine_request_id",
-            "x-orchestra-usage-record-id": "usage_record_id",
+            "x-onion-usage-record-id": "usage_record_id",
         },
         "inbound-x-request-id-alias": None,
     }
-    assert contract["x-prometa-delivery"] == {
+    assert contract["x-planeon-delivery"] == {
         "mode": "best-effort-buffered",
         "dedupeField": "usage_record_id",
         "redeliveryWindow": {

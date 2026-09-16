@@ -119,8 +119,8 @@ async def resolve_openrouter_fallback(
             **span_attrs(info),
             **(intent_attrs or {}),
             **{
-                "prometa.tenant": identity.tenant,
-                "prometa.key_id": identity.key_id,
+                "planeon.tenant": identity.tenant,
+                "planeon.key_id": identity.key_id,
             },
         ) as s:
             try:

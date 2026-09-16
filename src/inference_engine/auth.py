@@ -14,7 +14,7 @@ When ``AUTH_ENABLED=false`` (default for local dev), every request resolves to
 Why a JSON file rather than env vars or a database:
 - Multiple keys per tenant + multiple tenants per process are the common shape.
 - Env vars don't scale past a couple of keys without ugly serialisation.
-- A real DB belongs in Prometa's control plane, not in this engine. The keys
+- A real DB belongs in Planeon's control plane, not in this engine. The keys
   file is the seam where the control plane drops a generated set.
 """
 

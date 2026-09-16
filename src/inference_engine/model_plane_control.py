@@ -69,7 +69,7 @@ from .model_routing import (
 )
 from .observability import get_logger
 
-RUNTIME_CONTROL_LEASE_TYPE = "orchestra.runtime-control-lease"
+RUNTIME_CONTROL_LEASE_TYPE = "onion.runtime-control-lease"
 RUNTIME_CONTROL_LEASE_VERSION_V1 = 1
 #: Key the control plane puts its lease under, on the reply to an observation.
 RUNTIME_CONTROL_DELIVERY_KEY = "runtimeControls"

@@ -220,7 +220,7 @@ def test_route_returns_501_when_backend_lacks_embeddings(patched_manager) -> Non
 
 
 def test_route_emits_embeddings_run_span_with_dimensions(patched_manager, _session_exporter) -> None:
-    """The span carries gen_ai.* + embedding.* attrs Prometa needs to slice
+    """The span carries gen_ai.* + embedding.* attrs Planeon needs to slice
     embeddings traffic the same way it slices chat."""
     _session_exporter.clear()
     patched_manager.set_adapter(_StubEmbedAdapter(vectors=[[0.0, 1.0, 2.0, 3.0]]))
