@@ -15,7 +15,7 @@ Spans follow the same ``gen_ai.*`` semconv shape as chat:
       gen_ai.usage.input_tokens = 12
       embedding.dimensions    = 384
       embedding.batch_size    = 1
-      prometa.tenant          = ...
+      planeon.tenant          = ...
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ router = APIRouter()
 
 
 def _identity_attrs(identity: Identity) -> dict:
-    attrs = {"prometa.tenant": identity.tenant, "prometa.key_id": identity.key_id}
+    attrs = {"planeon.tenant": identity.tenant, "planeon.key_id": identity.key_id}
     if identity.org_id is not None:
-        attrs["prometa.org_id"] = identity.org_id
+        attrs["planeon.org_id"] = identity.org_id
     return attrs
 
 

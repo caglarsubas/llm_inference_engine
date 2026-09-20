@@ -47,7 +47,7 @@ from inference_engine.model_routing_runtime import (
 from inference_engine.schemas import ModelInfo, ModelList, UnavailableModel
 
 
-ISSUER = "prometa-platform/runtime-control-lease"
+ISSUER = "planeon-platform/runtime-control-lease"
 KEY_ID = "sha256:" + "ab" * 32
 DEPLOYMENT_ID = "model-plane-staging-a"
 ORG_ID = "org-golden"

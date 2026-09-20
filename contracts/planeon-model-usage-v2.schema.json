@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://prometa.ai/contracts/prometa-model-usage-v2.schema.json",
-  "title": "Prometa model usage ledger record v2",
+  "$id": "https://planeon.ai/contracts/planeon-model-usage-v2.schema.json",
+  "title": "Planeon model usage ledger record v2",
   "description": "Metadata-only, best-effort buffered model usage record. usage_record_id is the sole delivery dedupe identity; upstream Orchestra identities are correlation fields only.",
   "type": "object",
   "additionalProperties": false,
@@ -50,10 +50,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "prometa.model-usage.v2"
+      "const": "planeon.model-usage.v2"
     },
     "event": {
-      "const": "prometa.model-usage"
+      "const": "planeon.model-usage"
     },
     "timestamp": {
       "type": "string",
@@ -345,14 +345,14 @@
       ]
     }
   },
-  "x-prometa-identity-order": [
+  "x-planeon-identity-order": [
     "usage_record_id",
     "engine_request_id",
     "runtime_request_id",
     "model_invocation_id",
     "model_attempt_id"
   ],
-  "x-prometa-header-mapping": {
+  "x-planeon-header-mapping": {
     "request": {
       "x-orchestra-runtime-request-id": "runtime_request_id",
       "x-orchestra-model-invocation-id": "model_invocation_id",
@@ -364,14 +364,14 @@
     },
     "inbound-x-request-id-alias": null
   },
-  "x-prometa-identity-ownership": {
+  "x-planeon-identity-ownership": {
     "usage_record_id": "inference-engine",
     "engine_request_id": "inference-engine",
     "runtime_request_id": "tenant-runtime",
     "model_invocation_id": "tenant-runtime",
     "model_attempt_id": "tenant-runtime"
   },
-  "x-prometa-delivery": {
+  "x-planeon-delivery": {
     "mode": "best-effort-buffered",
     "dedupeField": "usage_record_id",
     "redeliveryWindow": {
@@ -379,5 +379,5 @@
       "retainsDedupeValue": true
     }
   },
-  "x-prometa-metadata-only": true
+  "x-planeon-metadata-only": true
 }

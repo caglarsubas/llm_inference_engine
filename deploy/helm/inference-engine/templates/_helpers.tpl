@@ -184,13 +184,13 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- fail (printf "extraEnv cannot override chart-managed variable %s" $key) -}}
 {{- end -}}
 {{- end -}}
-{{- $selectorLabels := list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "prometa.io/production-profile-id" -}}
+{{- $selectorLabels := list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "planeon.io/production-profile-id" -}}
 {{- range $key, $_ := .Values.podLabels -}}
 {{- if has $key $selectorLabels -}}
 {{- fail (printf "podLabels cannot override chart-managed label %s" $key) -}}
 {{- end -}}
 {{- end -}}
-{{- if or (hasKey .Values.podAnnotations "orchestra.prometa.ai/rollout-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/deployment-id") (hasKey .Values.podAnnotations "orchestra.prometa.ai/server-tls-rollout-id") -}}
+{{- if or (hasKey .Values.podAnnotations "orchestra.planeon.ai/rollout-id") (hasKey .Values.podAnnotations "orchestra.planeon.ai/deployment-id") (hasKey .Values.podAnnotations "orchestra.planeon.ai/server-tls-rollout-id") -}}
 {{- fail "podAnnotations cannot override rollout, deployment, or server TLS identity" -}}
 {{- end -}}
 

@@ -318,12 +318,12 @@ def test_observation_v2_binds_payload_free_route_readiness_to_active_policy() ->
         "unavailable_route_count": 1,
     }
     attrs = model_plane_observation_span_attrs(payload)
-    assert attrs["prometa.artifact.type"] == "model-routing-policy"
-    assert attrs["prometa.artifact.digest"] == policy.digest
-    assert attrs["prometa.policy.digest"] == policy.digest
-    assert attrs["prometa.release.id"] == "release-golden-model-v1"
-    assert attrs["prometa.deployment.id"] == "model-plane-golden-v1"
-    assert attrs["prometa.environment"] == "staging"
+    assert attrs["planeon.artifact.type"] == "model-routing-policy"
+    assert attrs["planeon.artifact.digest"] == policy.digest
+    assert attrs["planeon.policy.digest"] == policy.digest
+    assert attrs["planeon.release.id"] == "release-golden-model-v1"
+    assert attrs["planeon.deployment.id"] == "model-plane-golden-v1"
+    assert attrs["planeon.environment"] == "staging"
     serialized = json.dumps(payload)
     assert "qwen3:32b" not in serialized
     assert "llama3.3:70b:openrouter" not in serialized
@@ -372,8 +372,8 @@ def test_not_ready_state_is_reported_without_raising() -> None:
     )
     assert payload["healthStatus"] == "not_ready"
     attrs = model_plane_observation_span_attrs(payload)
-    assert attrs["prometa.deployment.id"] == "model-plane-staging-a"
-    assert "prometa.artifact.digest" not in attrs
+    assert attrs["planeon.deployment.id"] == "model-plane-staging-a"
+    assert "planeon.artifact.digest" not in attrs
 
 
 def test_active_policy_scope_mismatch_fails_closed(monkeypatch) -> None:

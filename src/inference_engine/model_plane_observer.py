@@ -389,8 +389,8 @@ def model_plane_observation_span_attrs(
         "model_plane.observation_id": observation["observationId"],
         "model_plane.deployment_id": observation["deploymentId"],
         "model_plane.environment": observation["targetEnvironment"],
-        "prometa.deployment.id": observation["deploymentId"],
-        "prometa.environment": observation["targetEnvironment"],
+        "planeon.deployment.id": observation["deploymentId"],
+        "planeon.environment": observation["targetEnvironment"],
     }
     routing = observation.get("routingPolicy")
     if isinstance(routing, Mapping) and routing.get("active") is True:
@@ -399,10 +399,10 @@ def model_plane_observation_span_attrs(
         if isinstance(digest, str) and isinstance(release_id, str):
             attrs.update(
                 {
-                    "prometa.artifact.type": "model-routing-policy",
-                    "prometa.artifact.digest": digest,
-                    "prometa.policy.digest": digest,
-                    "prometa.release.id": release_id,
+                    "planeon.artifact.type": "model-routing-policy",
+                    "planeon.artifact.digest": digest,
+                    "planeon.policy.digest": digest,
+                    "planeon.release.id": release_id,
                 }
             )
     return attrs

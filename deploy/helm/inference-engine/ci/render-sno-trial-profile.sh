@@ -46,7 +46,7 @@ render_profile >"$manifest"
 grep -qF 'kind: StatefulSet' "$manifest"
 grep -qF 'replicas: 1' "$manifest"
 grep -qF \
-  'prometa.io/engineering-trial-profile-id: "orchestra-ocp-sno-trial-amd64-v1"' \
+  'planeon.io/engineering-trial-profile-id: "orchestra-ocp-sno-trial-amd64-v1"' \
   "$manifest"
 grep -qF \
   'image: ghcr.io/caglarsubas/llm_inference_engine/inference-engine-ubi@sha256:aaaaaaaa' \
@@ -76,7 +76,7 @@ if grep -Eq '^kind: (Secret|Route|Ingress|Deployment|PodDisruptionBudget|Service
   echo "SNO trial render emitted a forbidden object" >&2
   exit 1
 fi
-if grep -qF 'prometa.io/production-profile-id:' "$manifest"; then
+if grep -qF 'planeon.io/production-profile-id:' "$manifest"; then
   echo "SNO trial render claimed the production profile" >&2
   exit 1
 fi

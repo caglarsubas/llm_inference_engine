@@ -100,7 +100,7 @@ services:
         # inside containers and we leave that path off by default.
         CMAKE_ARGS: ""
         EXTRAS: "otel"
-    image: prometa/inference-engine:dev
+    image: planeon/inference-engine:dev
     expose:
       - "8080"
     environment:

@@ -1013,13 +1013,13 @@ def test_span_carries_the_verdict_and_finding_count_and_no_content(
     spans = _guardrail_spans(exporter)
     assert len(spans) == 1
     attrs = spans[0].attributes
-    assert attrs["prometa.guardrail.stage"] == "llm_input"
-    assert attrs["prometa.guardrail.verdict"] == "deny"
-    assert attrs["prometa.guardrail.reason_code"] == "secret_dlp_blocked"
-    assert attrs["prometa.guardrail.evaluated"] == 2
-    assert attrs["prometa.guardrail.findings"] == 1
-    assert attrs["prometa.guardrail.profile"] == "prod-strict"
-    assert attrs["prometa.guardrail.detector_digest"] == digest
+    assert attrs["planeon.guardrail.stage"] == "llm_input"
+    assert attrs["planeon.guardrail.verdict"] == "deny"
+    assert attrs["planeon.guardrail.reason_code"] == "secret_dlp_blocked"
+    assert attrs["planeon.guardrail.evaluated"] == 2
+    assert attrs["planeon.guardrail.findings"] == 1
+    assert attrs["planeon.guardrail.profile"] == "prod-strict"
+    assert attrs["planeon.guardrail.detector_digest"] == digest
     assert PLANTED_SECRET not in json.dumps(dict(attrs))
 
 
@@ -1035,7 +1035,7 @@ def test_a_reason_code_carrying_content_is_refused_onto_the_span(
     )
 
     attrs = _guardrail_spans(exporter)[0].attributes
-    assert attrs["prometa.guardrail.reason_code"] == "guardrail_reason_unreported"
+    assert attrs["planeon.guardrail.reason_code"] == "guardrail_reason_unreported"
     assert PLANTED_SECRET not in response.text
 
 
@@ -1507,15 +1507,15 @@ def test_the_span_carries_the_request_id_and_the_server_skew_count(
     # what it pins is the fallback: the engine id the caller got back, not the
     # per-evaluation uuid this used to mint and not the inbound x-request-id.
     # The runtime id the kernel actually joins on is the test below.
-    assert attrs["prometa.runtime.request_id"] == response.headers["x-request-id"]
-    assert attrs["prometa.runtime.request_id"] != "req-join"
-    assert attrs["prometa.guardrail.request_fields_dropped_by_server"] == 3
+    assert attrs["planeon.runtime.request_id"] == response.headers["x-request-id"]
+    assert attrs["planeon.runtime.request_id"] != "req-join"
+    assert attrs["planeon.guardrail.request_fields_dropped_by_server"] == 3
 
 
 def test_a_runtime_request_id_wins_the_join_over_the_engines_own_hop(
     monkeypatch, exporter, no_model
 ) -> None:
-    """The kernel binds ``prometa.runtime.request_id`` to the id it executes under.
+    """The kernel binds ``planeon.runtime.request_id`` to the id it executes under.
 
     That id reaches this engine as ``x-orchestra-runtime-request-id`` and
     nowhere else, so it — not the engine's own per-hop id, which never crosses
@@ -1537,7 +1537,7 @@ def test_a_runtime_request_id_wins_the_join_over_the_engines_own_hop(
     )
 
     attrs = _guardrail_spans(exporter)[0].attributes
-    assert attrs["prometa.runtime.request_id"] == "runtime-req-1"
+    assert attrs["planeon.runtime.request_id"] == "runtime-req-1"
     # The guardrail service's own evidence has to land on the same value.
     assert seen[0]["requestId"] == "runtime-req-1"
     # The engine id stays server-owned, and separate from the join.

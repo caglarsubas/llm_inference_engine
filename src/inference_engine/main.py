@@ -447,7 +447,7 @@ class _LedgerFlushOnSend:
 
 @app.middleware("http")
 async def model_usage_ledger(request: Request, call_next):
-    """Open and close the per-request ``prometa.model-usage.v2`` record.
+    """Open and close the per-request ``planeon.model-usage.v2`` record.
 
     Defined first so it ends up *innermost*: ``add_middleware`` inserts at
     position 0, which makes the last-defined middleware outermost. Innermost

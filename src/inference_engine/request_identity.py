@@ -8,7 +8,7 @@ or alias either server-owned value.
 External identifiers are intentionally validated rather than shortened.  A
 prefix slice turns two distinct upstream values into the same billing
 correlation key, which is worse than rejecting the request.  The accepted wire
-alphabet and length match ``contracts/prometa-model-usage-v2.schema.json``.
+alphabet and length match ``contracts/planeon-model-usage-v2.schema.json``.
 """
 
 from __future__ import annotations

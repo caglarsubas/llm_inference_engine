@@ -1626,12 +1626,12 @@ def model_routing_policy_identity_attrs(
         "model_routing.policy.deployment_id": claims.deployment_id,
         "model_routing.policy.org_id": claims.org_id,
         "model_routing.policy.environment": claims.target_environment,
-        "prometa.artifact.type": "model-routing-policy",
-        "prometa.artifact.digest": active.digest,
-        "prometa.policy.digest": active.digest,
-        "prometa.release.id": claims.release_id,
-        "prometa.deployment.id": claims.deployment_id,
-        "prometa.environment": claims.target_environment,
+        "planeon.artifact.type": "model-routing-policy",
+        "planeon.artifact.digest": active.digest,
+        "planeon.policy.digest": active.digest,
+        "planeon.release.id": claims.release_id,
+        "planeon.deployment.id": claims.deployment_id,
+        "planeon.environment": claims.target_environment,
     }
 
 

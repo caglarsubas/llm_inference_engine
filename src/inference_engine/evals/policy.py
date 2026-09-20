@@ -1,7 +1,7 @@
 """Server-side auto-eval policy.
 
 Lets the engine attach rubrics by ``(tenant, model)`` instead of relying on
-clients to send ``auto_eval`` per request. The policy plane (Prometa) writes
+clients to send ``auto_eval`` per request. The policy plane (Planeon) writes
 this file; the engine reads it at startup and matches every chat completion
 against it.
 

@@ -75,7 +75,7 @@ LABEL org.opencontainers.image.title="Orchestra Inference Engine" \
       org.opencontainers.image.source="https://github.com/caglarsubas/llm_inference_engine" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      io.prometa.image.variant="debian"
+      io.planeon.image.variant="debian"
 
 # GID 0 permissions support OpenShift arbitrary UIDs.
 RUN apt-get update \

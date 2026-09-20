@@ -4,7 +4,7 @@
 #
 # Wraps ngrok (default) or cloudflared so the engine running on
 # 127.0.0.1:<port> gets a stable, internet-reachable "Engine URL" you can
-# paste into Prometa (Settings → Self-hosted (llm_inference_engine) → ENGINE
+# paste into Planeon (Settings → Self-hosted (llm_inference_engine) → ENGINE
 # URL) or hand to any OpenAI-compatible client. The tunnel terminates TLS and
 # forwards to the loopback port — your laptop never needs an inbound firewall
 # rule or a public IP.
@@ -137,7 +137,7 @@ if [[ "$AUTH_ENABLED" != "true" ]]; then
   fi
   err "Anyone with this URL can run inference on your machine for free."
   err "Turn on bearer-token auth before sharing widely:"
-  err "    1) create .auth_keys.json  ->  [{\"key\":\"sk-...\",\"tenant\":\"prometa\"}]"
+  err "    1) create .auth_keys.json  ->  [{\"key\":\"sk-...\",\"tenant\":\"planeon\"}]"
   err "    2) set AUTH_ENABLED=true in .env  ->  restart the engine"
   if [[ "$ASSUME_YES" != "true" ]]; then
     printf '%sContinue anyway? [y/N] %s' "$YEL" "$RST"
@@ -159,7 +159,7 @@ print_guidance() {
   note "${GRN}${BOLD}Public endpoint is live${RST}"
   note "${BOLD}  ${public_url}${RST}"
   note ""
-  note "${CYN}Prometa → Settings → Self-hosted (llm_inference_engine):${RST}"
+  note "${CYN}Planeon → Settings → Self-hosted (llm_inference_engine):${RST}"
   note "  ENGINE URL    ${public_url}"
   if [[ -n "$auth_hint" ]]; then
     note "  ENGINE TOKEN  <your bearer key from .auth_keys.json>"

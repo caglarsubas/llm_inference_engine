@@ -14,7 +14,7 @@
       __VENV_PYTHON__   absolute path to .venv/bin/uvicorn
       __HOME__          $HOME (used for OLLAMA_MODELS_DIR default)
 
-  Sibling agent ``com.prometa.ollama.plist`` runs ``ollama serve``
+  Sibling agent ``com.planeon.ollama.plist`` runs ``ollama serve``
   natively as well so the HTTP-fallback path stays Metal-accelerated for
   GGUFs llama-cpp-python doesn't yet support.
 
@@ -25,7 +25,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.prometa.inference-engine</string>
+    <string>com.planeon.inference-engine</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -85,7 +85,7 @@
              ngrok tunnel agent, which puts the engine on the public
              internet; auth off there is an open, unauthenticated LLM
              anyone with the URL can bill to this machine. It also
-             collapses every span's prometa.tenant to "anonymous", which
+             collapses every span's planeon.tenant to "anonymous", which
              silently empties per-tenant metrics and the usage ledger.
              Requires .auth_keys.json to exist -- the engine refuses to
              start with AUTH_ENABLED=true and no keys file. -->
@@ -111,8 +111,8 @@
       ``./scripts/native-service.sh logs engine`` tails them.
     -->
     <key>StandardOutPath</key>
-    <string>/tmp/prometa-inference-engine.out.log</string>
+    <string>/tmp/planeon-inference-engine.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/prometa-inference-engine.err.log</string>
+    <string>/tmp/planeon-inference-engine.err.log</string>
 </dict>
 </plist>

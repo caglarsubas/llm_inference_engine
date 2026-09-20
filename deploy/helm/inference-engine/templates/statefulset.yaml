@@ -17,10 +17,10 @@ metadata:
   labels:
     {{- include "orchestra-inference-engine.labels" . | nindent 4 }}
     {{- if .Values.productionProfile.enabled }}
-    prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+    planeon.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
     {{- end }}
     {{- if .Values.engineeringTrialProfile.enabled }}
-    prometa.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
+    planeon.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
     {{- end }}
 spec:
   serviceName: {{ $name }}-headless
@@ -41,10 +41,10 @@ spec:
   template:
     metadata:
       annotations:
-        orchestra.prometa.ai/rollout-id: {{ .Values.rolloutId | quote }}
-        orchestra.prometa.ai/deployment-id: {{ .Values.deploymentId | quote }}
+        orchestra.planeon.ai/rollout-id: {{ .Values.rolloutId | quote }}
+        orchestra.planeon.ai/deployment-id: {{ .Values.deploymentId | quote }}
         {{- with .Values.serverTls.rolloutId }}
-        orchestra.prometa.ai/server-tls-rollout-id: {{ . | quote }}
+        orchestra.planeon.ai/server-tls-rollout-id: {{ . | quote }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -52,10 +52,10 @@ spec:
       labels:
         {{- include "orchestra-inference-engine.selectorLabels" . | nindent 8 }}
         {{- if .Values.productionProfile.enabled }}
-        prometa.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
+        planeon.io/production-profile-id: {{ .Values.productionProfile.profileId | quote }}
         {{- end }}
         {{- if .Values.engineeringTrialProfile.enabled }}
-        prometa.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
+        planeon.io/engineering-trial-profile-id: {{ .Values.engineeringTrialProfile.profileId | quote }}
         {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}

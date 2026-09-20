@@ -257,7 +257,7 @@ What's deliberately NOT installed:
 
 ```bash
 # from the project root
-cd /Users/caglarsubasi/Desktop/prometa/pocs/llm_inference_engine_v1
+cd /Users/caglarsubasi/Desktop/planeon/pocs/llm_inference_engine_v1
 
 cp .env.example .env
 
@@ -302,7 +302,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | POST   | `/tokenize`                   | vLLM/TGI-shaped token count for a prompt or templated messages; 501 on HTTP-proxy backends |
 | POST   | `/detokenize`                 | Token ids → text, same backend support as `/tokenize`                      |
 | GET    | `/v1/evals/rubrics`           | List built-in + registered rubrics                                         |
-| GET    | `/v1/evals/policy`            | Active server-side auto-eval policy entries (Prometa-driven)               |
+| GET    | `/v1/evals/policy`            | Active server-side auto-eval policy entries (Planeon-driven)               |
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
 | GET    | `/v1/admin/auth-keys`         | Secret-free loaded key IDs, validity windows, digest, and active count     |
 | POST   | `/v1/admin/auth-keys:reload`  | Atomically activate a mounted key set while retaining the calling key      |
@@ -353,7 +353,7 @@ Failures return **both** shapes:
 ```
 
 `error` is what every OpenAI SDK reads (`APIStatusError.body`, `BadRequestError.code`,
-`RateLimitError`); `detail` is retained unchanged for existing Prometa consumers
+`RateLimitError`); `detail` is retained unchanged for existing Planeon consumers
 and the admin tooling. Typed extras like `context_window` and
 `retry_after_seconds` survive in both. 429s additionally carry
 `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, and
@@ -384,7 +384,7 @@ With `USAGE_LEDGER_ENABLED=true`, priced routes return
 ledger record after crossing the bind seam. Ledger-disabled responses and
 pre-bind 401, 422, early 400, or unhandled failures do not advertise a record
 that will never be emitted. The exact v2 field and header contract is
-`contracts/prometa-model-usage-v2.schema.json`.
+`contracts/planeon-model-usage-v2.schema.json`.
 
 After the platform dual-reader is deployed, roll out the engine before the SDK
 **only after an identity preflight passes**. Inventory every configured or
@@ -458,7 +458,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 
 ## Sharing a public endpoint (ngrok / Cloudflare Tunnel)
 
-The engine binds to loopback by default. To hand a consumer — or the Prometa
+The engine binds to loopback by default. To hand a consumer — or the Planeon
 control plane — a public HTTPS "Engine URL" without a public IP or inbound
 firewall rule, front it with a tunnel:
 
@@ -471,7 +471,7 @@ make share PORT=8090    # tunnel a different port, e.g. the docker LB
 `make share` wraps [`scripts/share_endpoint.sh`](scripts/share_endpoint.sh),
 which health-checks the engine, warns loudly if `AUTH_ENABLED` isn't on (a
 public URL with auth off is an open inference engine), prints the assigned URL,
-and emits copy-paste `curl` + Prometa wiring for it. Direct use:
+and emits copy-paste `curl` + Planeon wiring for it. Direct use:
 
 ```bash
 scripts/share_endpoint.sh --provider ngrok --domain my-name.ngrok-free.dev   # stable URL
@@ -489,7 +489,7 @@ make share-status        # state, PID, live URL
 make share-uninstall     # remove the agent
 ```
 
-Paste the printed URL into **Prometa → Settings → Self-hosted
+Paste the printed URL into **Planeon → Settings → Self-hosted
 (llm_inference_engine) → ENGINE URL**, and a bearer key from `.auth_keys.json`
 into ENGINE TOKEN.
 
@@ -776,7 +776,7 @@ common ones, so a var missing from that file is still settable:
 | `TOOL_AUDIT_MAX_PAYLOAD_CHARS` | `1024`                                                                             | Per-event truncation cap for arguments / result content             |
 | `TOOL_TIMING_TTL_SECONDS` | `300`                                                                                  | TTL for the call_id → emit-timestamp store; older entries swept on insert |
 | `TOOL_TIMING_MAX_ENTRIES` | `10000`                                                                                | Hard cap on the timing store; oldest entries LRU-evicted past this        |
-| `USAGE_LEDGER_ENABLED`   | `false`                                                                                  | Emit one `prometa.model-usage.v2` billing record per priced request    |
+| `USAGE_LEDGER_ENABLED`   | `false`                                                                                  | Emit one `planeon.model-usage.v2` billing record per priced request    |
 | `USAGE_LEDGER_MAX_BUFFER` | `10000`                                                                                 | Bounded hand-off buffer; arriving records refused (counted + logged) past this |
 | `USAGE_LEDGER_DRAIN_INTERVAL_SECONDS` | `1.0`                                                                       | How often the background task ships buffered records, 0 < n <= 60      |
 
@@ -828,7 +828,7 @@ are emitted: the orchestra-python-sdk's own instrumentation still writes
 `gen_ai.system`, and splitting existing dashboards across two attribute names
 mid-flight would cost more than the duplicate attribute does.
 
-Cold model load shows up as a long `model.acquire` (e.g. 263 ms) above an unchanged `chat.generate`; warm hits drop `model.acquire` to <1 ms. That's exactly the kind of evidence Prometa's signal layer needs to attribute latency to load vs. compute.
+Cold model load shows up as a long `model.acquire` (e.g. 263 ms) above an unchanged `chat.generate`; warm hits drop `model.acquire` to <1 ms. That's exactly the kind of evidence Planeon's signal layer needs to attribute latency to load vs. compute.
 
 Streaming spans additionally carry `gen_ai.server.time_to_first_token`.
 
@@ -856,7 +856,7 @@ before failing. TPOT excludes the first token by definition. Metric export is
 **scrape-only** — `otel.py` installs a TracerProvider, not a MeterProvider, so
 these do not go out over OTLP.
 
-### Per-request usage ledger — `prometa.model-usage.v2`
+### Per-request usage ledger — `planeon.model-usage.v2`
 
 Spans answer "what did this request do"; an invoice needs "what is this request
 owed". Those are different artefacts, because the records billing cares about
@@ -1014,7 +1014,7 @@ The emitted span attributes are:
 
 For preclassified frontend prompts, set `metadata.intent.preclassified=true`; the engine only propagates those labels and does not run another classifier. Top-level dotted `intent.*` request keys are still accepted for clients that cannot send nested metadata, but `metadata.intent` is the preferred API shape. If a downstream platform needs a vendor- or platform-specific namespace, map the emitted generic `intent.*` span attributes in the collector, SDK, or ingestion layer rather than hard-coding that namespace into the inference service.
 
-### Plugging into Prometa
+### Plugging into Planeon
 
 Set `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` for an OTLP/gRPC collector or
 `http/protobuf` for a direct HTTP traces endpoint. The exporter derives
@@ -1024,24 +1024,24 @@ resource and sampler environment variables are honored by the SDK. Service
 identity is pre-set to `service.name=inference-engine`,
 `service.version=<package version>`.
 
-To wire the engine into the [Prometa platform](https://github.com/caglarsubas/agent-hook-v2) for cross-service tracing, set the resource attributes so the platform's correlation-id resolver finds the engine's role in the canonical chain. Two patterns:
+To wire the engine into the [Planeon platform](https://github.com/caglarsubas/agent-hook-v2) for cross-service tracing, set the resource attributes so the platform's correlation-id resolver finds the engine's role in the canonical chain. Two patterns:
 
-**Pattern A — engine as a standalone agent.** The engine appears in the Prometa registry as its own agent (`inference-engine`). Use this when the engine isn't called from a Prometa-instrumented agent (e.g. direct HTTP from a frontend / CLI):
+**Pattern A — engine as a standalone agent.** The engine appears in the Planeon registry as its own agent (`inference-engine`). Use this when the engine isn't called from a Planeon-instrumented agent (e.g. direct HTTP from a frontend / CLI):
 
 ```bash
 OTEL_ENABLED=true \
-OTEL_EXPORTER_OTLP_ENDPOINT=https://prometa.example.com/api/v2/otlp/v1/traces \
+OTEL_EXPORTER_OTLP_ENDPOINT=https://planeon.example.com/api/v2/otlp/v1/traces \
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
 OTEL_EXPORTER_OTLP_HEADERS="x-api-key=prm_live_..." \
-OTEL_RESOURCE_ATTRIBUTES="prometa.solution_id=sol_inference,prometa.stage=production"
+OTEL_RESOURCE_ATTRIBUTES="planeon.solution_id=sol_inference,planeon.stage=production"
 ```
 
-**Pattern B — engine called by a Prometa-SDK-instrumented agent.** The engine's `chat.generate` / `tool.invoke` spans nest under the calling agent's span via standard OTel context propagation (W3C `traceparent` header on the inbound request). Agents using the [Python](https://github.com/prometa-ai/orchestra-python-sdk), [Node](https://github.com/prometa-ai/orchestra-node-sdk), or [Java](https://github.com/prometa-ai/orchestra-java-sdk) SDKs already propagate this header out of the box — no engine-side change needed beyond pointing at the same OTLP endpoint. The platform's resolver then attributes the engine span's identity horizontals (`agent_id`, `solution_id`) by inheriting from the parent agent's resolved chain.
+**Pattern B — engine called by a Planeon-SDK-instrumented agent.** The engine's `chat.generate` / `tool.invoke` spans nest under the calling agent's span via standard OTel context propagation (W3C `traceparent` header on the inbound request). Agents using the [Python](https://github.com/planeon-ai/orchestra-python-sdk), [Node](https://github.com/planeon-ai/orchestra-node-sdk), or [Java](https://github.com/planeon-ai/orchestra-java-sdk) SDKs already propagate this header out of the box — no engine-side change needed beyond pointing at the same OTLP endpoint. The platform's resolver then attributes the engine span's identity horizontals (`agent_id`, `solution_id`) by inheriting from the parent agent's resolved chain.
 
 Engine-side resource attributes already wired into the OTLP stream:
 - `service.name=inference-engine` — primary identity
 - `service.version=<package version>` — auto-discovered
-- `prometa.tenant` (per-span, set from the inbound `x-prometa-tenant` header) — drives multi-tenant routing in Grafana panels
+- `planeon.tenant` (per-span, set from the inbound `x-planeon-tenant` header) — drives multi-tenant routing in Grafana panels
 - `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` — OTel GenAI semconv keys; the platform's cost rollup keys on these.
 
 See the platform-side [`correlation-id-design.md`](https://github.com/caglarsubas/agent-hook-v2/blob/main/resources/correlation/correlation-id-design.md) for the full chain grammar and the SDK READMEs for the agent-side helpers (`set_customer_id`, `set_user_id`, `set_request_model`, `set_tool_name`, etc.) that populate the optional identity-horizontal segments.
@@ -1063,7 +1063,7 @@ engine ── OTLP/gRPC ──▶ otel-collector ──┬──▶ jaeger      
                                    inference_engine_models_loaded, prefix_cache_size_bytes, …
 ```
 
-`spanmetrics` derives request rate + latency histograms from spans, preserving `prometa.tenant`, `gen_ai.request.model`, and `gen_ai.system` as labels. `sumconnector` reads `gen_ai.usage.input_tokens` / `output_tokens` off each span and sums into counters — that's how the tokens/sec panels work without the engine emitting any direct metrics.
+`spanmetrics` derives request rate + latency histograms from spans, preserving `planeon.tenant`, `gen_ai.request.model`, and `gen_ai.system` as labels. `sumconnector` reads `gen_ai.usage.input_tokens` / `output_tokens` off each span and sums into counters — that's how the tokens/sec panels work without the engine emitting any direct metrics.
 
 ```bash
 make obs-up         # engine + grafana + prometheus + jaeger + otel-collector
@@ -1086,7 +1086,7 @@ Open Grafana, then **Dashboards → Inference Engine → Inference Engine — Ov
 * **Request rate breakdowns** — req/sec sliced by route, tenant, model, backend.
 * **Latency** — `p50 / p95 / p99` per route + `p95` per model, computed from the spanmetrics histogram.
 * **Token throughput** — input / output tokens/sec by tenant, plus a combined-by-model panel.
-* **Tenant × model traffic matrix** — last-5m request count per `(tenant, model)` pair as a heatmap, the panel Prometa uses to spot tenant-specific routing skew.
+* **Tenant × model traffic matrix** — last-5m request count per `(tenant, model)` pair as a heatmap, the panel Planeon uses to spot tenant-specific routing skew.
 * **Eval signals (LLM-as-a-Judge)** — `eval.run` rate by rubric + p95 latency by rubric, populated by the auto-eval policy or explicit `/v1/evals/*` calls.
 * **Operational health** — loaded models per replica, loaded model bytes, prefix-cache size by model, and tenant scheduler pressure. These are scraped from the engine's own `/v1/metrics` (Prometheus exposition), not from OTel — they're cheap counters/gauges the engine maintains directly.
 
@@ -1103,7 +1103,7 @@ Need a different overlay? `obs-up` composes on top of `docker-compose.yml`, so y
 
 ## LLM-as-a-Judge — `/v1/evals/*`
 
-The most Prometa-aligned slice of the engine: a candidate response goes in, a structured verdict comes out, and the verdict is stamped onto an OTel span carrying provenance back to the original completion. That's the substrate for continuous evaluation, regression detection, and self-healing loops.
+The most Planeon-aligned slice of the engine: a candidate response goes in, a structured verdict comes out, and the verdict is stamped onto an OTel span carrying provenance back to the original completion. That's the substrate for continuous evaluation, regression detection, and self-healing loops.
 
 ### Built-in rubrics
 
@@ -1114,7 +1114,7 @@ The most Prometa-aligned slice of the engine: a candidate response goes in, a st
 | `safety`          | scalar   | —                  | `safe` (bool), `concerns` (list) | `1.0` if safe else `0.0`      |
 | `pairwise_quality`| pairwise | `response_b`       | `winner` (`A`/`B`/`tie`), `reason` | `1.0`/`0.0`/`0.5` (unknown→`0.0`)|
 
-All four converge on a single `[0, 1]` (or 1–5) numeric `score` so downstream aggregation treats them the same way. Custom rubrics drop in via `RubricRegistry.register(...)` — that's the seam where Prometa's control plane can ship org-specific judges.
+All four converge on a single `[0, 1]` (or 1–5) numeric `score` so downstream aggregation treats them the same way. Custom rubrics drop in via `RubricRegistry.register(...)` — that's the seam where Planeon's control plane can ship org-specific judges.
 
 #### Per-rubric judge model overrides
 
@@ -1130,7 +1130,7 @@ A single `auto_eval` spec can route different rubrics to different judge models 
 }
 ```
 
-Each `eval.run` span carries its own `eval.judge.model` attribute, so Prometa sees per-rubric judge usage and cost split out of the box. This works in policy entries too — set `judge_models` on the policy's `auto_eval` and the engine routes per-rubric for every covered chat without client coordination.
+Each `eval.run` span carries its own `eval.judge.model` attribute, so Planeon sees per-rubric judge usage and cost split out of the box. This works in policy entries too — set `judge_models` on the policy's `auto_eval` and the engine routes per-rubric for every covered chat without client coordination.
 
 #### Pairwise comparison
 
@@ -1149,7 +1149,7 @@ curl -X POST .../v1/evals/run -d '{
 # → {"verdict": {"parsed": {"winner": "A", "reason": "..."}, "score": 1.0}, ...}
 ```
 
-Both candidate completion ids stamp onto the `eval.run` span (`eval.candidate.completion_id` and `eval.candidate_b.completion_id`), so Prometa can join the pairwise verdict back to **both** original chat completions automatically.
+Both candidate completion ids stamp onto the `eval.run` span (`eval.candidate.completion_id` and `eval.candidate_b.completion_id`), so Planeon can join the pairwise verdict back to **both** original chat completions automatically.
 
 ### Endpoints
 
@@ -1205,10 +1205,10 @@ eval.parse_status             = clean | repaired | failed
 gen_ai.usage.input_tokens     = 126
 gen_ai.usage.output_tokens    = 25
 gen_ai.system                 = llama_cpp
-prometa.tenant                = <caller>
+planeon.tenant                = <caller>
 ```
 
-Send these spans to Prometa's OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`) and every eval becomes a first-class signal — joinable to the candidate completion via `eval.candidate.completion_id`, sliceable by tenant, rubric, judge model.
+Send these spans to Planeon's OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`) and every eval becomes a first-class signal — joinable to the candidate completion via `eval.candidate.completion_id`, sliceable by tenant, rubric, judge model.
 
 ### `/v1/rerank` (Cohere/Jina-shaped)
 
@@ -1288,7 +1288,7 @@ What the engine adds for vLLM-served traffic that vLLM alone doesn't:
 - **Same auth + tenant attribution** (round 5)
 - **Same auto-eval policy enforcement** including pairwise + per-rubric judges (rounds 13/22)
 - **Same tool-call audit + execution timing correlation** (rounds 14/20/21)
-- **Same OTel `gen_ai.*` spans** with everything joinable in Prometa
+- **Same OTel `gen_ai.*` spans** with everything joinable in Planeon
 - **Same OpenAI-compat surface** so clients don't change endpoints when traffic moves between local llama.cpp / MLX and remote vLLM
 
 #### Configuring vLLM-served models
@@ -1758,7 +1758,7 @@ span = embeddings.run
   gen_ai.usage.input_tokens = 14
   embedding.batch_size      = 3
   embedding.dimensions      = 384
-  prometa.tenant            = ...
+  planeon.tenant            = ...
 ```
 
 #### Embedding quality caveat
@@ -1806,9 +1806,9 @@ curl -X POST .../v1/chat/completions -d '{
 #       tool_audit.tool_calls_out        = 0
 ```
 
-#### Prometa correlation
+#### Planeon correlation
 
-The platform's agent-graph view joins on `gen_ai.tool.call.id`. A single tool call generates a `gen_ai.tool_call` event in the chat span where the model invoked it, and a `gen_ai.tool_result` event in the next chat span where the agent fed the result back — same id, two events, two spans. Prometa stitches them into one tool-execution record.
+The platform's agent-graph view joins on `gen_ai.tool.call.id`. A single tool call generates a `gen_ai.tool_call` event in the chat span where the model invoked it, and a `gen_ai.tool_result` event in the next chat span where the agent fed the result back — same id, two events, two spans. Planeon stitches them into one tool-execution record.
 
 #### Execution timing correlation (round 21)
 
@@ -1842,11 +1842,11 @@ Streaming-mode tool calls are now audited too. OpenAI streams tool calls as a se
 
 When a streaming request is cancelled mid-flight (round 5), the partially-assembled tool call is **not** emitted as an event — half-formed arguments would be misleading.
 
-### Server-side auto-eval policy (Prometa-authoritative)
+### Server-side auto-eval policy (Planeon-authoritative)
 
 Per-request `auto_eval` lets clients attach rubrics to a single chat completion. That works for ad-hoc debugging — but it's a **coordination point**: every agent has to know which rubrics to send. For platform compliance (safety must run, always) the source of truth needs to be the engine, not the client.
 
-The auto-eval policy file (`AUTO_EVAL_POLICIES_FILE`, default `.auto_eval_policies.json`) is a JSON array of `(match → auto_eval)` rules. Prometa's control plane writes it; the engine reads it at startup. **When a policy entry matches a request, the request's own `auto_eval` field is ignored** — the policy plane is authoritative over which rubrics run. Clients that want fully request-driven evals are simply not covered by a policy.
+The auto-eval policy file (`AUTO_EVAL_POLICIES_FILE`, default `.auto_eval_policies.json`) is a JSON array of `(match → auto_eval)` rules. Planeon's control plane writes it; the engine reads it at startup. **When a policy entry matches a request, the request's own `auto_eval` field is ignored** — the policy plane is authoritative over which rubrics run. Clients that want fully request-driven evals are simply not covered by a policy.
 
 ```json
 [
@@ -1880,7 +1880,7 @@ The auto-eval policy file (`AUTO_EVAL_POLICIES_FILE`, default `.auto_eval_polici
 `POST /v1/admin/policies:reload` re-reads `AUTO_EVAL_POLICIES_FILE` and atomically replaces the in-memory registry. The reload is **strictly validated** by the same code path startup uses: a malformed file returns HTTP 400 and the existing registry is preserved untouched. In-flight requests that already resolved through the previous registry continue to use it (the resolver returns by value, not by reference), so there's no torn-state failure mode.
 
 ```bash
-# Prometa rotates compliance rubrics
+# Planeon rotates compliance rubrics
 $ cat > .auto_eval_policies.json <<EOF
 [{"name": "compliance", "match": {"tenant": "*"}, "auto_eval": {"rubrics": ["safety"]}}]
 EOF
@@ -1903,7 +1903,7 @@ span=chat.generate
   auto_eval.judge_model            = llama3.2:3b
 ```
 
-Combined with the existing `eval.candidate.completion_id` linkage on every `eval.run` span, Prometa can reconstruct the full chain *which policy → which chat → which eval verdict* purely from joined OTel spans. No coordination protocol with clients required.
+Combined with the existing `eval.candidate.completion_id` linkage on every `eval.run` span, Planeon can reconstruct the full chain *which policy → which chat → which eval verdict* purely from joined OTel spans. No coordination protocol with clients required.
 
 #### Verified end-to-end
 
@@ -1980,7 +1980,7 @@ got 49 chars; evals=null
 wall: 97 ms          ← user-perceived latency unchanged
 ```
 
-The eval spans land in OTel ~1.4s later, joined back to the chat by `eval.candidate.completion_id=chatcmpl-35273f...`. Prometa picks them up out of band; the agent path was never blocked.
+The eval spans land in OTel ~1.4s later, joined back to the chat by `eval.candidate.completion_id=chatcmpl-35273f...`. Planeon picks them up out of band; the agent path was never blocked.
 
 ### JSON repair
 
@@ -1995,8 +1995,8 @@ The `parse_status` is always on the response and on the span, so eval failures a
 ## Signed model-routing desired state
 
 The first Orchestra model-plane increment accepts a purpose-separated Ed25519
-routing-policy envelope produced by the Prometa control plane. Verification is
-entirely local. The engine does not call Prometa during startup, reload, or an
+routing-policy envelope produced by the Planeon control plane. Verification is
+entirely local. The engine does not call Planeon during startup, reload, or an
 inference request.
 
 The verifier requires exact canonical payload bytes, strict schema/version,
@@ -2052,7 +2052,7 @@ model registry lookup:
    consulted in governed mode.
 6. Stamp policy ID, revision, digest, release, deployment, organization,
    environment, route, selected candidate, limits, and pricing digest on route
-   and workload spans. Canonical `prometa.*` aliases identify the signed
+   and workload spans. Canonical `planeon.*` aliases identify the signed
    artifact as `model-routing-policy`; existing `model_routing.*` attributes
    remain the compatibility contract.
 
@@ -2498,12 +2498,12 @@ Behaviour:
 - A key before `not_before` or at/after `expires_at` is rejected as an invalid key. Both fields are optional for legacy files but timezone-aware when present.
 - `/v1/health` and `/v1/ready` are left open so liveness/readiness probes work without keys.
 - `/v1/models` and `/v1/chat/completions` require a valid key when auth is on.
-- Every span (model.acquire, chat.generate, chat.stream) carries `prometa.tenant=<name>` and `prometa.key_id=<redacted>` — Prometa can route signals per tenant out of the box.
+- Every span (model.acquire, chat.generate, chat.stream) carries `planeon.tenant=<name>` and `planeon.key_id=<redacted>` — Planeon can route signals per tenant out of the box.
 - Governed routing requires `org_id` on every auth-key record. With auth off,
   local development must set `MODEL_ROUTING_EXPECTED_ORG_ID` to the signed
   policy organization.
 
-The keys file is the seam where Prometa's control plane hands a generated set
+The keys file is the seam where Planeon's control plane hands a generated set
 to tenant automation. Rotation remains tenant-controlled:
 
 1. Mount a candidate containing the current key plus the new key. Give the old
@@ -2573,7 +2573,7 @@ is on.
 
 llama.cpp ships an explicit prompt-prefix cache (`LlamaRAMCache`) but it's off by default. We install it on every adapter at load time and size it via `PREFIX_CACHE_BYTES` (default 2 GiB). The cache is keyed by token-prefix; whenever a new request shares a prefix with one that's been processed before, prefill skips those tokens entirely.
 
-This is the dominant latency lever for **RAG, multi-turn agents, and shared-system-prompt workflows** — exactly the shape Prometa-managed agents have. Measured on the M5 Max with `llama3.2:1b` and a 1124-token system prompt:
+This is the dominant latency lever for **RAG, multi-turn agents, and shared-system-prompt workflows** — exactly the shape Planeon-managed agents have. Measured on the M5 Max with `llama3.2:1b` and a 1124-token system prompt:
 
 ```
 cold prefix     631 ms   (cache empty)
@@ -3039,7 +3039,7 @@ Standard `llama` family models work on either local backend today.
 
 1. **Phase 2 — service features.** ✅ Per-key bearer auth + tenant attribution · ✅ managed key rotation via `/v1/admin/auth-keys:reload` · ✅ streaming request cancellation · ✅ prompt-template overrides via `/v1/completions` · ✅ rate limiting (per-tenant scheduler admission + signed-policy RPM, `process-replica` or exact `deployment-shared` via Redis/Sentinel).
 2. **Phase 3 — engine behaviour.** ✅ Multi-model routing · ✅ per-key load dedup + parallel cold loads · ✅ llama.cpp prefix cache (9.86×) · ✅ MLX multi-slot LRU prefix cache (~22× hit-rate lift) · ✅ token-precise cache observability on **both** backends · ✅ dynamic batching for `/v1/embeddings` (coalescer + capability fallback) · ✅ continuous chat batching via vLLM-as-subprocess (`VLLMAdapter` + `docker-compose.vllm.yml` overlay).
-3. **Phase 4 — Prometa integration.** ✅ Real OTel exporter (OTLP/gRPC + Jaeger compose) · ✅ LLM-as-a-Judge eval harness · ✅ auto-judge attached to chat completions · ✅ server-side auto-eval policy (Prometa-authoritative) · ✅ tool-call audit logs (`gen_ai.tool_*` events with payload truncation).
+3. **Phase 4 — Planeon integration.** ✅ Real OTel exporter (OTLP/gRPC + Jaeger compose) · ✅ LLM-as-a-Judge eval harness · ✅ auto-judge attached to chat completions · ✅ server-side auto-eval policy (Planeon-authoritative) · ✅ tool-call audit logs (`gen_ai.tool_*` events with payload truncation).
 4. **Adapter coverage.** ✅ MLX-LM (Apple Silicon native) · ✅ vLLM for GPU-server workloads · ✅ Ollama-HTTP for architectures ahead of the llama.cpp wheel · ✅ OpenRouter for large open-weight models · SGLang · TensorRT-LLM for NVIDIA optimization.
 5. **Phase 5 — wire standardization.** ✅ `stream_options.include_usage` streaming usage trailer · ✅ OpenAI `error` envelope + `x-request-id` + `x-ratelimit-*` · ✅ `max_completion_tokens` · ✅ grammar-enforced Structured Outputs (`json_schema`) · ✅ logprobs, penalties, `logit_bias` · ✅ `usage.prompt_tokens_details.cached_tokens` · ✅ `/tokenize` + `/detokenize` · ✅ OTel GenAI semconv attrs + TTFT/TPOT metrics · `/v1/responses` (stateful; deferred) · batch/files/audio/moderations (deferred until a consumer needs them).
 6. **Phase 6 — model plane.** ✅ Signed Ed25519 routing policy, verified locally, with atomic LKG activation and offline lease · ✅ per-route input/output token, cost, RPM, TPM, and window spend ceilings with fail-closed pricing and reserve-then-settle budgeting · ✅ exact `deployment-shared` rate and budget windows via Redis/Sentinel · ✅ asynchronous payload-free observation reporting (v1 + v2) · ✅ certified workload surface (`orchestra-model-plane-workload-v1`) · ✅ fail-closed TLS/mTLS listener · ✅ signed UBI images, SBOMs, and a standalone Helm chart with production + SNO-trial profiles · rerank, standalone eval, and chat-attached auto-eval under signed routing (today they fail closed in governed mode) · OpenShift lifecycle, backup/recovery, multi-replica load, and SLO certification.

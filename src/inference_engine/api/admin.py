@@ -1,7 +1,7 @@
 """``/v1/admin/...`` — operator-facing endpoints.
 
 Anything that mutates operator-owned engine state belongs here (future:
-``models:warmup``, etc.). Prometa may issue desired artifacts,
+``models:warmup``, etc.). Planeon may issue desired artifacts,
 but tenant automation remains responsible for mounting them and invoking these
 endpoints.
 
@@ -99,8 +99,8 @@ async def reload_auth_keys(
     with span(
         "admin.auth_keys.reload",
         **{
-            "prometa.tenant": identity.tenant,
-            "prometa.key_id": identity.key_id,
+            "planeon.tenant": identity.tenant,
+            "planeon.key_id": identity.key_id,
             "auth_keys.previous_digest": previous["digest"] or "",
             "auth_keys.previous_count": previous["keys_loaded"],
         },
@@ -164,8 +164,8 @@ async def reload_policies(identity: Identity = Depends(require_identity)) -> Pol
     with span(
         "admin.policies.reload",
         **{
-            "prometa.tenant": identity.tenant,
-            "prometa.key_id": identity.key_id,
+            "planeon.tenant": identity.tenant,
+            "planeon.key_id": identity.key_id,
             "policy.source": str(settings.auto_eval_policies_file),
         },
     ) as s:
@@ -272,8 +272,8 @@ async def reload_model_routing_policy(
     with span(
         "admin.model_routing_policy.reload",
         **{
-            "prometa.tenant": identity.tenant,
-            "prometa.key_id": identity.key_id,
+            "planeon.tenant": identity.tenant,
+            "planeon.key_id": identity.key_id,
             "model_routing.policy.previous_digest": (
                 previous.digest if previous is not None else ""
             ),
@@ -376,8 +376,8 @@ async def reload_model_routing_pricing(
     with span(
         "admin.model_routing_pricing.reload",
         **{
-            "prometa.tenant": identity.tenant,
-            "prometa.key_id": identity.key_id,
+            "planeon.tenant": identity.tenant,
+            "planeon.key_id": identity.key_id,
             "model_routing.policy.digest": (
                 previous_policy.digest if previous_policy is not None else ""
             ),

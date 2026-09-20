@@ -1,6 +1,6 @@
 """Verified desired-state policy for the tenant-deployed model plane.
 
-The Prometa control plane signs policy bytes out of band. This module verifies
+The Planeon control plane signs policy bytes out of band. This module verifies
 and activates those bytes locally; it never calls the control plane.
 """
 

@@ -140,7 +140,7 @@ networkPolicy:
           kubernetes.io/metadata.name: orchestra-runtime
       podSelector:
         matchLabels:
-          app.kubernetes.io/name: prometa-runtime
+          app.kubernetes.io/name: planeon-runtime
   observationEgress:
     - to:
         - namespaceSelector:

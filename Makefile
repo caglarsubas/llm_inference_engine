@@ -182,7 +182,7 @@ native-logs:
 
 # ---------------------------------------------------------------------------
 # Public endpoint — expose the engine on a public HTTPS URL (ngrok / cloudflared)
-# so Prometa's "Engine URL" field (or any remote OpenAI client) can reach it.
+# so Planeon's "Engine URL" field (or any remote OpenAI client) can reach it.
 # Tunnel a different port with PORT=8090 (e.g. the compose LB). Full usage
 # guide for the URL you get out: docs/PUBLIC_ENDPOINT.md
 # ---------------------------------------------------------------------------

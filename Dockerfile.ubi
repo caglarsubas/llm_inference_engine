@@ -69,7 +69,7 @@ LABEL org.opencontainers.image.title="Orchestra Inference Engine (UBI9)" \
       org.opencontainers.image.source="https://github.com/caglarsubas/llm_inference_engine" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      io.prometa.image.variant="ubi9"
+      io.planeon.image.variant="ubi9"
 
 RUN microdnf install -y libgomp \
  && microdnf clean all \

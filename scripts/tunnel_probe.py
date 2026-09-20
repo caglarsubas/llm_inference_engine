@@ -53,8 +53,8 @@ from pathlib import Path
 
 DEFAULT_AGENT_API = "http://127.0.0.1:4040/api/tunnels"
 DEFAULT_HEALTH_PATH = "/v1/health"
-DEFAULT_STATE = "/tmp/prometa-tunnel-probe.state.json"
-DEFAULT_METRICS = "/tmp/prometa-tunnel-probe.prom"
+DEFAULT_STATE = "/tmp/planeon-tunnel-probe.state.json"
+DEFAULT_METRICS = "/tmp/planeon-tunnel-probe.prom"
 
 
 def _get_json(url: str, timeout: float) -> dict | None:
@@ -84,7 +84,7 @@ def resolve_public_url(agent_api: str, timeout: float) -> str | None:
 def probe(url: str, timeout: float) -> tuple[bool, int, float, str]:
     """GET ``url``; return (ok, http_status, elapsed_seconds, detail)."""
     started = time.perf_counter()
-    request = urllib.request.Request(url, headers={"User-Agent": "prometa-tunnel-probe/1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "planeon-tunnel-probe/1"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as r:  # noqa: S310
             r.read(2048)
@@ -117,33 +117,33 @@ def write_state(path: Path, state: dict) -> None:
 
 def write_metrics(path: Path, state: dict, up: bool, elapsed: float, status: int) -> None:
     lines = [
-        "# HELP prometa_tunnel_up Public endpoint answered a probe (1) or did not (0).",
-        "# TYPE prometa_tunnel_up gauge",
-        f"prometa_tunnel_up {1 if up else 0}",
-        "# HELP prometa_tunnel_registered An ngrok tunnel is registered with the local agent.",
-        "# TYPE prometa_tunnel_registered gauge",
-        f"prometa_tunnel_registered {1 if state.get('public_url') else 0}",
-        "# HELP prometa_tunnel_probe_duration_seconds Round-trip time of the last probe.",
-        "# TYPE prometa_tunnel_probe_duration_seconds gauge",
-        f"prometa_tunnel_probe_duration_seconds {elapsed:.4f}",
-        "# HELP prometa_tunnel_probe_status_code HTTP status of the last probe (0 = no response).",
-        "# TYPE prometa_tunnel_probe_status_code gauge",
-        f"prometa_tunnel_probe_status_code {status}",
-        "# HELP prometa_tunnel_probes_total Probes completed since the state file was created.",
-        "# TYPE prometa_tunnel_probes_total counter",
-        f"prometa_tunnel_probes_total {state.get('probes_total', 0)}",
-        "# HELP prometa_tunnel_failures_total Probes that found the endpoint unreachable.",
-        "# TYPE prometa_tunnel_failures_total counter",
-        f"prometa_tunnel_failures_total {state.get('failures_total', 0)}",
-        "# HELP prometa_tunnel_consecutive_failures Consecutive failing probes.",
-        "# TYPE prometa_tunnel_consecutive_failures gauge",
-        f"prometa_tunnel_consecutive_failures {state.get('consecutive_failures', 0)}",
-        "# HELP prometa_tunnel_transitions_total Up/down state changes observed.",
-        "# TYPE prometa_tunnel_transitions_total counter",
-        f"prometa_tunnel_transitions_total {state.get('transitions_total', 0)}",
-        "# HELP prometa_tunnel_last_transition_unixtime When the state last changed.",
-        "# TYPE prometa_tunnel_last_transition_unixtime gauge",
-        f"prometa_tunnel_last_transition_unixtime {state.get('last_transition_unixtime', 0)}",
+        "# HELP planeon_tunnel_up Public endpoint answered a probe (1) or did not (0).",
+        "# TYPE planeon_tunnel_up gauge",
+        f"planeon_tunnel_up {1 if up else 0}",
+        "# HELP planeon_tunnel_registered An ngrok tunnel is registered with the local agent.",
+        "# TYPE planeon_tunnel_registered gauge",
+        f"planeon_tunnel_registered {1 if state.get('public_url') else 0}",
+        "# HELP planeon_tunnel_probe_duration_seconds Round-trip time of the last probe.",
+        "# TYPE planeon_tunnel_probe_duration_seconds gauge",
+        f"planeon_tunnel_probe_duration_seconds {elapsed:.4f}",
+        "# HELP planeon_tunnel_probe_status_code HTTP status of the last probe (0 = no response).",
+        "# TYPE planeon_tunnel_probe_status_code gauge",
+        f"planeon_tunnel_probe_status_code {status}",
+        "# HELP planeon_tunnel_probes_total Probes completed since the state file was created.",
+        "# TYPE planeon_tunnel_probes_total counter",
+        f"planeon_tunnel_probes_total {state.get('probes_total', 0)}",
+        "# HELP planeon_tunnel_failures_total Probes that found the endpoint unreachable.",
+        "# TYPE planeon_tunnel_failures_total counter",
+        f"planeon_tunnel_failures_total {state.get('failures_total', 0)}",
+        "# HELP planeon_tunnel_consecutive_failures Consecutive failing probes.",
+        "# TYPE planeon_tunnel_consecutive_failures gauge",
+        f"planeon_tunnel_consecutive_failures {state.get('consecutive_failures', 0)}",
+        "# HELP planeon_tunnel_transitions_total Up/down state changes observed.",
+        "# TYPE planeon_tunnel_transitions_total counter",
+        f"planeon_tunnel_transitions_total {state.get('transitions_total', 0)}",
+        "# HELP planeon_tunnel_last_transition_unixtime When the state last changed.",
+        "# TYPE planeon_tunnel_last_transition_unixtime gauge",
+        f"planeon_tunnel_last_transition_unixtime {state.get('last_transition_unixtime', 0)}",
     ]
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text("\n".join(lines) + "\n")
@@ -152,16 +152,16 @@ def write_metrics(path: Path, state: dict, up: bool, elapsed: float, status: int
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--agent-api", default=os.environ.get("PROMETA_NGROK_API", DEFAULT_AGENT_API))
-    parser.add_argument("--url", default=os.environ.get("PROMETA_TUNNEL_URL", ""),
+    parser.add_argument("--agent-api", default=os.environ.get("PLANEON_NGROK_API", DEFAULT_AGENT_API))
+    parser.add_argument("--url", default=os.environ.get("PLANEON_TUNNEL_URL", ""),
                         help="probe this URL instead of discovering it from the agent API")
-    parser.add_argument("--health-path", default=os.environ.get("PROMETA_TUNNEL_HEALTH_PATH",
+    parser.add_argument("--health-path", default=os.environ.get("PLANEON_TUNNEL_HEALTH_PATH",
                                                                 DEFAULT_HEALTH_PATH))
     parser.add_argument("--timeout", type=float,
-                        default=float(os.environ.get("PROMETA_TUNNEL_TIMEOUT", "10")))
-    parser.add_argument("--state-file", default=os.environ.get("PROMETA_TUNNEL_STATE", DEFAULT_STATE))
+                        default=float(os.environ.get("PLANEON_TUNNEL_TIMEOUT", "10")))
+    parser.add_argument("--state-file", default=os.environ.get("PLANEON_TUNNEL_STATE", DEFAULT_STATE))
     parser.add_argument("--metrics-file",
-                        default=os.environ.get("PROMETA_TUNNEL_METRICS", DEFAULT_METRICS))
+                        default=os.environ.get("PLANEON_TUNNEL_METRICS", DEFAULT_METRICS))
     args = parser.parse_args(argv)
 
     state_path = Path(args.state_file)

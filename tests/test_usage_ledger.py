@@ -1,4 +1,4 @@
-"""Per-request billing ledger — ``prometa.model-usage.v2``.
+"""Per-request billing ledger — ``planeon.model-usage.v2``.
 
 Exercised through the real ASGI app so the middleware, the ContextVar
 accumulator, and the SSE generator hand-off are all in the path. The governed
@@ -881,27 +881,27 @@ def test_versioned_contract_fixture_matches_the_emitter_and_wire_identity_contra
     contract_path = (
         Path(__file__).resolve().parents[1]
         / "contracts"
-        / "prometa-model-usage-v2.schema.json"
+        / "planeon-model-usage-v2.schema.json"
     )
     raw = contract_path.read_bytes()
     contract = json.loads(raw)
 
     assert hashlib.sha256(raw).hexdigest() == (
-        "845f830df424f1626717e60a5dbd05e01187f84e2e96223527cceda521f3d55a"
+        "ad3e63a074589939b5dc031ab5f84253d732f8a40825c06dbcbe9f2aa4ebcb7e"
     )
     assert contract["properties"]["schema"]["const"] == usage_ledger.SCHEMA
     assert contract["properties"]["event"]["const"] == usage_ledger.EVENT
     assert contract["required"] == list(usage_ledger._SCHEMA_FIELD_ORDER)
     assert set(contract["properties"]) == usage_ledger.SCHEMA_FIELDS
     assert "request_id" not in contract["properties"]
-    assert contract["x-prometa-identity-order"] == [
+    assert contract["x-planeon-identity-order"] == [
         "usage_record_id",
         "engine_request_id",
         "runtime_request_id",
         "model_invocation_id",
         "model_attempt_id",
     ]
-    assert contract["x-prometa-header-mapping"] == {
+    assert contract["x-planeon-header-mapping"] == {
         "request": {
             "x-orchestra-runtime-request-id": "runtime_request_id",
             "x-orchestra-model-invocation-id": "model_invocation_id",
@@ -913,7 +913,7 @@ def test_versioned_contract_fixture_matches_the_emitter_and_wire_identity_contra
         },
         "inbound-x-request-id-alias": None,
     }
-    assert contract["x-prometa-delivery"] == {
+    assert contract["x-planeon-delivery"] == {
         "mode": "best-effort-buffered",
         "dedupeField": "usage_record_id",
         "redeliveryWindow": {

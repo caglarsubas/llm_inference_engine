@@ -43,12 +43,12 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/launchd"
 INSTALL_DIR="$HOME/Library/LaunchAgents"
 
-ENGINE_LABEL="com.prometa.inference-engine"
-OLLAMA_LABEL="com.prometa.ollama"
+ENGINE_LABEL="com.planeon.inference-engine"
+OLLAMA_LABEL="com.planeon.ollama"
 # Periodic one-shot rather than a daemon: the agent logs live in /tmp with no
 # rotation, and unbounded growth there is both a disk risk and a retention one
 # (/tmp survives a single reboot, so incident history is the first thing lost).
-ROTATE_LABEL="com.prometa.log-rotate"
+ROTATE_LABEL="com.planeon.log-rotate"
 ENGINE_PLIST="$INSTALL_DIR/$ENGINE_LABEL.plist"
 OLLAMA_PLIST="$INSTALL_DIR/$OLLAMA_LABEL.plist"
 ROTATE_PLIST="$INSTALL_DIR/$ROTATE_LABEL.plist"
@@ -82,9 +82,9 @@ check_tcc_protected_path() {
     # detect FDA from the CLI, so it has to be an explicit opt-in).
     #
     # Bypass for an already-granted setup:
-    #     PROMETA_SKIP_TCC_CHECK=1 ./scripts/native-service.sh install
-    if [[ "${PROMETA_SKIP_TCC_CHECK:-0}" == "1" ]]; then
-        note "PROMETA_SKIP_TCC_CHECK=1 — assuming the venv Python has Full Disk Access."
+    #     PLANEON_SKIP_TCC_CHECK=1 ./scripts/native-service.sh install
+    if [[ "${PLANEON_SKIP_TCC_CHECK:-0}" == "1" ]]; then
+        note "PLANEON_SKIP_TCC_CHECK=1 — assuming the venv Python has Full Disk Access."
         return 0
     fi
     local resolved
@@ -111,7 +111,7 @@ check_tcc_protected_path() {
             err "      Add this exact binary:"
             err "         $(cd "$PROJECT_DIR" && readlink -f .venv/bin/python 2>/dev/null || echo "<run 'make install' first>")"
             err "      Then re-run with the bypass flag:"
-            err "         PROMETA_SKIP_TCC_CHECK=1 ./scripts/native-service.sh install"
+            err "         PLANEON_SKIP_TCC_CHECK=1 ./scripts/native-service.sh install"
             err ""
             err "  (c) Run interactively for now:  'make run'"
             err "      (works because your Terminal already has the TCC grant;"
@@ -205,9 +205,9 @@ cmd_install() {
     bootstrap_one "$OLLAMA_PLIST"
     bootstrap_one "$ROTATE_PLIST"
     log "Installed.  Logs:"
-    note "    /tmp/prometa-inference-engine.{out,err}.log"
-    note "    /tmp/prometa-ollama.{out,err}.log"
-    note "    /tmp/prometa-logrotate.{out,err}  (rotator's own output)"
+    note "    /tmp/planeon-inference-engine.{out,err}.log"
+    note "    /tmp/planeon-ollama.{out,err}.log"
+    note "    /tmp/planeon-logrotate.{out,err}  (rotator's own output)"
     log "Endpoints:"
     note "    engine: http://127.0.0.1:8080/v1"
     note "    ollama: http://127.0.0.1:11434"
@@ -260,7 +260,7 @@ cmd_status() {
         fi
     done
     printf '\nLog files:\n'
-    ls -lh /tmp/prometa-inference-engine.*.log /tmp/prometa-ollama.*.log 2>/dev/null \
+    ls -lh /tmp/planeon-inference-engine.*.log /tmp/planeon-ollama.*.log 2>/dev/null \
         | awk '{printf "    %s  %s  %s\n", $5, $6" "$7" "$8, $9}' \
         || true
 }
@@ -268,9 +268,9 @@ cmd_status() {
 cmd_logs() {
     local target="${1:-engine}"
     case "$target" in
-        engine|ENGINE) tail -F /tmp/prometa-inference-engine.{out,err}.log ;;
-        ollama|OLLAMA) tail -F /tmp/prometa-ollama.{out,err}.log ;;
-        rotate|ROTATE) tail -F /tmp/prometa-logrotate.{out,err} ;;
+        engine|ENGINE) tail -F /tmp/planeon-inference-engine.{out,err}.log ;;
+        ollama|OLLAMA) tail -F /tmp/planeon-ollama.{out,err}.log ;;
+        rotate|ROTATE) tail -F /tmp/planeon-logrotate.{out,err} ;;
         *) err "logs takes 'engine', 'ollama' or 'rotate'"; exit 2 ;;
     esac
 }

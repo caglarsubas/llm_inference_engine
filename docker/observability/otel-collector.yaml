@@ -13,7 +13,7 @@
 #
 #   spanmetrics  — emits ``calls_total`` (counter) + ``duration_milliseconds``
 #                  (histogram) per span name, with our domain attributes
-#                  preserved as labels (prometa.tenant, gen_ai.request.model,
+#                  preserved as labels (planeon.tenant, gen_ai.request.model,
 #                  gen_ai.system, etc.). Lets us slice traffic by tenant /
 #                  model / backend without re-instrumenting.
 #
@@ -48,9 +48,9 @@ processors:
   # label set obvious from this file.
   attributes/promote:
     actions:
-      - key: prometa.tenant
+      - key: planeon.tenant
         action: upsert
-        from_attribute: prometa.tenant
+        from_attribute: planeon.tenant
       - key: gen_ai.request.model
         action: upsert
         from_attribute: gen_ai.request.model
@@ -65,7 +65,7 @@ connectors:
       explicit:
         buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s]
     dimensions:
-      - name: prometa.tenant
+      - name: planeon.tenant
         default: anonymous
       - name: gen_ai.request.model
         default: unknown
@@ -87,7 +87,7 @@ connectors:
         conditions:
           - 'attributes["gen_ai.usage.input_tokens"] != nil'
         attributes:
-          - key: prometa.tenant
+          - key: planeon.tenant
             default_value: anonymous
           - key: gen_ai.request.model
             default_value: unknown
@@ -99,7 +99,7 @@ connectors:
         conditions:
           - 'attributes["gen_ai.usage.output_tokens"] != nil'
         attributes:
-          - key: prometa.tenant
+          - key: planeon.tenant
             default_value: anonymous
           - key: gen_ai.request.model
             default_value: unknown
