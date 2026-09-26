@@ -16,7 +16,6 @@ dependencies = [
     "cryptography>=43",
     "redis>=5.2,<7",
     "huggingface-hub>=0.30",
-    "sse-starlette>=2.1",
 ]
 
 [project.optional-dependencies]
