@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from .. import model_substitution
 from ..auth import Identity
 from ..evals.runner import EvalRunner
 from ..evals.schemas import Verdict
@@ -67,7 +68,7 @@ async def _run_one(
         )
 
     try:
-        verdict, duration_ms = await runner.run(
+        outcome = await runner.evaluate(
             rubric,
             prompt=prompt,
             response=response,
@@ -77,11 +78,14 @@ async def _run_one(
             candidate_completion_id=candidate_completion_id,
             tenant=tenant,
         )
+        # Reported on this result only, never bound to the request: the
+        # completion being graded keeps its own ``model`` and substitution.
         return AutoEvalResult(
             rubric=rubric.name,
-            judge_model=judge_model,
-            verdict=verdict.model_dump(),
-            duration_ms=round(duration_ms, 2),
+            judge_model=outcome.judge_model,
+            **model_substitution.fields(outcome.substitution),
+            verdict=outcome.verdict.model_dump(),
+            duration_ms=round(outcome.duration_ms, 2),
         )
     except Exception as exc:  # noqa: BLE001 — isolate per-rubric failures
         log.warning(

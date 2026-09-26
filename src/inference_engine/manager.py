@@ -98,6 +98,10 @@ class ModelManager:
         """
         return [(name, adapter, desc) for name, (adapter, desc) in self._loaded.items()]
 
+    def resolve(self, model_id: str) -> ModelDescriptor | None:
+        """The descriptor ``model_id`` would load, without loading anything."""
+        return self._resolver(model_id)
+
     # -----------------------------------------------------------------
     # core path
     # -----------------------------------------------------------------

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from ..adapters import InferenceAdapter
 from ..auth import Identity
 from ..config import CERTIFIED_MODEL_WORKLOAD_SURFACE, settings
+from .. import model_substitution
 from ..manager import ModelNotFoundError
 from ..model_plane_control import QUARANTINED_ERROR_CODE, RuntimeControlRefusal
 from ..model_routing_runtime import (
@@ -366,8 +367,24 @@ async def resolve_initial_candidate(
     decision: ModelRoutingDecision | None,
     identity: Identity,
     extra_span_attrs: dict | None = None,
+    allow_substitution: bool = False,
 ) -> ResolvedRoutingCandidate:
+    """Acquire the model that serves this request.
+
+    ``allow_substitution`` lets an ungoverned generation request be served by a
+    resident member of the requested model's substitution group (see
+    ``model_substitution``). A signed route is never rewritten — its candidate
+    list is the policy — and embeddings must not pass it, because a different
+    model means a different vector space.
+    """
     candidates = decision.candidate_models if decision is not None else (requested_model,)
+    substitution: model_substitution.ModelSubstitution | None = None
+    if decision is None and allow_substitution:
+        substitution = await app_state.model_substituter.choose(requested_model, app_state.manager)
+        if substitution is not None:
+            # The requested model stays behind it, so a substitute that fails
+            # to acquire costs the caller nothing but the attempt.
+            candidates = (substitution.served_model, requested_model)
     first_failed_model: str | None = None
     first_failure_reason: str | None = None
     first_error_type: str | None = None
@@ -389,6 +406,7 @@ async def resolve_initial_candidate(
                         candidate_model=candidate,
                         candidate_index=(index if decision is not None else None),
                     ),
+                    **(model_substitution.span_attrs(substitution) if index == 0 else {}),
                     **(extra_span_attrs or {}),
                 ) as acquire_span:
                     adapter, descriptor = await app_state.manager.get(candidate)
@@ -398,12 +416,24 @@ async def resolve_initial_candidate(
                         }
                     )
             except ModelNotFoundError:
+                if substitution is not None and index == 0:
+                    substitution = None
+                    continue
                 if first_failed_model is None:
                     first_failed_model = candidate
                     first_failure_reason = "model_unavailable"
                     first_error_type = "ModelNotFoundError"
                 continue
             except Exception as exc:
+                if substitution is not None and index == 0:
+                    log.warning(
+                        "model_substitution.acquire_failed",
+                        requested_model=requested_model,
+                        served_model=candidate,
+                        error_type=exc.__class__.__name__,
+                    )
+                    substitution = None
+                    continue
                 if decision is None:
                     raise
                 if first_failed_model is None:
@@ -413,7 +443,7 @@ async def resolve_initial_candidate(
                 continue
 
             fallback_info = None
-            if index > 0 and first_failed_model is not None:
+            if first_failed_model is not None:
                 fallback_info = _fallback.FallbackInfo(
                     from_model=first_failed_model,
                     from_backend="unavailable",
@@ -426,8 +456,11 @@ async def resolve_initial_candidate(
                     candidate_model=descriptor.qualified_name,
                     candidate_index=(index if decision is not None else None),
                 ),
-                **{"model_routing.route.initial_fallback": index > 0},
+                **{"model_routing.route.initial_fallback": first_failed_model is not None},
+                **model_substitution.span_attrs(substitution),
             )
+            if substitution is not None:
+                model_substitution.bind(substitution)
             return ResolvedRoutingCandidate(
                 adapter=adapter,
                 model_name=descriptor.qualified_name,

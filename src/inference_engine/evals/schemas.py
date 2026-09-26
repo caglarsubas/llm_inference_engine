@@ -50,7 +50,11 @@ class EvalResponse(BaseModel):
     object: Literal["eval"] = "eval"
     created: int
     rubric: str
-    judge_model: str
+    judge_model: str  # the judge that actually ran
+    # Set when a resident interchangeable judge ran instead of the one asked
+    # for (``MODEL_SUBSTITUTION_GROUPS``); names the one asked for.
+    substituted_from_model: str | None = None
+    substitution_reason: str | None = None
     candidate_model: str | None = None
     candidate_completion_id: str | None = None
     verdict: Verdict

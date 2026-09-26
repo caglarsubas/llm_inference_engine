@@ -590,6 +590,21 @@ class Settings(BaseSettings):
     guardrail_fail_open_max_consecutive: int = Field(default=20, ge=1)
     guardrail_fail_open_window_seconds: float = Field(default=60.0, gt=0.0)
 
+    # Resident-model substitution. Groups of Ollama models the operator declares
+    # interchangeable: when a request names a member that Ollama does not hold
+    # in memory but another member of its group is resident, the resident one
+    # serves and the response says so. On a host whose RAM cannot keep two
+    # large models loaded at once, this is what stops two tenants from forcing
+    # a 40-100 s evict-and-reload on every alternating request. Groups are
+    # separated by ';', members by ','; earlier members win when several are
+    # resident. Empty disables it. Governed (signed-route) requests and
+    # embeddings are never substituted, and a caller can opt out per request
+    # with ``x-engine-model-substitution: off``.
+    model_substitution_groups: str = Field(
+        default="",
+        description="e.g. 'gemma4:26b,qwen3.8:27b'. Empty disables substitution.",
+    )
+
     # LLM-as-a-Judge default. Override per-request via EvalRequest.judge_model.
     default_judge_model: str = Field(default="llama3.2:3b")
 
