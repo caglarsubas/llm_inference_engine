@@ -70,8 +70,13 @@
              the 33B-class GGUFs comfortably. -->
         <key>N_GPU_LAYERS</key>
         <string>-1</string>
-        <key>N_CTX</key>
-        <string>8192</string>
+        <!-- N_CTX is deliberately absent. Anything set here outranks .env,
+             and a pinned N_CTX=8192 silently overrode the deployment's
+             N_CTX=32768. That was harmless while Ollama chat went through
+             the OpenAI shim, which ignores the window. Native /api/chat
+             sends it as options.num_ctx, so ministral-3:8b reloaded at
+             8192 per slot and long prompts lost their start. Set it in
+             .env (code default 32768). -->
         <key>LOG_LEVEL</key>
         <string>INFO</string>
         <key>OTEL_ENABLED</key>
