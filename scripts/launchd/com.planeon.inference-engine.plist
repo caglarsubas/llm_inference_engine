@@ -63,8 +63,9 @@
         <string>__HOME__/.cache/inference_engine/mlx</string>
         <key>OLLAMA_HTTP_ENDPOINT</key>
         <string>http://127.0.0.1:11434</string>
-        <key>MEMORY_BUDGET_GB</key>
-        <string>96.0</string>
+        <!-- MEMORY_BUDGET_GB is deliberately absent for the same reason as
+             N_CTX below: a value here outranks .env, and the pinned 96.0
+             silently overrode .env's 60. Set it in .env. -->
         <!-- Metal: offload every layer.  The unified-memory M5 Max has
              ~115 GiB of recommendedMaxWorkingSetSize so this fits even
              the 33B-class GGUFs comfortably. -->
