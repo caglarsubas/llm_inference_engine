@@ -4,7 +4,9 @@ Flow:
 
   1. Render the rubric's prompt template with the candidate prompt/response/expected.
   2. Acquire the judge adapter from the ``ModelManager`` (loads if necessary).
-  3. Generate with ``json_mode=True`` so the judge is constrained to return JSON.
+  3. Generate with ``json_mode=True`` so the judge is constrained to return JSON,
+     and ``think=False`` so a reasoning judge answers instead of spending the
+     token budget on chain of thought.
   4. Parse + validate against the rubric's ``expected_keys``. If the judge
      wrapped the JSON in surrounding prose, salvage the first balanced
      ``{...}`` block (``parse_status="repaired"``). If we still can't get a
@@ -125,6 +127,11 @@ class EvalRunner:
             max_tokens=512,
             seed=seed,
             json_mode=True,
+            # A verdict is a few dozen tokens of JSON. Left to its default a
+            # reasoning judge (qwen3.8) thinks first and spends all 512 tokens
+            # there, returning empty content: 7 of 10 judge calls on
+            # 2026-09-26 parsed as ``failed`` with ``raw_head=''`` this way.
+            think=False,
         )
 
         start = time.perf_counter()

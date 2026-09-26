@@ -50,6 +50,12 @@ class GenerationParams:
     logit_bias: dict[str, float] | None = None
     logprobs: bool = False
     top_logprobs: int | None = None
+    # Whether a reasoning model may think before it answers. ``None`` leaves
+    # the model's own default. ``False`` asks for the answer directly, which a
+    # caller with a small token budget and a fixed output shape needs: thinking
+    # otherwise spends ``max_tokens`` before the answer starts. Only
+    # ``ollama_http`` sends it today (native ``think``); other adapters ignore it.
+    think: bool | None = None
 
 
 @dataclass

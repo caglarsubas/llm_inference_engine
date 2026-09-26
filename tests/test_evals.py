@@ -97,6 +97,7 @@ class _FakeJudgeAdapter(InferenceAdapter):
         self, messages: Iterable, params: GenerationParams, cancel: Cancellation | None = None
     ) -> GenerationResult:
         self.last_messages = list(messages)
+        self.last_params = params
         return GenerationResult(
             text=self.next_text,
             finish_reason="stop",
@@ -133,6 +134,22 @@ def runner_with_fake() -> tuple[EvalRunner, _FakeJudgeAdapter]:
     fake = _FakeJudgeAdapter()
     mgr = ModelManager(_Reg(), adapter_factory=lambda d: fake, memory_budget_bytes=100)
     return EvalRunner(mgr), fake
+
+
+@pytest.mark.asyncio
+async def test_judge_is_asked_to_answer_without_thinking(runner_with_fake) -> None:
+    """A reasoning judge left to think spends its 512 tokens before the verdict.
+
+    That returned empty content — ``parse_status="failed"`` with an empty raw —
+    on 7 of 10 qwen3.8 judge calls. The verdict is a few dozen tokens of JSON.
+    """
+    runner, fake = runner_with_fake
+    fake.next_text = '{"score": 4, "justification": "ok"}'
+    rubric = RubricRegistry.with_builtins().get("helpfulness")
+    await runner.run(rubric, prompt="p", response="r", expected=None, judge_model="judge:1")
+
+    assert fake.last_params.think is False
+    assert fake.last_params.json_mode is True
 
 
 @pytest.mark.asyncio
