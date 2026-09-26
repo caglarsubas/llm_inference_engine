@@ -408,6 +408,11 @@ class OllamaHttpAdapter(HttpUpstreamMixin, InferenceAdapter):
             body["format"] = params.json_schema if params.json_schema else "json"
         if params.tools:
             body["tools"] = params.tools
+        if params.think is not None:
+            # Top-level, not an ``option``. ``false`` is accepted by models
+            # without the thinking capability too, so it needs no gating;
+            # only ``true`` is refused there.
+            body["think"] = params.think
         # ``tool_choice`` / ``parallel_tool_calls`` have no native equivalent.
         # The shim dropped them too (Go ignores unknown request fields), so
         # this is the same behaviour, now visible rather than accidental.

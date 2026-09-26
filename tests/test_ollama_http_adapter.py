@@ -198,6 +198,17 @@ def test_json_mode_without_a_schema_asks_for_plain_json() -> None:
     assert body["format"] == "json"
 
 
+def test_think_is_sent_top_level_only_when_the_caller_sets_it() -> None:
+    """Native ``think`` is a top-level field; ``None`` keeps the model's default."""
+    adapter = OllamaHttpAdapter()
+
+    assert "think" not in adapter._native_body([], GenerationParams(), stream=False)
+    off = adapter._native_body([], GenerationParams(think=False), stream=False)
+    assert off["think"] is False
+    assert "think" not in off["options"]
+    assert adapter._native_body([], GenerationParams(think=True), stream=True)["think"] is True
+
+
 # ---------------------------------------------------------------------------
 # context window — settings.n_ctx reaches the upstream (issue #111)
 # ---------------------------------------------------------------------------
