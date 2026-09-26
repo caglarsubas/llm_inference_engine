@@ -18,9 +18,12 @@ import json
 import re
 import time
 import uuid
+from dataclasses import dataclass
 
+from .. import model_substitution
 from ..adapters import GenerationParams
 from ..manager import ModelManager, ModelNotFoundError
+from ..model_substitution import ModelSubstituter, ModelSubstitution
 from ..observability import get_logger, span
 from ..schemas import ChatMessage
 from .rubrics import RubricSpec, render
@@ -34,11 +37,37 @@ log = get_logger("evals")
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 
+@dataclass(frozen=True)
+class EvalOutcome:
+    verdict: Verdict
+    duration_ms: float
+    judge_model: str  # the judge that actually ran
+    substitution: ModelSubstitution | None = None
+
+
 class EvalRunner:
-    def __init__(self, manager: ModelManager) -> None:
+    def __init__(
+        self,
+        manager: ModelManager,
+        substituter: ModelSubstituter | None = None,
+    ) -> None:
         self._manager = manager
+        self._substituter = substituter
 
     async def run(
+        self,
+        rubric: RubricSpec,
+        **kwargs,
+    ) -> tuple[Verdict, float]:
+        """Run a single evaluation. Returns (verdict, duration_ms).
+
+        Takes the same keywords as :meth:`evaluate`, which also reports the
+        judge that actually ran.
+        """
+        outcome = await self.evaluate(rubric, **kwargs)
+        return outcome.verdict, outcome.duration_ms
+
+    async def evaluate(
         self,
         rubric: RubricSpec,
         *,
@@ -53,8 +82,8 @@ class EvalRunner:
         candidate_completion_id: str | None = None,
         candidate_b_completion_id: str | None = None,
         tenant: str | None = None,
-    ) -> tuple[Verdict, float]:
-        """Run a single evaluation. Returns (verdict, duration_ms)."""
+    ) -> EvalOutcome:
+        """Run a single evaluation, reporting which judge actually ran."""
         if rubric.requires_expected and not expected:
             raise ValueError(f"rubric {rubric.name!r} requires an 'expected' reference")
         if rubric.pairwise and not response_b:
@@ -62,8 +91,19 @@ class EvalRunner:
                 f"rubric {rubric.name!r} is pairwise — 'response_b' is required"
             )
 
+        requested_judge = judge_model
+        substitution: ModelSubstitution | None = None
+        if self._substituter is not None:
+            substitution = await self._substituter.choose(judge_model, self._manager)
         try:
-            adapter, _desc = await self._manager.get(judge_model)
+            if substitution is not None:
+                try:
+                    adapter, _desc = await self._manager.get(substitution.served_model)
+                    judge_model = substitution.served_model
+                except ModelNotFoundError:
+                    substitution = None
+            if substitution is None:
+                adapter, _desc = await self._manager.get(judge_model)
         except ModelNotFoundError as exc:
             raise ValueError(f"judge model not found: {judge_model!r}") from exc
 
@@ -97,7 +137,10 @@ class EvalRunner:
             "llm.request.key_source": getattr(
                 adapter, "request_key_source", "local-inference"
             ),
+            **model_substitution.span_attrs(substitution),
         }
+        if substitution is not None:
+            attrs["eval.judge.requested_model"] = requested_judge
         if candidate_model:
             attrs["eval.candidate.model"] = candidate_model
         if candidate_completion_id:
@@ -123,7 +166,12 @@ class EvalRunner:
             )
 
         duration_ms = (time.perf_counter() - start) * 1000
-        return verdict, duration_ms
+        return EvalOutcome(
+            verdict=verdict,
+            duration_ms=duration_ms,
+            judge_model=judge_model,
+            substitution=substitution,
+        )
 
     def _parse(self, raw: str, rubric: RubricSpec) -> Verdict:
         """Extract structured verdict from the judge's response, attempting repair."""

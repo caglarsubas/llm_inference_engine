@@ -419,6 +419,34 @@ was admitted against. The resource header alone is dropped if a model id will
 not encode into a header value; the numbers still go out, because a telemetry
 field must never fail a completion the caller already paid for.
 
+**Resident-model substitution.** With `MODEL_SUBSTITUTION_GROUPS` set (e.g.
+`gemma4:26b,qwen3.8:27b`), a request for a group member that Ollama does not
+currently hold in memory is served by another member that it does, instead of
+forcing Ollama to evict one large model and spend 40-100 s loading the other.
+The engine reads residency from Ollama's `GET /api/ps` (cached ~2 s) and never
+substitutes when the requested model is resident, when no other member is,
+when residency cannot be read, for signed-route requests, or for embeddings.
+
+The caller is always told. The body's `model` (or `judge_model` on
+`/v1/evals/run` and on each chat-attached auto-eval result) names what served,
+and two extension fields name what was asked for and why:
+
+```json
+{"model": "gemma4:26b", "substituted_from_model": "qwen3.8:27b",
+ "substitution_reason": "requested_model_not_resident", ...}
+```
+
+The same facts ride on response headers, which on `stream: true` arrive before
+the first delta:
+
+```
+x-engine-model-substituted-from: qwen3.8:27b
+x-engine-served-model: gemma4:26b
+x-engine-model-substitution-reason: requested_model_not_resident
+```
+
+A caller that needs the exact model sends `x-engine-model-substitution: off`.
+
 After the platform dual-reader is deployed, roll out the engine before the SDK
 **only after an identity preflight passes**. Inventory every configured or
 caller-supplied legacy runtime-request-id source and verify representative live

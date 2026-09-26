@@ -28,6 +28,7 @@ from ..adapters import (
     UpstreamGenerationError,
 )
 from ..auth import Identity, require_identity
+from .. import model_substitution
 from ..genai_metrics import genai_metrics
 from ..observability import span
 from ..schemas import (
@@ -124,6 +125,7 @@ async def create_completion(
             requested_model=req.model,
             decision=decision,
             identity=identity,
+            allow_substitution=True,
         )
 
         while True:
@@ -188,6 +190,7 @@ async def create_completion(
             model=active.model_name,
             request_key_source=_request_key_source(active.adapter),
             **_fallback.response_fields(active.fallback_info),
+            **model_substitution.response_fields(),
             choices=choices,
             usage=Usage(
                 prompt_tokens=total_prompt_tokens,

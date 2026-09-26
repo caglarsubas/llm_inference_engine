@@ -171,6 +171,8 @@ def _to_responses(req: ResponsesRequest, chat: ChatCompletionResponse) -> Respon
         fallback_from_backend=chat.fallback_from_backend,
         fallback_reason=chat.fallback_reason,
         fallback_error_type=chat.fallback_error_type,
+        substituted_from_model=chat.substituted_from_model,
+        substitution_reason=chat.substitution_reason,
     )
 
 

@@ -6,6 +6,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from .. import model_substitution
 from ..auth import Identity, require_identity
 from ..config import settings
 from ..evals.runner import make_eval_id
@@ -85,7 +86,7 @@ async def run_eval(
     judge_model = req.judge_model or settings.default_judge_model
 
     try:
-        verdict, duration_ms = await app_state.eval_runner.run(
+        outcome = await app_state.eval_runner.evaluate(
             rubric,
             prompt=req.prompt,
             response=req.response,
@@ -101,13 +102,18 @@ async def run_eval(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # The judge is this route's primary model, so its substitution is the one
+    # the response headers report.
+    if outcome.substitution is not None:
+        model_substitution.bind(outcome.substitution)
     return EvalResponse(
         id=make_eval_id(),
         created=int(time.time()),
         rubric=rubric.name,
-        judge_model=judge_model,
+        judge_model=outcome.judge_model,
+        **model_substitution.fields(outcome.substitution),
         candidate_model=req.candidate_model,
         candidate_completion_id=req.candidate_completion_id,
-        verdict=verdict,
-        duration_ms=round(duration_ms, 2),
+        verdict=outcome.verdict,
+        duration_ms=round(outcome.duration_ms, 2),
     )

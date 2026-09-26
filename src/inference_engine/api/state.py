@@ -22,6 +22,7 @@ from ..adapters.llama_cpp import LlamaCppAdapter
 from ..config import settings
 from ..evals import EvalRunner, PolicyRegistry, RubricRegistry
 from ..manager import ModelManager
+from ..model_substitution import ModelSubstituter, parse_groups
 from ..model_routing import ActivatedModelRoutingPolicy
 from ..model_routing_runtime import (
     LoadedModelRoutingPricingCatalog,
@@ -165,7 +166,10 @@ class AppState:
 
         # LLM-as-a-Judge plumbing.
         self.rubric_registry = RubricRegistry.with_builtins()
-        self.eval_runner = EvalRunner(self.manager)
+        self.model_substituter = ModelSubstituter(
+            parse_groups(settings.model_substitution_groups)
+        )
+        self.eval_runner = EvalRunner(self.manager, substituter=self.model_substituter)
         # Policy is reloaded from disk in main.py's lifespan so a startup
         # failure surfaces with a clear log line rather than at first request.
         self.policy_registry: PolicyRegistry = PolicyRegistry([])

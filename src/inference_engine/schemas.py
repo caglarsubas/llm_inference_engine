@@ -400,7 +400,10 @@ class AutoEvalResult(BaseModel):
     """One rubric's verdict, attached to a chat completion in blocking auto-eval mode."""
 
     rubric: str
-    judge_model: str
+    judge_model: str  # the judge that actually ran
+    # Set when a resident interchangeable judge ran instead of the one asked for.
+    substituted_from_model: str | None = None
+    substitution_reason: str | None = None
     verdict: dict  # the Verdict pydantic model dumped to a plain dict
     duration_ms: float
     error: str | None = None  # populated if the judge call itself raised
@@ -420,6 +423,11 @@ class ChatCompletionResponse(BaseModel):
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
     fallback_error_type: str | None = None
+    # Set when the engine served a resident interchangeable model instead of
+    # the one requested (``MODEL_SUBSTITUTION_GROUPS``). ``model`` names what
+    # actually served; this names what was asked for.
+    substituted_from_model: str | None = None
+    substitution_reason: str | None = None
     choices: list[ChatCompletionChoice]
     usage: Usage
     evals: list[AutoEvalResult] | None = None
@@ -478,6 +486,11 @@ class ChatCompletionChunk(BaseModel):
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
     fallback_error_type: str | None = None
+    # Set when the engine served a resident interchangeable model instead of
+    # the one requested (``MODEL_SUBSTITUTION_GROUPS``). ``model`` names what
+    # actually served; this names what was asked for.
+    substituted_from_model: str | None = None
+    substitution_reason: str | None = None
     choices: list[ChatCompletionChunkChoice]
     # Populated only on the final chunk, and only when the caller asked via
     # ``stream_options={"include_usage": true}``. Every other chunk carries
@@ -531,6 +544,11 @@ class CompletionResponse(BaseModel):
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
     fallback_error_type: str | None = None
+    # Set when the engine served a resident interchangeable model instead of
+    # the one requested (``MODEL_SUBSTITUTION_GROUPS``). ``model`` names what
+    # actually served; this names what was asked for.
+    substituted_from_model: str | None = None
+    substitution_reason: str | None = None
     choices: list[CompletionChoice]
     usage: Usage
 
@@ -892,3 +910,5 @@ class ResponsesResponse(BaseModel):
     fallback_from_backend: str | None = None
     fallback_reason: str | None = None
     fallback_error_type: str | None = None
+    substituted_from_model: str | None = None
+    substitution_reason: str | None = None

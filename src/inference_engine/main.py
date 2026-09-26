@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import __version__, usage_ledger
+from . import __version__, model_substitution, usage_ledger
 from .api import (
     _scheduling,
     admin,
@@ -600,7 +600,40 @@ class SchedulerAdmissionHeaders:
         await self.app(scope, receive, _send)
 
 
+class ModelSubstitutionHeaders:
+    """Tell the caller when a resident interchangeable model served its request.
+
+    Same shape as ``SchedulerAdmissionHeaders``, for the same reasons: pure
+    ASGI so the SSE routes are not buffered, and the per-request scope is
+    opened here so the route can mutate it. Opening it here is also where the
+    caller's ``x-engine-model-substitution: off`` opt-out is read, so every
+    route that resolves a model sees it without threading the request through.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        substitution_scope = model_substitution.begin_request(scope.get("headers") or [])
+
+        async def _send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in model_substitution.response_headers(
+                    substitution_scope
+                ).items():
+                    headers.append(name, value)
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+
 app.add_middleware(SchedulerAdmissionHeaders)
+app.add_middleware(ModelSubstitutionHeaders)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(metrics.router, tags=["metrics"])

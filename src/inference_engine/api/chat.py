@@ -58,7 +58,7 @@ from ..schemas import (
     Usage,
     chat_content_text,
 )
-from .. import usage_ledger
+from .. import model_substitution, usage_ledger
 from . import _auto_eval, _fallback, _guardrail, _model_routing, _tool_audit, _usage
 from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
@@ -347,6 +347,7 @@ async def chat_completions(
             decision=decision,
             identity=identity,
             extra_span_attrs=intent_attrs,
+            allow_substitution=True,
         )
 
         auto_eval, policy = _resolve_auto_eval(
@@ -1094,6 +1095,7 @@ async def _blocking_response(
         model=active.model_name,
         request_key_source=_request_key_source(active.adapter),
         **_fallback.response_fields(active.fallback_info),
+        **model_substitution.response_fields(),
         choices=[
             ChatCompletionChoice(
                 index=0,
@@ -1156,6 +1158,7 @@ async def _stream_response(
             model=model_name,
             request_key_source=_request_key_source(adapter),
             **_fallback.response_fields(fallback_info),
+            **model_substitution.response_fields(),
             choices=[
                 ChatCompletionChunkChoice(
                     index=0, delta=delta, finish_reason=finish, logprobs=logprobs
@@ -1177,6 +1180,7 @@ async def _stream_response(
             model=model_name,
             request_key_source=_request_key_source(adapter),
             **_fallback.response_fields(fallback_info),
+            **model_substitution.response_fields(),
             choices=[],
             usage=usage,
         )
