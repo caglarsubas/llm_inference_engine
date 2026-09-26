@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
-from sse_starlette.sse import EventSourceResponse
+from starlette.responses import StreamingResponse
 
 from ..adapters import (
     ContextLengthExceededError,
@@ -64,6 +64,25 @@ from ._scheduling import acquire_slot, scheduler_span_attrs
 from .state import app_state
 
 router = APIRouter()
+
+
+async def _openai_sse_bytes(events: AsyncIterator[dict]) -> AsyncIterator[bytes]:
+    """Serialize each OpenAI stream payload as one independently parseable SSE event."""
+    async for event in events:
+        data = event.get("data")
+        if not isinstance(data, str):
+            raise TypeError("OpenAI SSE event data must be a string")
+        event_name = event.get("event")
+        lines: list[str] = []
+        if event_name is not None:
+            if not isinstance(event_name, str) or "\n" in event_name or "\r" in event_name:
+                raise ValueError("OpenAI SSE event name must be a single line")
+            lines.append(f"event: {event_name}")
+        normalized = data.replace("\r\n", "\n").replace("\r", "\n")
+        lines.extend(f"data: {line}" for line in normalized.split("\n"))
+        yield ("\n".join(lines) + "\n\n").encode("utf-8")
+
+
 log = get_logger("api.chat")
 
 # Marks a delta that has not cleared the streaming output guard yet. The keys
@@ -376,24 +395,28 @@ async def chat_completions(
                 priority=30.0,
                 estimated_tokens=_estimated_chat_tokens(messages, params),
             )
-            stream = EventSourceResponse(
-                _stream_response(
-                    active.adapter,
-                    active.model_name,
-                    messages,
-                    params,
-                    identity,
-                    request,
-                    auto_eval,
-                    policy,
-                    intent_attrs,
-                    lease,
-                    active.fallback_info,
-                    decision,
-                    active.candidate_index,
-                    bool(req.stream_options and req.stream_options.include_usage),
-                    request_id=request_id,
-                )
+            stream = StreamingResponse(
+                _openai_sse_bytes(
+                    _stream_response(
+                        active.adapter,
+                        active.model_name,
+                        messages,
+                        params,
+                        identity,
+                        request,
+                        auto_eval,
+                        policy,
+                        intent_attrs,
+                        lease,
+                        active.fallback_info,
+                        decision,
+                        active.candidate_index,
+                        bool(req.stream_options and req.stream_options.include_usage),
+                        request_id=request_id,
+                    )
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
             settled_by_stream = True
             return stream

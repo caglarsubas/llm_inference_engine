@@ -22,7 +22,7 @@ import pytest
 
 from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
 from inference_engine.adapters.base import GenerationResult
-from inference_engine.api.chat import _stream_response
+from inference_engine.api.chat import _openai_sse_bytes, _stream_response
 from inference_engine.auth import Identity
 from inference_engine.cancellation import Cancellation
 from inference_engine.registry import ModelDescriptor
@@ -77,6 +77,32 @@ class _FakeRequest:
         if self._start == 0.0:
             self._start = asyncio.get_event_loop().time()
         return asyncio.get_event_loop().time() - self._start >= self.drop_after_seconds
+
+
+@pytest.mark.asyncio
+async def test_openai_sse_frames_keep_terminal_usage_and_done_separate() -> None:
+    """Transport coalescing must not turn multiple JSON payloads into one event."""
+
+    async def events() -> AsyncIterator[dict]:
+        yield {"data": '{"choices":[{"finish_reason":"stop"}]}'}
+        yield {"data": '{"choices":[],"usage":{"total_tokens":3}}'}
+        yield {"data": "[DONE]"}
+
+    frames = [frame async for frame in _openai_sse_bytes(events())]
+
+    assert frames == [
+        b'data: {"choices":[{"finish_reason":"stop"}]}\n\n',
+        b'data: {"choices":[],"usage":{"total_tokens":3}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    payloads = [
+        frame.removeprefix(b"data: ").removesuffix(b"\n\n")
+        for frame in frames[:-1]
+    ]
+    assert [json.loads(payload) for payload in payloads] == [
+        {"choices": [{"finish_reason": "stop"}]},
+        {"choices": [], "usage": {"total_tokens": 3}},
+    ]
 
 
 @pytest.mark.asyncio
