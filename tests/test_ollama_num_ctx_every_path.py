@@ -327,7 +327,7 @@ def test_eval_judge_sends_num_ctx(ollama: _Ollama) -> None:
 # --- deployment files ------------------------------------------------------------
 
 
-def test_launchd_engine_template_does_not_shadow_dotenv_n_ctx() -> None:
+def test_launchd_engine_template_does_not_shadow_dotenv() -> None:
     """A launchd ``EnvironmentVariables`` entry outranks ``.env``.
 
     The engine agent runs with ``WorkingDirectory`` at the checkout, so its
@@ -341,7 +341,8 @@ def test_launchd_engine_template_does_not_shadow_dotenv_n_ctx() -> None:
     xml = re.sub(r"<!--.*?-->", "", template.read_text(), flags=re.DOTALL)
     env = plistlib.loads(xml.encode())["EnvironmentVariables"]
 
-    assert "N_CTX" not in env
+    # MEMORY_BUDGET_GB shadowed .env the same way (96.0 over 60).
+    assert {"N_CTX", "MEMORY_BUDGET_GB"}.isdisjoint(env)
 
 
 def test_env_example_n_ctx_matches_the_code_default() -> None:
