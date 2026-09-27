@@ -65,6 +65,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_VLM_MODELS_DIR=/models/hf-vlm \
     AUTH_KEYS_FILE=/config/auth_keys.json \
     AUTO_EVAL_POLICIES_FILE=/config/auto_eval_policies.json \
+    EVAL_RUBRICS_DIR=/state/eval_rubrics \
     MODEL_ROUTING_POLICY_FILE=/config/model_routing_policy.json \
     MODEL_ROUTING_LAST_KNOWN_GOOD_FILE=/state/model_routing_policy.lkg.json \
     MODEL_ROUTING_TRUST_STORE_FILE=/config/model_routing_trust.json \

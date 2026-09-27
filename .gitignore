@@ -9,6 +9,7 @@ __pycache__/
 .auth_keys.json
 .auth_keys.json.bak*
 .auto_eval_policies.json
+.eval_rubrics/
 .model_routing_policy.json
 .model_routing_policy.lkg.json
 .model_routing_trust.json

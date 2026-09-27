@@ -301,7 +301,10 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | POST   | `/v1/rerank`                  | Cohere/Jina-shaped relevance ranking via embedding cosine similarity        |
 | POST   | `/tokenize`                   | vLLM/TGI-shaped token count for a prompt or templated messages; 501 on HTTP-proxy backends |
 | POST   | `/detokenize`                 | Token ids → text, same backend support as `/tokenize`                      |
-| GET    | `/v1/evals/rubrics`           | List built-in + registered rubrics                                         |
+| GET    | `/v1/evals/rubrics`           | List built-in rubrics + the caller tenant's registered rubrics             |
+| GET    | `/v1/evals/rubrics/{name}`    | One rubric in full: prompts, keys, score rule (tenant), digest             |
+| POST   | `/v1/evals/rubrics`           | Register or replace a declarative rubric for the caller's tenant (201/200) |
+| DELETE | `/v1/evals/rubrics/{name}`    | Remove one of the caller tenant's rubrics (built-ins answer 409)           |
 | GET    | `/v1/evals/policy`            | Active server-side auto-eval policy entries (Planeon-driven)               |
 | POST   | `/v1/admin/policies:reload`   | Hot-reload `AUTO_EVAL_POLICIES_FILE`; atomic swap on success, rejects malformed |
 | GET    | `/v1/admin/auth-keys`         | Secret-free loaded key IDs, validity windows, digest, and active count     |
@@ -310,7 +313,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | POST   | `/v1/admin/model-routing-policy:reload` | Verify candidate/LKG and atomically activate on success             |
 | POST   | `/v1/admin/model-routing-pricing:reload` | Validate mounted pricing against the active policy and atomically replace pricing |
 | GET    | `/v1/admin/model-plane-observer` | Payload-free asynchronous reporter delivery status                    |
-| POST   | `/v1/evals/run`               | LLM-as-a-Judge: candidate + rubric → structured verdict                    |
+| POST   | `/v1/evals/run`               | LLM-as-a-Judge: candidate + rubric → structured verdict; scheduled, `n` repeats |
 | POST   | `/v1/chat/completions`        | (extension) `auto_eval: {rubrics, mode}` runs evals inline or in background |
 
 During native startup, the HTTP listener binds before heavyweight model probes
@@ -585,7 +588,8 @@ src/inference_engine/
 │   ├── rubrics.py       # RubricSpec, built-in helpfulness/correctness/safety, RubricRegistry
 │   ├── runner.py        # EvalRunner: candidate + rubric → judge → Verdict (clean/repaired/failed)
 │   ├── policy.py        # PolicyMatch / PolicyEntry / PolicyRegistry — server-side auto-eval rules
-│   └── schemas.py       # EvalRequest, EvalResponse, Verdict, PolicyList
+│   ├── tenant_rubrics.py # declarative per-tenant rubrics: score rules, JSON file per tenant
+│   └── schemas.py       # EvalRequest, EvalResponse, Verdict, RubricDefinition, PolicyList
 ├── api/
 │   ├── state.py         # composite registry + ModelManager + adapter dispatch + EvalRunner
 │   ├── health.py        # /v1/health + /v1/ready — readiness, version, workload surface
@@ -596,7 +600,7 @@ src/inference_engine/
 │   ├── rerank.py        # /v1/rerank — Cohere/Jina-shaped relevance via embedding cosine
 │   ├── tokenize.py      # /tokenize + /detokenize (vLLM/TGI-shaped; 501 on HTTP-proxy backends)
 │   ├── completions.py   # /v1/completions — legacy raw-prompt path, bypasses chat templating
-│   ├── evals.py         # /v1/evals/rubrics + /v1/evals/policy + /v1/evals/run
+│   ├── evals.py         # /v1/evals/rubrics (+ tenant CRUD) + /v1/evals/policy + /v1/evals/run
 │   ├── admin.py         # auth-key, auto-eval, and signed model-routing reload/status endpoints
 │   ├── errors.py        # dual `error` + `detail` envelope, x-request-id, x-ratelimit-* headers
 │   ├── _scheduling.py   # shared API helpers for scheduler admission/span attrs + x-engine-* headers
@@ -685,7 +689,8 @@ tests/                          # 67 modules, all run by `make test`
 │                             #   test_upstream_retry_routing (retry-before-fallback, reservation, ledger)
 ├── [prefix caches]             # test_prefix_cache, test_mlx_prefix_cache
 ├── [evals]                     # test_evals, test_auto_eval, test_auto_eval_policy, test_pairwise,
-│                             #   test_per_rubric_judges, test_admin_policies
+│                             #   test_per_rubric_judges, test_admin_policies, test_tenant_rubrics,
+│                             #   test_eval_run_judging
 ├── [observability]             # test_observability, test_otel_exporter, test_genai_metrics, test_metrics,
 │                             #   test_intent_tracing, test_tool_audit, test_streaming_tool_audit, test_tool_timing
 ├── [auth + governance]         # test_auth, test_admin_auth_keys, test_model_routing_policy,
@@ -835,6 +840,8 @@ common ones, so a var missing from that file is still settable:
 | `GUARDRAIL_FAIL_OPEN_WINDOW_SECONDS` | `60`                                                                         | Longest unbroken fail-open run before the client trips; recovery needs a successful evaluation |
 | `DEFAULT_JUDGE_MODEL`    | `llama3.2:3b`                                                                            | Used by `/v1/evals/run` when `judge_model` is not set    |
 | `AUTO_EVAL_POLICIES_FILE`| `.auto_eval_policies.json`                                                               | JSON array of `{name, match, auto_eval}` rules; missing = no policy |
+| `EVAL_RUBRICS_DIR`       | `.eval_rubrics`                                                                          | One JSON file per tenant of registered rubrics; created on first registration, loaded at startup (a file that will not load fails startup) |
+| `EVAL_RUBRICS_MAX_PER_TENANT` | `64`                                                                                | Registered rubrics a tenant may hold; replacing one never counts against it |
 | `TOOL_AUDIT_ENABLED`     | `true`                                                                                   | Emit `gen_ai.tool_*` span events on every chat completion           |
 | `TOOL_AUDIT_MAX_PAYLOAD_CHARS` | `1024`                                                                             | Per-event truncation cap for arguments / result content             |
 | `TOOL_TIMING_TTL_SECONDS` | `300`                                                                                  | TTL for the call_id → emit-timestamp store; older entries swept on insert |
@@ -1177,7 +1184,51 @@ The most Planeon-aligned slice of the engine: a candidate response goes in, a st
 | `safety`          | scalar   | —                  | `safe` (bool), `concerns` (list) | `1.0` if safe else `0.0`      |
 | `pairwise_quality`| pairwise | `response_b`       | `winner` (`A`/`B`/`tie`), `reason` | `1.0`/`0.0`/`0.5` (unknown→`0.0`)|
 
-All four converge on a single `[0, 1]` (or 1–5) numeric `score` so downstream aggregation treats them the same way. Custom rubrics drop in via `RubricRegistry.register(...)` — that's the seam where Planeon's control plane can ship org-specific judges.
+All four converge on a single `[0, 1]` (or 1–5) numeric `score` so downstream aggregation treats them the same way. `safety` judges the response *against the prompt*: "Sure, here are the steps" is only unsafe once the judge can see what was asked, and a refusal of a harmful request is safe. Custom rubrics drop in via `RubricRegistry.register(...)` in code, or per tenant over the API (below).
+
+#### Tenant rubrics — `POST /v1/evals/rubrics`
+
+A tenant registers its own judges without a release. A tenant rubric is data, never code: two prompts, the keys the verdict must carry, and a score rule picked from a closed set, so nothing a caller sends is executed.
+
+```bash
+curl -X POST .../v1/evals/rubrics -H 'content-type: application/json' -d '{
+  "name": "refund_policy",
+  "description": "Did the agent apply the 30-day refund policy?",
+  "system_prompt": "You judge refund handling. Reply with JSON: score (1-5) and reason.",
+  "user_prompt_template": "CUSTOMER:\n{prompt}\n\nAGENT:\n{response}\n\nReturn your verdict.",
+  "expected_keys": ["score", "reason"],
+  "score": {"kind": "number", "key": "score", "min": 1, "max": 5}
+}'
+# → 201 {"name": "refund_policy", "source": "tenant", "digest": "sha256:…", ...}
+```
+
+| score rule | shape | score |
+|------------|-------|-------|
+| `number`   | `{"kind": "number", "key": k, "min": a, "max": b}` | the number, normalised to 0–1 on `[a, b]`; outside it the verdict is `failed`. Without `min`/`max`, the raw number |
+| `boolean`  | `{"kind": "boolean", "key": k}` | `1.0` for true, `0.0` for false; anything else is `failed` |
+| `choice`   | `{"kind": "choice", "key": k, "values": {"follows": 1, "violates": 0}}` | the mapped value; an unlisted label is `failed` |
+
+Rules the definition must satisfy (422 otherwise): the name matches `^[a-z][a-z0-9_]{1,63}$`; `user_prompt_template` uses only `{prompt}`, `{response}`, `{expected}`, `{response_b}` and must include `{response}` (plus `{response_b}` when `pairwise`, `{expected}` when `requires_expected`); literal braces are doubled; `score.key` is one of `expected_keys`; prompts are at most 8,000 characters. `system_prompt` is sent as written. A built-in name answers `409 rubric_name_reserved`, and a tenant past `EVAL_RUBRICS_MAX_PER_TENANT` answers `409 rubric_limit_reached`.
+
+Rubrics are scoped to the caller's tenant: other tenants neither list nor run them. Posting an existing name replaces it (200) and changes its `digest`, a hash of the definition; `/v1/evals/run` returns `rubric_source` and `rubric_digest`, so a stored verdict names the exact judge that produced it. Each tenant's rubrics are one JSON file under `EVAL_RUBRICS_DIR`, named by a hash of the tenant and replaced atomically, and they survive restarts. Replicas sharing the directory see each other's writes on the next lookup (concurrent writes to one tenant are last-write-wins). The images set `EVAL_RUBRICS_DIR=/state/eval_rubrics`, which the compose stack shares across replicas; the Helm chart's `/state` is per pod (a PVC each with `persistence.enabled`, otherwise an `emptyDir`), so there rubrics are per pod and, without persistence, lost on restart. Auto-eval (`auto_eval` on chat, and policy entries) still uses built-in rubrics only.
+
+#### Repeated judgments — `n` and `temperature`
+
+One judge call is one sample. To see how far a judge agrees with itself, ask for repeats:
+
+```bash
+curl -X POST .../v1/evals/run -d '{"rubric": "refund_policy", "prompt": "…", "response": "…",
+  "seed": 7, "n": 3, "temperature": 0.7}'
+# → {"verdict": {...first repeat...}, "verdicts": [{...}, {...}, {...}],
+#    "repeats": {"n": 3, "parsed": 3, "mean": 0.83, "stdev": 0.12, "min": 0.75, "max": 1.0,
+#                "agreement": 0.67}, ...}
+```
+
+Repeat `i` runs with `seed + i`. `n` is 1–8 and `temperature` 0–2; `n > 1` at temperature 0 is refused (422), since greedy decoding would return the same verdict every time. `agreement` is the share of parsed verdicts giving the most common score. Verdicts that failed to parse count in `n` but not in the statistics, because their 0 is a placeholder rather than a judgment. Each repeat is its own `eval.run` span carrying `eval.repeat.index` and `eval.repeat.n`.
+
+#### Scheduling and typed errors
+
+`/v1/evals/run` is admitted by the tenant scheduler like chat: each judge call takes a slot on the judge's backend+model (workload `eval.run`, priority 0, below interactive chat) and releases it when the call ends, so repeats interleave with other tenants' work. A busy judge answers `429 tenant_queue_full` or `503 tenant_queue_timeout`, and the response carries the `x-engine-queue-*` headers. A prompt that does not fit the judge answers `400 context_length_exceeded`; a judge call past `CHAT_COMPLETION_TIMEOUT_SECONDS` on a cancellable backend answers `504 generation_timeout`; an upstream failure answers `502`. These are the payloads chat completions use. One failed repeat fails the request.
 
 #### Per-rubric judge model overrides
 

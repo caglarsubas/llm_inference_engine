@@ -6,7 +6,10 @@ Flow:
   2. Acquire the judge adapter from the ``ModelManager`` (loads if necessary).
   3. Generate with ``json_mode=True`` so the judge is constrained to return JSON,
      and ``think=False`` so a reasoning judge answers instead of spending the
-     token budget on chain of thought.
+     token budget on chain of thought. Each call runs under the engine's
+     total-elapsed generation deadline and, when the caller passes an
+     ``admission``, inside a scheduler slot. ``n`` repeats make ``n`` calls,
+     repeat ``i`` with ``seed + i``.
   4. Parse + validate against the rubric's ``expected_keys``. If the judge
      wrapped the JSON in surrounding prose, salvage the first balanced
      ``{...}`` block (``parse_status="repaired"``). If we still can't get a
@@ -18,18 +21,24 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 import time
 import uuid
+from collections import Counter
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 
 from .. import model_substitution
-from ..adapters import GenerationParams
+from ..adapters import GenerationParams, InferenceAdapter
+from ..adapters.base import ContextLengthExceededError, GenerationTimeoutError
+from ..generation_deadline import generate_within_deadline
 from ..manager import ModelManager, ModelNotFoundError
 from ..model_substitution import ModelSubstituter, ModelSubstitution
 from ..observability import get_logger, span
 from ..schemas import ChatMessage
 from .rubrics import RubricSpec, render
-from .schemas import Verdict
+from .schemas import RepeatSummary, Verdict
 
 log = get_logger("evals")
 
@@ -38,6 +47,14 @@ log = get_logger("evals")
 # wrapper. Not a full JSON parser — we still json.loads the captured block.
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
+# A verdict is a few dozen tokens of JSON; see ``think=False`` below.
+_JUDGE_MAX_TOKENS = 512
+
+# Opens a scheduler slot around one judge call: given the resolved adapter, the
+# judge model and an estimated token count, it yields span attributes for the
+# admission. The route supplies it; background auto-eval runs without one.
+Admission = Callable[[InferenceAdapter, str, int], AbstractAsyncContextManager[dict]]
+
 
 @dataclass(frozen=True)
 class EvalOutcome:
@@ -45,6 +62,25 @@ class EvalOutcome:
     duration_ms: float
     judge_model: str  # the judge that actually ran
     substitution: ModelSubstitution | None = None
+    # Every repeat's verdict, in seed order; ``verdict`` is the first.
+    verdicts: tuple[Verdict, ...] = ()
+
+
+def summarize_repeats(verdicts: list[Verdict] | tuple[Verdict, ...]) -> RepeatSummary:
+    """Agreement across repeated verdicts, leaving out the ones that failed."""
+    scores = [v.score for v in verdicts if v.parse_status != "failed"]
+    if not scores:
+        return RepeatSummary(n=len(verdicts), parsed=0)
+    modal = Counter(scores).most_common(1)[0][1]
+    return RepeatSummary(
+        n=len(verdicts),
+        parsed=len(scores),
+        mean=statistics.fmean(scores),
+        stdev=statistics.pstdev(scores),
+        min=min(scores),
+        max=max(scores),
+        agreement=modal / len(scores),
+    )
 
 
 class EvalRunner:
@@ -84,8 +120,18 @@ class EvalRunner:
         candidate_completion_id: str | None = None,
         candidate_b_completion_id: str | None = None,
         tenant: str | None = None,
+        temperature: float = 0.0,
+        n: int = 1,
+        admission: Admission | None = None,
     ) -> EvalOutcome:
-        """Run a single evaluation, reporting which judge actually ran."""
+        """Run one evaluation ``n`` times, reporting which judge actually ran.
+
+        Raises ``ContextLengthExceededError`` when the rendered prompt does not
+        fit the judge, and ``GenerationTimeoutError`` when a judge call passes
+        the generation deadline; one failed repeat fails the evaluation.
+        """
+        if n < 1:
+            raise ValueError("n must be at least 1")
         if rubric.requires_expected and not expected:
             raise ValueError(f"rubric {rubric.name!r} requires an 'expected' reference")
         if rubric.pairwise and not response_b:
@@ -120,21 +166,78 @@ class EvalRunner:
             ChatMessage(role="system", content=rubric.system_prompt),
             ChatMessage(role="user", content=rendered_user),
         ]
-        params = GenerationParams(
-            temperature=0.0,  # deterministic-ish judging
-            top_p=1.0,
-            top_k=0,
-            max_tokens=512,
-            seed=seed,
-            json_mode=True,
-            # A verdict is a few dozen tokens of JSON. Left to its default a
-            # reasoning judge (qwen3.8) thinks first and spends all 512 tokens
-            # there, returning empty content: 7 of 10 judge calls on
-            # 2026-09-26 parsed as ``failed`` with ``raw_head=''`` this way.
-            think=False,
+        estimated_tokens = max(
+            1, (len(rubric.system_prompt) + len(rendered_user)) // 4 + _JUDGE_MAX_TOKENS
         )
 
         start = time.perf_counter()
+        verdicts: list[Verdict] = []
+        for index in range(n):
+            params = GenerationParams(
+                # 0.0 by default: deterministic-ish judging. Repeats raise it so
+                # the spread across verdicts measures the judge, not the seed.
+                temperature=temperature,
+                top_p=1.0,
+                top_k=0,
+                max_tokens=_JUDGE_MAX_TOKENS,
+                seed=None if seed is None else seed + index,
+                json_mode=True,
+                # A verdict is a few dozen tokens of JSON. Left to its default a
+                # reasoning judge (qwen3.8) thinks first and spends all 512 tokens
+                # there, returning empty content: 7 of 10 judge calls on
+                # 2026-09-26 parsed as ``failed`` with ``raw_head=''`` this way.
+                think=False,
+            )
+            slot = (
+                admission(adapter, judge_model, estimated_tokens)
+                if admission is not None
+                else nullcontext({})
+            )
+            async with slot as admission_attrs:
+                verdicts.append(
+                    await self._judge_once(
+                        adapter,
+                        rubric,
+                        messages,
+                        params,
+                        judge_model=judge_model,
+                        requested_judge=requested_judge,
+                        substitution=substitution,
+                        candidate_model=candidate_model,
+                        candidate_completion_id=candidate_completion_id,
+                        candidate_b_completion_id=candidate_b_completion_id,
+                        tenant=tenant,
+                        repeat=(index, n) if n > 1 else None,
+                        extra_attrs=admission_attrs or {},
+                    )
+                )
+
+        duration_ms = (time.perf_counter() - start) * 1000
+        return EvalOutcome(
+            verdict=verdicts[0],
+            duration_ms=duration_ms,
+            judge_model=judge_model,
+            substitution=substitution,
+            verdicts=tuple(verdicts),
+        )
+
+    async def _judge_once(
+        self,
+        adapter: InferenceAdapter,
+        rubric: RubricSpec,
+        messages: list[ChatMessage],
+        params: GenerationParams,
+        *,
+        judge_model: str,
+        requested_judge: str,
+        substitution: ModelSubstitution | None,
+        candidate_model: str | None,
+        candidate_completion_id: str | None,
+        candidate_b_completion_id: str | None,
+        tenant: str | None,
+        repeat: tuple[int, int] | None,
+        extra_attrs: dict,
+    ) -> Verdict:
         attrs: dict[str, object] = {
             "eval.rubric.name": rubric.name,
             "eval.judge.model": judge_model,
@@ -158,9 +261,19 @@ class EvalRunner:
             attrs["eval.pairwise"] = True
         if tenant:
             attrs["planeon.tenant"] = tenant
+        if repeat is not None:
+            attrs["eval.repeat.index"], attrs["eval.repeat.n"] = repeat
+        attrs.update(extra_attrs)
 
         with span("eval.run", **attrs) as s:
-            result = await adapter.generate(messages, params)
+            try:
+                result = await generate_within_deadline(adapter, messages, params, judge_model)
+            except ContextLengthExceededError:
+                s.bind(**{"error.type": "context_length_exceeded"})
+                raise
+            except GenerationTimeoutError:
+                s.bind(**{"error.type": "generation_timeout"})
+                raise
             verdict = self._parse(result.text, rubric)
 
             s.bind(
@@ -171,14 +284,7 @@ class EvalRunner:
                     "gen_ai.usage.output_tokens": result.completion_tokens,
                 }
             )
-
-        duration_ms = (time.perf_counter() - start) * 1000
-        return EvalOutcome(
-            verdict=verdict,
-            duration_ms=duration_ms,
-            judge_model=judge_model,
-            substitution=substitution,
-        )
+        return verdict
 
     def _parse(self, raw: str, rubric: RubricSpec) -> Verdict:
         """Extract structured verdict from the judge's response, attempting repair."""
