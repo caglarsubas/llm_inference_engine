@@ -613,6 +613,12 @@ class Settings(BaseSettings):
     # still works); malformed file fails startup loudly.
     auto_eval_policies_file: Path = Field(default=Path(".auto_eval_policies.json"))
 
+    # Tenant rubrics registered through ``POST /v1/evals/rubrics``: one JSON
+    # file per tenant in this directory, created on the first registration and
+    # loaded at startup. A file that will not load fails startup loudly.
+    eval_rubrics_dir: Path = Field(default=Path(".eval_rubrics"))
+    eval_rubrics_max_per_tenant: int = Field(default=64, ge=1, le=1024)
+
     # Tool-call audit. When enabled, every chat completion emits span events
     # for inbound tool-result messages and outbound tool_calls. Argument and
     # result payloads are truncated to ``tool_audit_max_payload_chars`` to

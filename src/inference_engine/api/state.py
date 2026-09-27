@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from ..adapters import InferenceAdapter
 from ..adapters.llama_cpp import LlamaCppAdapter
 from ..config import settings
-from ..evals import EvalRunner, PolicyRegistry, RubricRegistry
+from ..evals import EvalRunner, PolicyRegistry, RubricRegistry, TenantRubricStore
 from ..manager import ModelManager
 from ..model_substitution import ModelSubstituter, parse_groups
 from ..model_routing import ActivatedModelRoutingPolicy
@@ -166,6 +166,9 @@ class AppState:
 
         # LLM-as-a-Judge plumbing.
         self.rubric_registry = RubricRegistry.with_builtins()
+        # In memory until the lifespan loads ``EVAL_RUBRICS_DIR``, so a route
+        # test that bypasses the lifespan never writes into the working tree.
+        self.tenant_rubrics = TenantRubricStore()
         self.model_substituter = ModelSubstituter(
             parse_groups(settings.model_substitution_groups)
         )

@@ -27,7 +27,7 @@ from .api.errors import error_response, install_error_handlers
 from .api.state import app_state
 from .auth import load_keys
 from .config import settings
-from .evals import load_policy
+from .evals import TenantRubricStore, load_policy
 from .guardrail import GuardrailClient, load_guardrail_config
 from .model_plane_control import (
     ModelPlaneRuntimeControl,
@@ -290,6 +290,10 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     n_keys = load_keys()
     app_state.policy_registry = load_policy(settings.auto_eval_policies_file)
+    app_state.tenant_rubrics = TenantRubricStore.load(
+        settings.eval_rubrics_dir,
+        max_per_tenant=settings.eval_rubrics_max_per_tenant,
+    )
     routing_policy = activate_model_routing_policy_from_settings()
     routing_pricing = load_model_routing_pricing_catalog(
         settings.model_routing_pricing_file,
