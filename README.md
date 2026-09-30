@@ -586,7 +586,7 @@ src/inference_engine/
 ├── response_normalize.py # repairs raw model text into tool_calls / reasoning_content
 ├── evals/
 │   ├── rubrics.py       # RubricSpec, built-in helpfulness/correctness/safety, RubricRegistry
-│   ├── runner.py        # EvalRunner: candidate + rubric → judge → Verdict (clean/repaired/failed)
+│   ├── runner.py        # EvalRunner: candidate + rubric → judge → Verdict (clean/repaired/truncated/failed)
 │   ├── policy.py        # PolicyMatch / PolicyEntry / PolicyRegistry — server-side auto-eval rules
 │   ├── tenant_rubrics.py # declarative per-tenant rubrics: score rules, JSON file per tenant
 │   └── schemas.py       # EvalRequest, EvalResponse, Verdict, RubricDefinition, PolicyList
@@ -1315,7 +1315,8 @@ eval.judge.model              = llama3.2:3b
 eval.candidate.model          = llama3.2:1b           ← what produced the response
 eval.candidate.completion_id  = chatcmpl-abc123       ← correlation back to the chat span
 eval.score                    = 0.0
-eval.parse_status             = clean | repaired | failed
+eval.parse_status             = clean | repaired | truncated | failed
+gen_ai.response.finish_reasons = stop | length
 gen_ai.usage.input_tokens     = 126
 gen_ai.usage.output_tokens    = 25
 gen_ai.system                 = llama_cpp
@@ -2098,10 +2099,11 @@ The eval spans land in OTel ~1.4s later, joined back to the chat by `eval.candid
 
 ### JSON repair
 
-Judge models occasionally wrap their structured output in commentary or fences. The runner has three parse states:
+Judge models occasionally wrap their structured output in commentary or fences, or run out of tokens partway through it. The runner has four parse states:
 
 * **`clean`** — judge returned valid JSON with the rubric's expected keys.
 * **`repaired`** — judge wrapped JSON in prose (e.g. ```` ```json ... ``` ````); we extract the first balanced `{...}` block and re-parse.
+* **`truncated`** — judge hit the 512-token cap (`finish_reason="length"`) inside a string, usually the justification after the score; we close the object and keep the score, provided it isn't read from the cut-off string. `parsed` holds the justification as far as the judge got.
 * **`failed`** — judge refused or returned malformed output; we surface `score=0.0` so aggregations don't silently inherit garbage.
 
 The `parse_status` is always on the response and on the span, so eval failures are first-class signals rather than hidden behind exceptions.
