@@ -12,9 +12,12 @@ Flow:
      repeat ``i`` with ``seed + i``.
   4. Parse + validate against the rubric's ``expected_keys``. If the judge
      wrapped the JSON in surrounding prose, salvage the first balanced
-     ``{...}`` block (``parse_status="repaired"``). If we still can't get a
-     dict matching the schema, return ``parse_status="failed"`` with score=0
-     so the downstream aggregator can decide what to do.
+     ``{...}`` block (``parse_status="repaired"``). If the judge ran out of
+     tokens (``finish_reason="length"``) inside a string, close the object
+     and keep the score when it does not come from the cut string
+     (``parse_status="truncated"``). If we still can't get a dict matching the
+     schema, return ``parse_status="failed"`` with score=0 so the downstream
+     aggregator can decide what to do.
 """
 
 from __future__ import annotations
@@ -47,8 +50,17 @@ log = get_logger("evals")
 # wrapper. Not a full JSON parser — we still json.loads the captured block.
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
-# A verdict is a few dozen tokens of JSON; see ``think=False`` below.
+# A verdict is a score plus a short reason; see ``think=False`` below. Up to
+# 2026-09-30, 49 of 1357 qwen3.6:27b verdicts ran into this cap mid-
+# justification. It stays at 512 because those calls already took up to 99 s,
+# and doubling it walks them toward the generation deadline. The built-in
+# rubrics ask for a short reason instead, and a cut-off verdict whose score was
+# already written is kept (``parse_status="truncated"``).
 _JUDGE_MAX_TOKENS = 512
+
+# Appended to the string the judge was cut off in, to check the score does not
+# depend on it.
+_CUT_MARK = "\u2026"
 
 # Opens a scheduler slot around one judge call: given the resolved adapter, the
 # judge model and an estimated token count, it yields span attributes for the
@@ -274,20 +286,27 @@ class EvalRunner:
             except GenerationTimeoutError:
                 s.bind(**{"error.type": "generation_timeout"})
                 raise
-            verdict = self._parse(result.text, rubric)
+            verdict = self._parse(
+                result.text, rubric, truncated=result.finish_reason == "length"
+            )
 
             s.bind(
                 **{
                     "eval.score": verdict.score,
                     "eval.parse_status": verdict.parse_status,
+                    "gen_ai.response.finish_reasons": result.finish_reason,
                     "gen_ai.usage.input_tokens": result.prompt_tokens,
                     "gen_ai.usage.output_tokens": result.completion_tokens,
                 }
             )
         return verdict
 
-    def _parse(self, raw: str, rubric: RubricSpec) -> Verdict:
-        """Extract structured verdict from the judge's response, attempting repair."""
+    def _parse(self, raw: str, rubric: RubricSpec, *, truncated: bool = False) -> Verdict:
+        """Extract structured verdict from the judge's response, attempting repair.
+
+        ``truncated`` says the judge stopped at the token cap rather than
+        finishing its answer.
+        """
         # 1) Try clean: the whole response IS valid JSON.
         try:
             parsed = json.loads(raw)
@@ -316,13 +335,75 @@ class EvalRunner:
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 pass
 
-        # 3) Give up. Surface a 0 score so downstream aggregation isn't poisoned.
+        # 3) Truncated: the judge hit the token cap partway through a string,
+        #    typically the justification after an already-written score.
+        if truncated and (closed := _close_truncated(raw)) is not None:
+            as_cut, marked = closed
+            try:
+                parsed = json.loads(as_cut)
+                if self._matches_schema(parsed, rubric):
+                    score = rubric.score_extractor(parsed)
+                    # A score read from the cut string could come from a
+                    # clipped label; keep it only if marking the cut string
+                    # leaves it unchanged.
+                    if rubric.score_extractor(json.loads(marked)) == score:
+                        return Verdict(
+                            score=score,
+                            parsed=parsed,
+                            raw=raw,
+                            parse_status="truncated",
+                        )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                pass
+
+        # 4) Give up. Surface a 0 score so downstream aggregation isn't poisoned.
         log.warning("eval.parse_failed", rubric=rubric.name, raw_head=raw[:200])
         return Verdict(score=0.0, parsed={}, raw=raw, parse_status="failed")
 
     @staticmethod
     def _matches_schema(parsed: object, rubric: RubricSpec) -> bool:
         return isinstance(parsed, dict) and all(k in parsed for k in rubric.expected_keys)
+
+
+def _close_truncated(raw: str) -> tuple[str, str] | None:
+    """Close the JSON object a judge was cut off inside a string of.
+
+    Returns the object closed as written and closed with ``_CUT_MARK`` added to
+    the cut string, or None unless ``raw`` holds one unfinished object whose
+    text ends inside a string. A cut anywhere else, such as after a number that
+    may itself be clipped, is not salvaged.
+    """
+    start = raw.find("{")
+    if start < 0:
+        return None
+    body = raw[start:]
+    closers: list[str] = []
+    in_string = escaped = False
+    for ch in body:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            closers.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            # A mismatched bracket is malformed; a closed outer object is not
+            # truncated.
+            if not closers or closers.pop() != ch or not closers:
+                return None
+    if not in_string:
+        return None
+    # Drop an escape the cut split: a lone backslash, or ``\u`` short of 4 hex.
+    tail = re.search(r"(\\+)(u[0-9a-fA-F]{0,3})?$", body)
+    if tail and len(tail.group(1)) % 2:
+        body = body[: tail.start()] + tail.group(1)[:-1]
+    closing = '"' + "".join(reversed(closers))
+    return body + closing, body + _CUT_MARK + closing
 
 
 # Convenience helper for routes / tests that want a stable id.

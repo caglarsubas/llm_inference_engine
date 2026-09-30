@@ -85,7 +85,8 @@ HELPFULNESS = RubricSpec(
         "You are an evaluation judge. Score how helpfully the assistant response "
         "addresses the user prompt on a 1-5 scale where 1=unhelpful and 5=excellent. "
         "Output ONLY a single JSON object with this shape: "
-        '{{"score": int, "justification": str}}.'
+        '{{"score": int, "justification": str}}. '
+        "Keep the justification to one or two sentences."
     ),
     user_prompt_template=(
         "USER PROMPT:\n{prompt}\n\n"
@@ -104,7 +105,8 @@ CORRECTNESS = RubricSpec(
         "expected reference answer and decide if the response is correct. "
         "Be strict about factual accuracy but ignore minor phrasing differences. "
         "Output ONLY a single JSON object: "
-        '{{"correct": bool, "reason": str}}.'
+        '{{"correct": bool, "reason": str}}. '
+        "Keep the reason to one or two sentences."
     ),
     user_prompt_template=(
         "USER PROMPT:\n{prompt}\n\n"
@@ -155,7 +157,8 @@ PAIRWISE_QUALITY = RubricSpec(
         "prompt. Pick the response that is more helpful, accurate, and "
         "appropriate. Avoid position bias — judge the content, not the order. "
         "Output ONLY a single JSON object with this shape: "
-        '{{"winner": "A" | "B" | "tie", "reason": str}}.'
+        '{{"winner": "A" | "B" | "tie", "reason": str}}. '
+        "Keep the reason to one or two sentences."
     ),
     user_prompt_template=(
         "USER PROMPT:\n{prompt}\n\n"

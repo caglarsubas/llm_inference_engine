@@ -70,7 +70,7 @@ class Verdict(BaseModel):
         description="Validated structured fields the judge returned.",
     )
     raw: str = Field(..., description="The judge model's full text response.")
-    parse_status: Literal["clean", "repaired", "failed"] = "clean"
+    parse_status: Literal["clean", "repaired", "truncated", "failed"] = "clean"
 
 
 class RepeatSummary(BaseModel):
