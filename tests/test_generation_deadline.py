@@ -148,3 +148,40 @@ def test_only_socket_backed_adapters_claim_cancellability() -> None:
     # Blocking native generation in a worker thread — cancellation abandons the
     # result, it does not stop the compute.
     assert LlamaCppAdapter.generation_is_cancellable is False
+
+
+@pytest.mark.asyncio
+async def test_the_timeout_log_separates_host_sleep_from_generation(
+    deadline, monkeypatch
+) -> None:
+    """Under uvloop on macOS the deadline counts time the host spent asleep.
+
+    On 2026-09-29 four judge calls 504'd with "exceeded the server-side timeout
+    of 240 seconds" after 3–43 s of generation: the laptop slept 15 minutes
+    mid-call and the deadline fired on wake. The log line has to tell that
+    apart from a generation that really ran too long.
+    """
+    from inference_engine import generation_deadline as gd
+
+    events: list[tuple[str, dict]] = []
+
+    class _Log:
+        def warning(self, event: str, **fields) -> None:
+            events.append((event, fields))
+
+    readings = iter([1_000.0, 1_900.0])  # 900 s pass on the sleep-inclusive clock
+    monkeypatch.setattr(gd, "log", _Log())
+    monkeypatch.setattr(gd, "_suspend_inclusive_now", lambda: next(readings))
+    deadline(0.05)
+
+    with pytest.raises(GenerationTimeoutError):
+        await _generate_within_deadline(
+            _SlowAdapter(cancellable=True, seconds=5.0), [], GenerationParams(), "m"
+        )
+
+    [(event, fields)] = events
+    assert event == "generation.deadline_exceeded"
+    assert 0.05 <= fields["awake_seconds"] < 1.0
+    assert fields["host_suspended_seconds"] == pytest.approx(
+        900.0 - fields["awake_seconds"], abs=0.01
+    )
