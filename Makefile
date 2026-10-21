@@ -9,6 +9,17 @@ install-metal:
 install-mlx:
 	uv sync --extra mlx
 
+.PHONY: gemma3-pull gemma3-4b-pull gemma3-12b-pull
+# Pull into the Ollama server configured by OLLAMA_HOST (local by default).
+# Point the engine's OLLAMA_HTTP_ENDPOINT at that same server for image inputs.
+gemma3-pull: gemma3-4b-pull gemma3-12b-pull
+
+gemma3-4b-pull:
+	ollama pull gemma3:4b
+
+gemma3-12b-pull:
+	ollama pull gemma3:12b
+
 install-otel:
 	uv sync --extra otel --extra dev
 

@@ -126,3 +126,82 @@ def test_show_failure_leaves_the_model_discoverable(monkeypatch: pytest.MonkeyPa
     assert "context_length" not in models[0].params
     # The identity fields the adapter actually routes on must survive.
     assert models[0].params["model_id"] == "seer:27b"
+
+
+@pytest.mark.parametrize("model", ["gemma3:4b", "gemma3:12b"])
+def test_gemma3_vision_is_discoverable_in_catalog(
+    monkeypatch: pytest.MonkeyPatch, model: str,
+) -> None:
+    from inference_engine.api.models import _catalog_entry
+
+    payload = _show_payload(arch="gemma3", context_length=131_072)
+    payload["capabilities"] = ["completion", "vision"]
+    tags = {"models": [{"name": model, "size": 3_000_000_000, "digest": "sha256:gemma"}]}
+    transport = _Transport(show_result=payload, tags=tags)
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+    registry = OllamaHttpRegistry(ENDPOINT)
+
+    entry = _catalog_entry(registry.list_models()[0])
+    registry._refresh(force=True)
+
+    assert entry.id == model
+    assert entry.backend == "ollama_http"
+    assert entry.upstream_model_id == model
+    assert entry.modality == "text+image->text"
+    assert entry.supports_images is True
+    assert entry.context_length == 131_072
+    assert entry.supports_strict_image_json is None
+    assert transport.show_calls == [model]
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "modality"),
+    [
+        (["completion"], "text->text"),
+        (["vision"], "text+image->text"),
+        ([], None),
+        (None, None),
+        ("vision", None),
+        (["vision", 1], None),
+    ],
+)
+def test_modality_uses_only_explicit_valid_capabilities(
+    monkeypatch: pytest.MonkeyPatch, capabilities: object, modality: str | None,
+) -> None:
+    from inference_engine.api.models import _catalog_entry
+
+    transport = _Transport(show_result={"capabilities": capabilities})
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+
+    entry = _catalog_entry(OllamaHttpRegistry(ENDPOINT).list_models()[0])
+
+    assert entry.modality == modality
+    assert entry.supports_images == ("image" in modality if modality else None)
+    assert entry.context_length is None
+
+
+def test_show_failure_retries_metadata_on_next_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _Transport(show_result=TimeoutError("upstream slow"))
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+    registry = OllamaHttpRegistry(ENDPOINT)
+
+    assert "modality" not in registry.list_models()[0].params
+    transport.show_result = {"capabilities": ["completion", "vision"]}
+    registry._refresh(force=True)
+
+    assert registry.list_models()[0].params["modality"] == "text+image->text"
+    assert transport.show_calls == ["seer:27b", "seer:27b"]
+
+
+def test_re_pull_refreshes_vision_capability(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _Transport(show_result={"capabilities": ["completion"]})
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+    registry = OllamaHttpRegistry(ENDPOINT)
+
+    assert registry.list_models()[0].params["modality"] == "text->text"
+    transport.tags = _tags_payload(digest="sha256:new-vision-weights")
+    transport.show_result = {"capabilities": ["completion", "vision"]}
+    registry._refresh(force=True)
+
+    assert registry.list_models()[0].params["modality"] == "text+image->text"
+    assert transport.show_calls == ["seer:27b", "seer:27b"]

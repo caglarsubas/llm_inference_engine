@@ -1374,6 +1374,59 @@ The cosine-similarity approach is **only as discriminative as the loaded embeddi
 
 Real cross-encoder rerankers (`bge-reranker`, `jina-reranker`) take `(query, doc)` pairs through a classification head and produce a single relevance scalar per pair — substantially higher quality than embedding-cosine. They need a new adapter capability (`rerank_pair(query, doc) -> float`) that's distinct enough to warrant its own round; the current implementation gets you the API shape, the observability, and a working signal on real embedding models without that complexity.
 
+### Gemma 3 multimodal models through Ollama
+
+The local Ollama path serves [Gemma 3 4B](https://ollama.com/library/gemma3:4b)
+and [Gemma 3 12B](https://ollama.com/library/gemma3:12b) with text and image inputs.
+Install both models on the Ollama server used by this engine:
+
+```bash
+make gemma3-pull
+# Individual models: make gemma3-4b-pull / make gemma3-12b-pull
+```
+
+Set `OLLAMA_HTTP_ENDPOINT=http://127.0.0.1:11434` and
+`PREFER_OLLAMA_HTTP_OVER_GGUF=true` in the engine's `.env`; restart the engine
+if changing those settings. For a remote Ollama server, set `OLLAMA_HOST` when
+pulling and point `OLLAMA_HTTP_ENDPOINT` at the same server. With those settings
+already active, discovery picks up newly pulled models automatically (allow
+the 30-second registry TTL plus the model snapshot refresh interval).
+
+Use the exact service model ids `gemma3:4b` and `gemma3:12b` at
+`POST /v1/chat/completions`. Send images as inline base64 data URLs:
+
+```python
+import base64
+import os
+from pathlib import Path
+
+import httpx
+
+image = base64.b64encode(Path("photo.jpg").read_bytes()).decode("ascii")
+response = httpx.post(
+    "http://127.0.0.1:8080/v1/chat/completions",
+    headers={"Authorization": f"Bearer {os.environ['ENGINE_API_KEY']}"},
+    json={
+        "model": "gemma3:4b",  # or gemma3:12b
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}},
+        ]}],
+        "max_tokens": 256,
+    },
+    timeout=120,
+)
+response.raise_for_status()
+print(response.json()["choices"][0]["message"]["content"])
+```
+
+`GET /v1/models` lists the installed ids. `GET /v1/models.data` reports
+`modality="text+image->text"` and `supports_images=true` when Ollama's
+`/api/show` advertises `vision`. This metadata does not imply strict image-JSON
+benchmark qualification. Remote image URLs must be encoded inline for this
+backend. The separate `gemma-3-4b-it:vllm` and `gemma-3-12b-it:vllm` catalog
+entries require their own configured upstreams.
+
 ### Continuous chat batching via vLLM-as-subprocess
 
 `/v1/chat/completions` continuous-batching for autoregressive decode is the largest engineering line on the roadmap and the one we deliberately stayed out of for rounds 16+ — implementing it well means owning a paged-attention scheduler. Rather than reimplementing vLLM, the engine plugs vLLM in as an upstream sidecar via a third adapter slot.
