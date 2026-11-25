@@ -2,6 +2,7 @@ from pathlib import PurePosixPath
 
 from fastapi.testclient import TestClient
 
+from inference_engine import auth
 from inference_engine.config import settings
 from inference_engine.main import app
 from inference_engine.portfolio import load_portfolio
@@ -46,11 +47,13 @@ def test_distribution_artifacts_are_unique_and_gemma_vision_includes_projectors(
     assert gemma_multimodal == {"google/gemma-3-4b-it", "google/gemma-3-12b-it"}
 
 
-def test_portfolio_route_obeys_auth_and_filters_without_loading_models(monkeypatch):
+def test_portfolio_route_obeys_auth_and_filters_without_loading_models(monkeypatch, request):
     client = TestClient(app)
+    request.addfinalizer(auth._reset_for_tests)
+    auth._set_keys_for_tests([("portfolio-test-key", "catalog-reader")])
     monkeypatch.setattr(settings, "auth_enabled", True)
     assert client.get("/v1/model-portfolio").status_code == 401
-    monkeypatch.setattr(settings, "auth_enabled", False)
+    client.headers["Authorization"] = "Bearer portfolio-test-key"
     response = client.get("/v1/model-portfolio", params={"task": "decision"})
     assert response.status_code == 200
     catalog = response.json()
