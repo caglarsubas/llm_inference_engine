@@ -6,6 +6,15 @@ The service is **backend-agnostic**: a thin adapter interface (`InferenceAdapter
 
 Scope note: this is the **model plane**, not a full API gateway. It governs and serves models — signed routing, tenant admission, evals, and OTel evidence — while ingress termination, cross-tenant quota, and the control plane itself stay outside it. Read the gaps below against that boundary.
 
+The [model portfolio](docs/MODEL_PORTFOLIO.md) lists versioned upstream releases
+by task, architecture, size, modality, and license. The [selection guide](docs/MODEL_PORTFOLIO_RESEARCH.md)
+compares benchmark results, adoption and local checks by workload. The [family coverage audit](docs/MODEL_FAMILY_COVERAGE.md)
+lists missing publisher releases and community builds, with a command to refresh the counts. List pinned builds
+and their download sizes with `uv run python scripts/model_portfolio.py variants`.
+Browse the catalog with
+`GET /v1/model-portfolio` or `uv run python scripts/model_portfolio.py`.
+Use the `data` array from `GET /v1/models` to see which models a deployment can serve.
+
 ## Why this stack
 
 Synthesised from the multi-LLM guide (GPT, Claude, Gemini, Grok all converge on the same shape):
