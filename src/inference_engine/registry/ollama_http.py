@@ -58,12 +58,12 @@ class OllamaHttpRegistry:
         self._endpoint = endpoint.rstrip("/") if endpoint else ""
         self._cache: dict[str, ModelDescriptor] = {}
         self._cache_expires_at: float = 0.0
-        # Trained context window per blob digest. Keyed by digest rather than
-        # by name because the window is a property of the weights: a re-pull
+        # Context window and modality per blob digest. Keyed by digest rather than
+        # by name because these are properties of the weights: a re-pull
         # that changes the digest re-asks, and a plain TTL expiry does not.
         # Without this the 30 s refresh would re-issue /api/show for every
-        # model forever, to learn a number that cannot have changed.
-        self._context_lengths: dict[str, int] = {}
+        # model forever, to learn metadata that cannot have changed.
+        self._model_metadata: dict[str, dict] = {}
 
     @property
     def endpoint(self) -> str:
@@ -99,8 +99,8 @@ class OllamaHttpRegistry:
             return None
         return list(payload.get("models") or [])
 
-    def _fetch_context_length(self, qname: str) -> int | None:
-        """Trained context window for one model, via ``POST /api/show``.
+    def _fetch_metadata(self, qname: str) -> dict | None:
+        """Context window and input modality from ``POST /api/show``.
 
         ``/api/tags`` does not carry it, so without this call every
         ollama-served model reports a null window in ``/v1/models`` while
@@ -111,8 +111,10 @@ class OllamaHttpRegistry:
         (e.g. ``qwen35.context_length``). We read ``general.architecture`` to
         build that key and fall back to a suffix scan, because the prefix is
         the GGUF architecture string and not always the name we know the
-        model by. Any failure returns None: an advisory field is not worth
-        failing discovery over.
+        model by. The same response reports ``capabilities``: only an explicit
+        ``vision`` capability marks a model as accepting images. Missing or
+        malformed capabilities leave modality unknown. Any failure returns
+        None so discovery survives and the next refresh can retry.
         """
         if not self._endpoint:
             return None
@@ -128,9 +130,19 @@ class OllamaHttpRegistry:
             log.warning("ollama_http.show_fetch_failed", model=qname, error=str(exc))
             return None
 
+        if not isinstance(body, dict):
+            return None
+        metadata: dict = {}
+        capabilities = body.get("capabilities")
+        if isinstance(capabilities, list) and all(isinstance(c, str) for c in capabilities):
+            if "vision" in capabilities:
+                metadata["modality"] = "text+image->text"
+            elif "completion" in capabilities:
+                metadata["modality"] = "text->text"
+
         info = body.get("model_info")
         if not isinstance(info, dict):
-            return None
+            return metadata
         arch = info.get("general.architecture")
         candidates = []
         if isinstance(arch, str) and arch:
@@ -139,16 +151,17 @@ class OllamaHttpRegistry:
         for key in candidates:
             value = info.get(key)
             if isinstance(value, int) and value > 0:
-                return value
-        return None
+                metadata["context_length"] = value
+                break
+        return metadata
 
-    def _context_length_for(self, qname: str, digest: str) -> int | None:
-        if digest and digest in self._context_lengths:
-            return self._context_lengths[digest]
-        value = self._fetch_context_length(qname)
+    def _metadata_for(self, qname: str, digest: str) -> dict:
+        if digest and digest in self._model_metadata:
+            return self._model_metadata[digest]
+        value = self._fetch_metadata(qname)
         if value is not None and digest:
-            self._context_lengths[digest] = value
-        return value
+            self._model_metadata[digest] = value
+        return value or {}
 
     def _refresh(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -198,9 +211,7 @@ class OllamaHttpRegistry:
                 )
                 continue
             params: dict = {"model_id": qname, "digest": digest}
-            context_length = self._context_length_for(qname, digest)
-            if context_length is not None:
-                params["context_length"] = context_length
+            params.update(self._metadata_for(qname, digest))
 
             desc = ModelDescriptor(
                 name=model_name,
