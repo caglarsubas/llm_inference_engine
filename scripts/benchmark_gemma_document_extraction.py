@@ -14,6 +14,7 @@ import math
 import os
 import re
 import statistics
+import subprocess
 import tempfile
 import threading
 import time
@@ -48,6 +49,21 @@ def utc() -> str:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def verify_listener_pid(url: str, pid: int) -> None:
+    address = httpx.URL(url)
+    if address.scheme not in {"http", "https"} or address.host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("Process memory measurement requires a dedicated local Ollama daemon")
+    port = address.port or (443 if address.scheme == "https" else 80)
+    # Require a unique owner across IPv4 and IPv6. A different daemon on the
+    # same localhost port would make the measured process tree ambiguous.
+    found = subprocess.run(
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if found.returncode != 0 or set(found.stdout.split()) != {str(pid)}:
+        raise ValueError(f"Cannot verify PID {pid} as the sole listener on Ollama port {port}")
 
 
 def manifest_digest(value: str) -> str:
@@ -264,11 +280,12 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Choose a new output path to preserve existing evidence")
-    if httpx.URL(args.dedicated_ollama_url).host not in {"127.0.0.1", "localhost", "::1"}:
-        parser.error("Process memory measurement requires a dedicated local Ollama daemon")
     if args.ollama_pid <= 0 or not re.fullmatch(r"[a-f0-9]{40}", args.gateway_revision):
         parser.error("Supply a positive daemon PID and an exact Git commit for the gateway")
-    os.kill(args.ollama_pid, 0)
+    try:
+        verify_listener_pid(args.dedicated_ollama_url, args.ollama_pid)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        parser.error(str(exc))
     fixture_data = FIXTURE.read_bytes()
     fixture = json.loads(fixture_data)
     images = []

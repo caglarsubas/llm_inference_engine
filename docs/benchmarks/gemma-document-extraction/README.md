@@ -67,6 +67,10 @@ substitution. Leave the daemon empty at startup. The driver releases each
 model through Ollama after its eight requests. For an authenticated gateway,
 supply its token in `INFERENCE_ENGINE_API_KEY`.
 
+For macOS physical-footprint measurements, pass the PID of the daemon that
+listens on the dedicated port. The driver checks its ownership with `lsof`
+before sending requests.
+
 ```sh
 python scripts/benchmark_gemma_document_extraction.py \
   --gateway-url "$GATEWAY_URL" --dedicated-ollama-url "$OLLAMA_URL" \

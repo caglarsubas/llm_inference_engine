@@ -1,9 +1,26 @@
 import hashlib
 import json
+import subprocess
 
 import pytest
 
 from scripts import benchmark_gemma_document_extraction as benchmark
+
+
+@pytest.mark.parametrize(
+    ("listeners", "correct"), [("811\n", True), ("722\n", False), ("811\n722\n", False)],
+)
+def test_memory_measurement_requires_the_dedicated_listener_pid(monkeypatch, listeners, correct):
+    def lsof(command, **kwargs):
+        assert command == ["lsof", "-nP", "-iTCP:12434", "-sTCP:LISTEN", "-t"]
+        return subprocess.CompletedProcess(command, 0, stdout=listeners)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", lsof)
+    if correct:
+        benchmark.verify_listener_pid("http://127.0.0.1:12434", 811)
+    else:
+        with pytest.raises(ValueError, match="sole listener"):
+            benchmark.verify_listener_pid("http://127.0.0.1:12434", 811)
 
 
 @pytest.mark.parametrize(
