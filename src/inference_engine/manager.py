@@ -1,8 +1,8 @@
 """ModelManager — multi-model hot-keep with LRU eviction.
 
-Holds zero or more loaded `InferenceAdapter` instances, one per model. Routes
-requests by model id. When the next load would exceed `memory_budget_bytes`,
-evicts the least-recently-used model first.
+Caches adapters and routes requests by model id. The weight budget applies to
+GGUF and MLX weights loaded by this process. An upstream adapter holds an HTTP
+client; its server independently manages weight residency.
 
 Lock model
 ----------
@@ -43,6 +43,7 @@ from .observability import get_logger
 from .registry import ModelDescriptor, OllamaRegistry
 
 log = get_logger("manager")
+_MANAGED_WEIGHT_FORMATS = ("gguf", "mlx")
 
 
 class ModelNotFoundError(KeyError):
@@ -75,23 +76,39 @@ class ModelManager:
 
     @property
     def loaded_bytes(self) -> int:
-        return sum(desc.size_bytes for _, desc in self._loaded.values())
+        """On-disk weight sizes for cached native models, used as a memory estimate."""
+        return sum(
+            desc.size_bytes for _, desc in self._loaded.values()
+            if desc.format in _MANAGED_WEIGHT_FORMATS
+        )
 
     @property
     def memory_budget_bytes(self) -> int:
         return self._budget
 
     def loaded_models(self) -> list[str]:
-        return list(self._loaded.keys())
+        """Models whose adapters hold native weights, in LRU order."""
+        return [
+            name for name, (_, desc) in self._loaded.items()
+            if desc.format in _MANAGED_WEIGHT_FORMATS
+        ]
 
     def loaded_summary(self) -> list[dict]:
         return [
             {"model": name, "size_bytes": desc.size_bytes, "backend": adapter.backend_name}
             for name, (adapter, desc) in self._loaded.items()
+            if desc.format in _MANAGED_WEIGHT_FORMATS
+        ]
+
+    def cached_upstream_clients(self) -> list[dict]:
+        return [
+            {"model": name, "backend": adapter.backend_name}
+            for name, (adapter, desc) in self._loaded.items()
+            if desc.format not in _MANAGED_WEIGHT_FORMATS
         ]
 
     def iter_loaded(self) -> list[tuple[str, InferenceAdapter, ModelDescriptor]]:
-        """Snapshot the (name, adapter, descriptor) of every currently-loaded model.
+        """Snapshot the (name, adapter, descriptor) of every cached adapter.
 
         Returns a list (not an iterator) so callers don't pin lock state during
         iteration. Order is LRU: oldest-touched first.
@@ -151,7 +168,8 @@ class ModelManager:
             await adapter.load(descriptor)
 
             async with self._meta_lock:
-                await self._evict_until_fits(descriptor.size_bytes)
+                if descriptor.format in _MANAGED_WEIGHT_FORMATS:
+                    await self._evict_until_fits(descriptor.size_bytes)
                 self._loaded[key] = (adapter, descriptor)
 
             log.info(
@@ -172,8 +190,11 @@ class ModelManager:
         sub-millisecond. Holding the lock across unload keeps the cache view
         consistent for any concurrent observers.
         """
-        while self._loaded and self.loaded_bytes + incoming_bytes > self._budget:
-            evicted_key, (evicted_adapter, evicted_desc) = self._loaded.popitem(last=False)
+        bytes_to_free = self.loaded_bytes + incoming_bytes - self._budget
+        for evicted_key in self.loaded_models():
+            if bytes_to_free <= 0:
+                break
+            evicted_adapter, evicted_desc = self._loaded.pop(evicted_key)
             log.info(
                 "manager.evict",
                 model=evicted_key,
@@ -181,6 +202,7 @@ class ModelManager:
                 reason="lru_over_budget",
             )
             await evicted_adapter.unload()
+            bytes_to_free -= evicted_desc.size_bytes
 
     async def shutdown(self) -> None:
         async with self._meta_lock:

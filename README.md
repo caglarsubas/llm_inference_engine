@@ -289,7 +289,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 
 | Method | Path                          | Notes                                                                      |
 |--------|-------------------------------|----------------------------------------------------------------------------|
-| GET    | `/v1/health`                  | Liveness + every currently-loaded model + budget usage                     |
+| GET    | `/v1/health`                  | Liveness, native weight budget, cached upstream clients and observed Ollama residency |
 | GET    | `/v1/ready`                   | Readiness probe; returns 503 + `Retry-After` while startup probes run      |
 | GET    | `/v1/metrics`, `/metrics`     | Prometheus scrape — engine internals plus OTel GenAI semconv instruments   |
 | GET    | `/v1/models`                  | All models discoverable in the unified registry                            |
@@ -507,6 +507,25 @@ loaded_bytes / budget: 2.03 GB / 60.00 GB
 ```
 
 When the next load would exceed `MEMORY_BUDGET_GB` (default 60 GB), the **least-recently-used** model is unloaded first. Touch order is updated on every `get()`, so a model that's actively being hit is never the eviction victim. The same eviction policy works across formats — an MLX model can evict a GGUF model and vice versa.
+
+`GET /v1/health` reports native GGUF and MLX weights in `loaded_models`. Their
+artifact sizes contribute to `loaded_bytes`. The `cached_upstream_clients`
+list identifies reusable HTTP clients by model and backend. A client can stay
+cached after its upstream unloads the weights.
+
+For the configured `OLLAMA_HTTP_ENDPOINT`, `ollama_residency` reports the
+models returned by Ollama's `/api/ps`, including each model's total
+`size_bytes` and its `size_vram_bytes` portion when available. Health,
+metrics and model substitution reuse each observation for two seconds. A
+successful probe sets `status` to `observed` and returns an empty list when
+Ollama holds no models. A failed probe reports `unavailable` and a disabled
+endpoint reports `unconfigured`, both with `models: null`. Readiness is
+independent of this probe. `/v1/metrics` exposes the same status as
+`inference_engine_ollama_residency_status` and emits the resident model count
+and per-model byte gauges for observed values.
+
+The [Ministral 8B keep-alive benchmark](docs/MINISTRAL_8B_KEEP_ALIVE.md)
+compares first-token latency, reloads and peak memory at 30 and 60 minutes.
 
 ### curl example
 
@@ -1158,7 +1177,7 @@ Open Grafana, then **Dashboards → Inference Engine → Inference Engine — Ov
 * **Token throughput** — input / output tokens/sec by tenant, plus a combined-by-model panel.
 * **Tenant × model traffic matrix** — last-5m request count per `(tenant, model)` pair as a heatmap, the panel Planeon uses to spot tenant-specific routing skew.
 * **Eval signals (LLM-as-a-Judge)** — `eval.run` rate by rubric + p95 latency by rubric, populated by the auto-eval policy or explicit `/v1/evals/*` calls.
-* **Operational health** — loaded models per replica, loaded model bytes, prefix-cache size by model, and tenant scheduler pressure. These are scraped from the engine's own `/v1/metrics` (Prometheus exposition), not from OTel — they're cheap counters/gauges the engine maintains directly.
+* **Operational health** shows native model counts and weight artifact sizes per engine replica, prefix-cache size by model, and each replica's view of Ollama's resident models, their total and VRAM bytes, and the residency probe status. Prometheus scrapes these gauges from `/v1/metrics`.
 
 Trace correlation is wired both ways: any series in a metric panel can be clicked to land on the matching trace in Jaeger (via `exemplarTraceIdDestinations` on the Prometheus datasource), and Jaeger spans link back to the metric series via `tracesToMetrics`.
 

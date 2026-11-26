@@ -20,6 +20,8 @@ async def health() -> dict:
         "loaded_models": app_state.manager.loaded_summary(),
         "loaded_bytes": app_state.manager.loaded_bytes,
         "memory_budget_bytes": app_state.manager.memory_budget_bytes,
+        "cached_upstream_clients": app_state.manager.cached_upstream_clients(),
+        "ollama_residency": await app_state.ollama_residency.report(settings.ollama_http_endpoint),
     }
 
 
