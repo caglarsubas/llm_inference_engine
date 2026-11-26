@@ -2,10 +2,10 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from .. import model_evidence
 from ..adapters.base import effective_n_ctx
 from ..auth import require_identity
 from ..config import settings
-from ..model_evidence import evaluations_for
 from ..registry import (
     VLLMRegistry,
     descriptor_allows,
@@ -346,7 +346,7 @@ def _catalog_entry(desc) -> ModelCatalogEntry:
     return ModelCatalogEntry(
         **fields,
         artifact_identity=identity,
-        workload_evaluations=evaluations_for(
+        workload_evaluations=model_evidence.evaluations_for(
             route_id=desc.qualified_name,
             backend=fields["backend"],
             artifact_identity=identity,
