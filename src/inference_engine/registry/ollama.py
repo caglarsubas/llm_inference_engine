@@ -19,12 +19,14 @@ that downstream adapters can load.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from ..observability import get_logger
+from .artifact import ArtifactIdentity, ollama_sha256, reported_quantization
 
 log = get_logger("registry.ollama")
 
@@ -61,6 +63,7 @@ class ModelDescriptor:
     # HTTP backends only: base URL of the upstream server. None for local
     # backends (gguf, mlx) where ``model_path`` is the locator.
     endpoint: str | None = None
+    artifact_identity: ArtifactIdentity | None = None
 
     @property
     def qualified_name(self) -> str:
@@ -125,6 +128,32 @@ class OllamaRegistry:
         except json.JSONDecodeError:
             return None
 
+    def _config_quantization(self, manifest: dict) -> str | None:
+        config_ref = manifest.get("config")
+        if not isinstance(config_ref, dict):
+            return None
+        digest = ollama_sha256(config_ref.get("digest"))
+        if not digest:
+            return None
+        # Discovery needs only the small config JSON. A malformed reference
+        # to a weight layer must never make enumeration read the whole model.
+        try:
+            with self._blob_path("sha256:" + digest).open("rb") as blob:
+                config = json.loads(blob.read(1024 * 1024))
+        except (OSError, ValueError):
+            return None
+        return reported_quantization(config.get("file_type")) if isinstance(config, dict) else None
+
+    def _layer_matches_store(self, layer: dict) -> bool:
+        """Check the content-addressed locator and size, without reading the weights."""
+        sha = ollama_sha256(layer.get("digest"))
+        if not sha:
+            return False
+        try:
+            return self._blob_path("sha256:" + sha).stat().st_size == layer.get("size")
+        except OSError:
+            return False
+
     def _record_skip(
         self,
         manifest_path: Path,
@@ -168,8 +197,9 @@ class OllamaRegistry:
         qname = f"{model}:{tag}"
 
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = json.loads(manifest_bytes)
+        except (OSError, ValueError) as exc:
             self._record_skip(
                 manifest_path,
                 qname,
@@ -179,21 +209,28 @@ class OllamaRegistry:
             return None
 
         gguf_path: Path | None = None
+        weight_sha256 = None
         size_bytes = 0
         template: str | None = None
         system: str | None = None
         params: dict = {}
         projector_path: Path | None = None
+        complete_layers = True
 
         for layer in manifest.get("layers") or []:
             media = layer.get("mediaType", "")
             digest = layer.get("digest", "")
-            if not media.startswith(OLLAMA_MEDIA_PREFIX) or not digest:
+            if not media.startswith(OLLAMA_MEDIA_PREFIX):
                 continue
 
             kind = media[len(OLLAMA_MEDIA_PREFIX) :]
+            if kind in {"model", "projector", "template", "system", "params"}:
+                complete_layers = complete_layers and self._layer_matches_store(layer)
+            if not digest:
+                continue
             if kind == "model":
                 gguf_path = self._blob_path(digest)
+                weight_sha256 = ollama_sha256(digest)
                 size_bytes = int(layer.get("size", 0))
             elif kind == "projector":
                 projector_path = self._blob_path(digest)
@@ -235,6 +272,17 @@ class OllamaRegistry:
             # only source that serves it whole.
             params = {**params, "projector_path": str(projector_path)}
 
+        quantization = self._config_quantization(manifest)
+        identity = None
+        if complete_layers:
+            identity = ArtifactIdentity(
+                source="ollama_manifest",
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                weight_sha256=weight_sha256,
+                quantization=quantization,
+            )
+        elif quantization:
+            identity = ArtifactIdentity(source="ollama_manifest", quantization=quantization)
         return ModelDescriptor(
             name=model,
             tag=tag,
@@ -246,10 +294,12 @@ class OllamaRegistry:
             system=system,
             params=params,
             size_bytes=size_bytes,
+            artifact_identity=identity,
         )
 
     def list_models(self) -> list[ModelDescriptor]:
         descriptors: list[ModelDescriptor] = []
+        cache: dict[str, ModelDescriptor] = {}
         for manifest_path in self.manifests_dir.rglob("*"):
             if not manifest_path.is_file() or manifest_path.name.startswith("."):
                 continue
@@ -257,8 +307,9 @@ class OllamaRegistry:
             if desc is None:
                 continue
             descriptors.append(desc)
-            self._cache[desc.qualified_name] = desc
-            self._cache[desc.fully_qualified_name] = desc
+            cache[desc.qualified_name] = desc
+            cache[desc.fully_qualified_name] = desc
+        self._cache = cache
         return sorted(descriptors, key=lambda d: d.qualified_name)
 
     def list_skipped(self) -> list[SkippedManifest]:

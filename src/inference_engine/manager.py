@@ -40,7 +40,7 @@ from collections.abc import Callable
 
 from .adapters import InferenceAdapter
 from .observability import get_logger
-from .registry import ModelDescriptor, OllamaRegistry
+from .registry import ArtifactIdentity, ModelDescriptor, OllamaRegistry, descriptor_deployment_key
 
 log = get_logger("manager")
 _MANAGED_WEIGHT_FORMATS = ("gguf", "mlx")
@@ -118,6 +118,26 @@ class ModelManager:
     def resolve(self, model_id: str) -> ModelDescriptor | None:
         """The descriptor ``model_id`` would load, without loading anything."""
         return self._resolver(model_id)
+
+    def artifact_for_route(
+        self, discovered: ModelDescriptor, observed: ArtifactIdentity | None,
+    ) -> ArtifactIdentity | None:
+        """Identity this route can report at snapshot time without loading or evicting.
+
+        Native adapters retain the weights they loaded. HTTP clients retain their
+        endpoint and upstream ID, and the upstream resolves that ID per request.
+        """
+        cached = self._loaded.get(discovered.qualified_name)
+        if cached is None:
+            return observed
+        _, loaded = cached
+        if loaded.format != discovered.format:
+            return None
+        if loaded.format in _MANAGED_WEIGHT_FORMATS:
+            return loaded.artifact_identity
+        if descriptor_deployment_key(loaded) == descriptor_deployment_key(discovered):
+            return observed
+        return None
 
     # -----------------------------------------------------------------
     # core path

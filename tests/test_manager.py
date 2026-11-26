@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +11,7 @@ import pytest
 from inference_engine.adapters import GenerationParams, InferenceAdapter, StreamChunk
 from inference_engine.adapters.base import GenerationResult
 from inference_engine.manager import ModelManager, ModelNotFoundError
-from inference_engine.registry import ModelDescriptor
+from inference_engine.registry import ArtifactIdentity, ModelDescriptor
 
 
 @dataclass
@@ -115,6 +115,49 @@ async def test_repeat_get_returns_cached_adapter() -> None:
 
     assert adapter1 is adapter2
     assert FakeAdapter.load_calls == ["a:1"]
+    assert FakeAdapter.unload_calls == []
+
+
+@pytest.mark.parametrize("fmt", ["gguf", "mlx"])
+async def test_native_artifact_follows_cached_weights_until_eviction(fmt) -> None:
+    loaded = ArtifactIdentity(source="ollama_manifest", manifest_sha256="a" * 64)
+    current = ArtifactIdentity(source="ollama_manifest", manifest_sha256="b" * 64)
+    if fmt == "mlx":
+        loaded = ArtifactIdentity(source="hf_snapshot", repo_id="org/model", revision="a" * 40)
+        current = ArtifactIdentity(source="hf_snapshot", repo_id="org/model", revision="b" * 40)
+    first = replace(_desc("model", "latest", 100, fmt), artifact_identity=loaded)
+    second = replace(first, artifact_identity=current)
+    other = _desc("other", "latest", 100)
+    registry = _registry(first, other)
+    mgr = ModelManager(registry, lambda _d: FakeAdapter(), memory_budget_bytes=100)
+    assert mgr.artifact_for_route(first, loaded) == loaded
+    await mgr.get(first.qualified_name)
+    registry.descriptors[first.qualified_name] = second
+    assert mgr.artifact_for_route(second, current) == loaded
+    assert mgr.artifact_for_route(replace(second, format="ollama_http"), current) is None
+    assert FakeAdapter.unload_calls == []
+    await mgr.get(other.qualified_name)
+    assert mgr.artifact_for_route(second, current) == current
+    await mgr.get(second.qualified_name)
+    assert mgr.artifact_for_route(second, current) == current
+
+
+@pytest.mark.parametrize("fmt", ["ollama_http", "vllm", "openrouter"])
+async def test_upstream_artifact_requires_cached_client_destination(fmt) -> None:
+    old = ArtifactIdentity(source="operator_config", weight_sha256="a" * 64)
+    new = ArtifactIdentity(source="operator_config", weight_sha256="b" * 64)
+    remote = replace(
+        _desc("model", "public-alias", 0, fmt),
+        endpoint="http://first.test", params={"model_id": "served/tag"}, artifact_identity=old,
+    )
+    mgr = ModelManager(_registry(remote), lambda _d: FakeAdapter(), memory_budget_bytes=100)
+    await mgr.get(remote.qualified_name)
+    retag = replace(remote, endpoint="http://first.test/", artifact_identity=new)
+    assert mgr.artifact_for_route(retag, new) == new
+    assert mgr.artifact_for_route(replace(retag, endpoint="http://second.test"), new) is None
+    assert mgr.artifact_for_route(replace(retag, params={"model_id": "another/tag"}), new) is None
+    assert mgr.artifact_for_route(replace(retag, format="gguf"), new) is None
+    assert FakeAdapter.load_calls == [remote.qualified_name]
     assert FakeAdapter.unload_calls == []
 
 

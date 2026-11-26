@@ -102,6 +102,79 @@ def test_re_pull_under_a_new_digest_re_asks(monkeypatch: pytest.MonkeyPatch) -> 
     assert transport.show_calls == ["seer:27b", "seer:27b"]
 
 
+def test_artifact_is_refreshed_when_tag_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _Transport(show_result={}, tags=_tags_payload(digest="a" * 64))
+    transport.tags["models"][0]["details"] = {"quantization_level": "Q4_K_M"}
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+    registry = OllamaHttpRegistry(ENDPOINT)
+    first = registry.get("seer:27b").artifact_identity
+    assert first.source == "ollama_tags"
+    assert first.manifest_sha256 == "a" * 64
+    assert first.weight_sha256 is None
+    assert first.quantization == "Q4_K_M"
+
+    transport.tags = _tags_payload(digest="sha256:" + "b" * 64)
+    registry.invalidate()
+    updated = registry.get("seer:27b").artifact_identity
+    assert updated.manifest_sha256 == "b" * 64
+    assert updated.quantization is None
+
+
+def test_inventory_outage_keeps_route_and_withdraws_build_evidence(monkeypatch) -> None:
+    from inference_engine import model_evidence
+    from inference_engine.api.models import _catalog_entry
+
+    digest = "a" * 64
+    ledger = model_evidence._EvidenceFile.model_validate({"evaluations": [{
+        "route_id": "seer:27b", "backend": "ollama_http", "workload": "classification",
+        "artifact": {"manifest_sha256": digest}, "checked_at": "2026-11-05T00:00:00Z",
+        "status": "passed", "metrics": {"correct": 3}, "evidence": "docs/benchmarks/run.json",
+    }]})
+    monkeypatch.setattr(model_evidence, "load_evaluations", lambda: ledger)
+    transport = _Transport(show_result={}, tags=_tags_payload(digest=digest))
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+    registry = OllamaHttpRegistry(ENDPOINT)
+    initial = registry.get("seer:27b")
+    assert _catalog_entry(initial).workload_evaluations[0].last_passing.status == "passed"
+
+    def unavailable(*args, **kwargs):
+        raise TimeoutError("inventory unavailable")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", unavailable)
+    registry.invalidate()
+    for name in (initial.qualified_name, initial.fully_qualified_name):
+        stale = registry.get(name)
+        assert stale.params["model_id"] == initial.qualified_name
+        assert "digest" not in stale.params
+        assert stale.artifact_identity is None
+        assert _catalog_entry(stale).workload_evaluations == []
+
+    transport.tags = _tags_payload(digest="b" * 64)
+    monkeypatch.setattr(module.urllib.request, "urlopen", transport)
+    registry.invalidate()
+    recovered = _catalog_entry(registry.list_models()[0])
+    assert recovered.artifact_identity.manifest_sha256 == "b" * 64
+    assert recovered.workload_evaluations == []
+
+
+def test_missing_digest_preserves_explicit_quantization(monkeypatch: pytest.MonkeyPatch) -> None:
+    tags = _tags_payload(digest="abbreviated")
+    tags["models"][0]["details"] = {"quantization_level": "F16"}
+    monkeypatch.setattr(module.urllib.request, "urlopen", _Transport(show_result={}, tags=tags))
+    identity = OllamaHttpRegistry(ENDPOINT).get("seer:27b").artifact_identity
+    assert identity.quantization == "F16"
+    assert identity.manifest_sha256 is None
+
+
+@pytest.mark.parametrize("surface", ["tags", "show"])
+def test_remote_model_alias_is_excluded(monkeypatch: pytest.MonkeyPatch, surface: str) -> None:
+    tags = _tags_payload(digest="a" * 64)
+    show = {}
+    (tags["models"][0] if surface == "tags" else show)["remote_model"] = "hosted-model"
+    monkeypatch.setattr(module.urllib.request, "urlopen", _Transport(show_result=show, tags=tags))
+    assert OllamaHttpRegistry(ENDPOINT).list_models() == []
+
+
 def test_unprefixed_context_length_key_still_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """The prefix is the GGUF arch string, which need not match the model name."""
     payload = {"model_info": {"something.context_length": 8192}}

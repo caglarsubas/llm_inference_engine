@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "workload": "document_extraction",
+  "fields": [
+    "invoice_id",
+    "issuer",
+    "issue_date",
+    "currency",
+    "amount_due"
+  ],
+  "thresholds": {
+    "schema_valid_pages": 8,
+    "exact_pages": 7,
+    "exact_fields": 38
+  },
+  "cases": [
+    {
+      "id": "page-01",
+      "image": "pages/page-01.png",
+      "sha256": "ebbe984ceda7020ba4ab82313a3a115c70654924ba8a81507cfaca6689b5f4d5",
+      "layout": "left-aligned invoice and two item rows",
+      "expected": {
+        "invoice_id": "CL-1842",
+        "issuer": "Cedar Loom Studio",
+        "issue_date": "2026-04-17",
+        "currency": "USD",
+        "amount_due": "132.50"
+      }
+    },
+    {
+      "id": "page-02",
+      "image": "pages/page-02.png",
+      "sha256": "b11f61309c2ba391f412a416616ca03497994281284e0ee0a7e49a64146a30d7",
+      "layout": "two columns with purchase order and due-date distractors",
+      "expected": {
+        "invoice_id": "MF-9037",
+        "issuer": "Marble Finch Supply",
+        "issue_date": "2026-05-08",
+        "currency": "EUR",
+        "amount_due": "987.00"
+      }
+    },
+    {
+      "id": "page-03",
+      "image": "pages/page-03.png",
+      "sha256": "a98403e32895756865fb8ff5e26dc16f5e85fda1763214b50b1a2f9e19e2af8c",
+      "layout": "narrow monospaced till invoice with deposit",
+      "expected": {
+        "invoice_id": "NQ-2026-88",
+        "issuer": "NORTH QUAY PRINT",
+        "issue_date": "2026-03-06",
+        "currency": "GBP",
+        "amount_due": "64.75"
+      }
+    },
+    {
+      "id": "page-04",
+      "image": "pages/page-04.png",
+      "sha256": "8d9dba751d2434b0897d87c3c99b7585f56b17114ace42717e1afca68a2e671b",
+      "layout": "slightly rotated scan with buyer and seller names",
+      "expected": {
+        "invoice_id": "AK-0074",
+        "issuer": "Amber Kite Works",
+        "issue_date": "2026-06-19",
+        "currency": "CAD",
+        "amount_due": "1248.09"
+      }
+    },
+    {
+      "id": "page-05",
+      "image": "pages/page-05.png",
+      "sha256": "468545e8a8242454ffbdbc19f49bbe32dad253cea4193ab8afa87733212b0702",
+      "layout": "fully paid invoice with zero remaining balance",
+      "expected": {
+        "invoice_id": "SC-6201",
+        "issuer": "Spruce Canal Goods",
+        "issue_date": "2026-08-11",
+        "currency": "AUD",
+        "amount_due": "0.00"
+      }
+    },
+    {
+      "id": "page-06",
+      "image": "pages/page-06.png",
+      "sha256": "aa39b932b1ae1961c3239d936df80b30e40a52007b2d5f9cec3a1eb7e20609f0",
+      "layout": "invoice omits issue date and gives a payment deadline",
+      "expected": {
+        "invoice_id": "PH-2049",
+        "issuer": "PATTERN HOUSE",
+        "issue_date": null,
+        "currency": "NZD",
+        "amount_due": "61.30"
+      }
+    },
+    {
+      "id": "page-07",
+      "image": "pages/page-07.png",
+      "sha256": "ab6030051650aeb53230054ad7867f45ea067993fa64081e89f6d77daf2f7cf1",
+      "layout": "slightly blurred copy with no currency printed",
+      "expected": {
+        "invoice_id": "WT-1095",
+        "issuer": "Willow Tram Services",
+        "issue_date": "2026-07-03",
+        "currency": null,
+        "amount_due": "887.29"
+      }
+    },
+    {
+      "id": "page-08",
+      "image": "pages/page-08.png",
+      "sha256": "9efce76b02a7b056f089e5024e9e330a9f407ecee0ff803f7541024687ad1a75",
+      "layout": "line-item table with Swiss thousands separator and discount",
+      "expected": {
+        "invoice_id": "EA-0008",
+        "issuer": "Elm Arc Materials",
+        "issue_date": "2026-09-14",
+        "currency": "CHF",
+        "amount_due": "1425.40"
+      }
+    }
+  ]
+}

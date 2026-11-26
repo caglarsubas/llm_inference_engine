@@ -40,9 +40,11 @@ import json
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
 from ..observability import get_logger
+from .artifact import ArtifactIdentity, ollama_sha256, reported_quantization
 from .ollama import ModelDescriptor
 
 log = get_logger("registry.ollama_http")
@@ -89,7 +91,7 @@ class OllamaHttpRegistry:
         try:
             with urllib.request.urlopen(url, timeout=_FETCH_TIMEOUT) as resp:
                 body = resp.read().decode("utf-8")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, UnicodeError) as exc:
             log.warning("ollama_http.tags_fetch_failed", endpoint=self._endpoint, error=str(exc))
             return None
         try:
@@ -97,7 +99,11 @@ class OllamaHttpRegistry:
         except json.JSONDecodeError as exc:
             log.warning("ollama_http.tags_malformed", endpoint=self._endpoint, error=str(exc))
             return None
-        return list(payload.get("models") or [])
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list) or not all(isinstance(e, dict) for e in models):
+            log.warning("ollama_http.tags_malformed", endpoint=self._endpoint)
+            return None
+        return models
 
     def _fetch_metadata(self, qname: str) -> dict | None:
         """Context window and input modality from ``POST /api/show``.
@@ -132,6 +138,8 @@ class OllamaHttpRegistry:
 
         if not isinstance(body, dict):
             return None
+        if body.get("remote_model") or body.get("remote_host"):
+            return {"remote_model": True}
         metadata: dict = {}
         capabilities = body.get("capabilities")
         if isinstance(capabilities, list) and all(isinstance(c, str) for c in capabilities):
@@ -169,8 +177,15 @@ class OllamaHttpRegistry:
             return
         models = self._fetch_tags()
         if models is None:
-            # Back off briefly on failure so we don't hammer a flapping
-            # ollama instance.  Keep the previous cache (possibly empty).
+            # Preserve routing during an outage. A mutable tag's current build
+            # is unknown until inventory succeeds again.
+            self._cache = {
+                alias: replace(
+                    desc, artifact_identity=None,
+                    params={key: val for key, val in desc.params.items() if key != "digest"},
+                )
+                for alias, desc in self._cache.items()
+            }
             self._cache_expires_at = now + min(_TTL_SECONDS, 5.0)
             return
 
@@ -190,19 +205,9 @@ class OllamaHttpRegistry:
             size = int(entry.get("size") or 0)
             digest = str(entry.get("digest") or "")
 
-            # Skip Ollama Cloud aliases — manifests that resolve to hosted
-            # inference rather than local weights.  Two heuristics, both
-            # required for a robust skip:
-            #   1. ``size == 0`` — Ollama reports zero bytes for cloud-only
-            #      entries because there's no local blob.
-            #   2. ``tag == "cloud"`` — the conventional Ollama tag for
-            #      cloud-hosted variants (``minimax-m2.7:cloud``).
-            # On-prem deployments don't have (and shouldn't need) the
-            # OLLAMA_API_KEY required to reach those, and surfacing them in
-            # /v1/models would give clients a phantom option that 500s on
-            # call.  We log the skip so operators see why a manifest they
-            # can see in ``ollama list`` is missing from the engine.
-            if size <= 0 or tag == "cloud":
+            # Cloud manifests may advertise their remote target in tags or
+            # show metadata. Older daemons expose zero size or the cloud tag.
+            if size <= 0 or tag == "cloud" or entry.get("remote_model") or entry.get("remote_host"):
                 log.info(
                     "ollama_http.skip_cloud_alias",
                     model=qname,
@@ -212,6 +217,11 @@ class OllamaHttpRegistry:
                 continue
             params: dict = {"model_id": qname, "digest": digest}
             params.update(self._metadata_for(qname, digest))
+            if params.get("remote_model"):
+                continue
+            manifest_sha = ollama_sha256(digest)
+            details = entry.get("details")
+            quant = reported_quantization(details.get("quantization_level")) if isinstance(details, dict) else None
 
             desc = ModelDescriptor(
                 name=model_name,
@@ -226,6 +236,9 @@ class OllamaHttpRegistry:
                 params=params,
                 size_bytes=size,
                 endpoint=self._endpoint,
+                artifact_identity=ArtifactIdentity(
+                    source="ollama_tags", manifest_sha256=manifest_sha, quantization=quant
+                ) if manifest_sha or quant else None,
             )
             new_cache[desc.qualified_name] = desc
             new_cache[desc.fully_qualified_name] = desc

@@ -52,6 +52,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .artifact import configured_artifact
 from .ollama import ModelDescriptor, SkippedManifest
 
 
@@ -76,16 +77,19 @@ class VLLMRegistry:
 
     def list_models(self) -> list[ModelDescriptor]:
         if not self.config_path.is_file():
+            self._cache = {}
             return []
 
         raw = self._read_entries(self.config_path, "vLLM")
         descriptors: list[ModelDescriptor] = []
+        cache: dict[str, ModelDescriptor] = {}
         for i, entry in enumerate(raw):
             desc = self._parse_entry(i, entry)
             descriptors.append(desc)
-            self._cache[desc.qualified_name] = desc
-            self._cache[desc.fully_qualified_name] = desc
+            cache[desc.qualified_name] = desc
+            cache[desc.fully_qualified_name] = desc
 
+        self._cache = cache
         return sorted(descriptors, key=lambda d: d.qualified_name)
 
     @staticmethod
@@ -157,6 +161,7 @@ class VLLMRegistry:
             params=params,
             size_bytes=int(entry.get("size_bytes", 0)),
             endpoint=endpoint,
+            artifact_identity=configured_artifact(entry),
         )
 
     def list_skipped(self) -> list[SkippedManifest]:

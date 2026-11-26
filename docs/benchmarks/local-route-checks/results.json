@@ -1,0 +1,835 @@
+{
+  "started_at": "2026-11-26T05:38:25+00:00",
+  "rules": {
+    "short_text_extraction": "All three trimmed, visible assistant answers exactly match the labels.",
+    "short_text_retrieval": "All six finite nonzero vectors have the declared dimension and each query's labeled passage has a strictly higher cosine similarity than both alternatives."
+  },
+  "chat_settings": {
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 17,
+    "max_tokens": 128,
+    "stream": false
+  },
+  "chat_cases": [
+    {
+      "id": "bay",
+      "prompt": "Dispatch note: previous loading bay B-12; current loading bay D-04. Return only the current bay code.",
+      "label": "D-04"
+    },
+    {
+      "id": "lot",
+      "prompt": "Inspection note: lot XK-31 passed; lot QP-82 was rejected. Return only the ID of the rejected lot.",
+      "label": "QP-82"
+    },
+    {
+      "id": "count",
+      "prompt": "Packing note: 14 cartons were planned. The final count was 11. Return only the final count as an integer.",
+      "label": "11"
+    }
+  ],
+  "passages": [
+    "To restore access after forgetting your password, follow the account recovery link.",
+    "Postal parcels can be traced using the tracking number on the dispatch receipt.",
+    "To reschedule a dental visit, contact the clinic's appointment desk."
+  ],
+  "queries": [
+    {
+      "text": "How can I move my dentist appointment to another day?",
+      "positive_index": 2
+    },
+    {
+      "text": "I cannot remember my login credentials. How do I reset them?",
+      "positive_index": 0
+    },
+    {
+      "text": "Where is the package I mailed last week?",
+      "positive_index": 1
+    }
+  ],
+  "requested_routes": [
+    "embeddinggemma:300m",
+    "qwen3-embedding:0.6b",
+    "llama3.2:1b",
+    "llama3.2:3b",
+    "granite4.1:3b",
+    "ministral-3:3b",
+    "ministral-3:8b",
+    "gemma4:e2b",
+    "ministral-3:14b",
+    "gemma4:e4b",
+    "qwen3.6:27b",
+    "qwen3.8:27b",
+    "gemma4:26b",
+    "gemma4:31b",
+    "nemotron-3-nano:30b",
+    "nemotron3:33b",
+    "minicpm-v-4.5-gguf-q4-k-m:dmr"
+  ],
+  "results": [
+    {
+      "model": "embeddinggemma:300m",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1"
+      },
+      "digest": "sha256:85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1",
+      "workload": "short_text_retrieval",
+      "quantization": "BF16",
+      "rows": [
+        {
+          "query_index": 0,
+          "cosines": [
+            0.2004694,
+            0.1888218,
+            0.7252984
+          ],
+          "correct": true
+        },
+        {
+          "query_index": 1,
+          "cosines": [
+            0.6816564,
+            0.2371002,
+            0.3464456
+          ],
+          "correct": true
+        },
+        {
+          "query_index": 2,
+          "cosines": [
+            0.2535785,
+            0.5809716,
+            0.2090161
+          ],
+          "correct": true
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "queries": 3,
+        "valid_vectors": 6,
+        "vectors": 6,
+        "dimension": 768,
+        "accuracy": 1.0
+      },
+      "dimensions": [
+        768,
+        768,
+        768,
+        768,
+        768,
+        768
+      ],
+      "expected_dimension": 768,
+      "elapsed_seconds": 0.94,
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:26+00:00"
+    },
+    {
+      "model": "qwen3-embedding:0.6b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d"
+      },
+      "digest": "sha256:ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d",
+      "workload": "short_text_retrieval",
+      "quantization": "Q8_0",
+      "rows": [
+        {
+          "query_index": 0,
+          "cosines": [
+            0.4148757,
+            0.2696478,
+            0.8360859
+          ],
+          "correct": true
+        },
+        {
+          "query_index": 1,
+          "cosines": [
+            0.7298486,
+            0.2444929,
+            0.372916
+          ],
+          "correct": true
+        },
+        {
+          "query_index": 2,
+          "cosines": [
+            0.4419784,
+            0.6000476,
+            0.4200131
+          ],
+          "correct": true
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "queries": 3,
+        "valid_vectors": 6,
+        "vectors": 6,
+        "dimension": 1024,
+        "accuracy": 1.0
+      },
+      "dimensions": [
+        1024,
+        1024,
+        1024,
+        1024,
+        1024,
+        1024
+      ],
+      "expected_dimension": 1024,
+      "elapsed_seconds": 0.726,
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:27+00:00"
+    },
+    {
+      "model": "llama3.2:1b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "baf6a787fdffd633537aa2eb51cfd54cb93ff08e28040095462bb63daf552878"
+      },
+      "digest": "sha256:baf6a787fdffd633537aa2eb51cfd54cb93ff08e28040095462bb63daf552878",
+      "workload": "short_text_extraction",
+      "quantization": "Q8_0",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 4,
+          "elapsed_seconds": 0.946
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 4,
+          "elapsed_seconds": 0.186
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 2,
+          "elapsed_seconds": 0.112
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:28+00:00"
+    },
+    {
+      "model": "llama3.2:3b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72"
+      },
+      "digest": "sha256:a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 4,
+          "elapsed_seconds": 0.953
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 4,
+          "elapsed_seconds": 0.14
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 2,
+          "elapsed_seconds": 0.13
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:29+00:00"
+    },
+    {
+      "model": "granite4.1:3b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "6fd349357287c7ffc9e38189a93b48ea175d24fc566b38f09cfc564fb7f303eb"
+      },
+      "digest": "sha256:6fd349357287c7ffc9e38189a93b48ea175d24fc566b38f09cfc564fb7f303eb",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 4,
+          "elapsed_seconds": 0.924
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 4,
+          "elapsed_seconds": 0.119
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 2,
+          "elapsed_seconds": 0.102
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:30+00:00"
+    },
+    {
+      "model": "ministral-3:3b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "f04aa1c738f64e13c625b82ae92504fc0260fa6723b509ed1ece0fa188179b1d"
+      },
+      "digest": "sha256:f04aa1c738f64e13c625b82ae92504fc0260fa6723b509ed1ece0fa188179b1d",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "**D-04**",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 7,
+          "elapsed_seconds": 1.603
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 6,
+          "elapsed_seconds": 0.166
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 3,
+          "elapsed_seconds": 0.146
+        }
+      ],
+      "summary": {
+        "correct": 2,
+        "examples": 3,
+        "accuracy": 0.6666666666666666
+      },
+      "status": "failed",
+      "completed_at": "2026-11-26T05:38:32+00:00"
+    },
+    {
+      "model": "ministral-3:8b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "1922accd5827ebe6829e536369195db25eaf664528dc66206d646ea3bb386b71"
+      },
+      "digest": "sha256:1922accd5827ebe6829e536369195db25eaf664528dc66206d646ea3bb386b71",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 5,
+          "elapsed_seconds": 2.527
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 6,
+          "elapsed_seconds": 0.224
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 3,
+          "elapsed_seconds": 0.191
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:35+00:00"
+    },
+    {
+      "model": "gemma4:e2b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "7fbdbf8f5e45a75bb122155ed546e765b4d9c53a1285f62fd9f506baa1c5a47e"
+      },
+      "digest": "sha256:7fbdbf8f5e45a75bb122155ed546e765b4d9c53a1285f62fd9f506baa1c5a47e",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "length",
+          "completion_tokens": 128,
+          "elapsed_seconds": 4.027
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 126,
+          "elapsed_seconds": 0.995
+        },
+        {
+          "case": "count",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "length",
+          "completion_tokens": 128,
+          "elapsed_seconds": 0.999
+        }
+      ],
+      "summary": {
+        "correct": 1,
+        "examples": 3,
+        "accuracy": 0.3333333333333333
+      },
+      "status": "failed",
+      "completed_at": "2026-11-26T05:38:41+00:00"
+    },
+    {
+      "model": "ministral-3:14b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "4760c35aeb9d9e9c6174c2492562c0b999e80a222804fd96b1915ab72bbcdcf7"
+      },
+      "digest": "sha256:4760c35aeb9d9e9c6174c2492562c0b999e80a222804fd96b1915ab72bbcdcf7",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 5,
+          "elapsed_seconds": 2.715
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 6,
+          "elapsed_seconds": 0.288
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 3,
+          "elapsed_seconds": 0.23
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:44+00:00"
+    },
+    {
+      "model": "gemma4:e4b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb"
+      },
+      "digest": "sha256:c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 5,
+          "elapsed_seconds": 4.109
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 5,
+          "elapsed_seconds": 0.301
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 3,
+          "elapsed_seconds": 0.282
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:38:49+00:00"
+    },
+    {
+      "model": "qwen3.6:27b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "a50eda8ed977ab48a12431878896b27ffd5cef552c17af3317d9623b939a7f1e"
+      },
+      "digest": "sha256:a50eda8ed977ab48a12431878896b27ffd5cef552c17af3317d9623b939a7f1e",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "length",
+          "completion_tokens": 128,
+          "elapsed_seconds": 11.055
+        },
+        {
+          "case": "lot",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "length",
+          "completion_tokens": 128,
+          "elapsed_seconds": 5.079
+        },
+        {
+          "case": "count",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "length",
+          "completion_tokens": 128,
+          "elapsed_seconds": 5.065
+        }
+      ],
+      "summary": {
+        "correct": 0,
+        "examples": 3,
+        "accuracy": 0.0
+      },
+      "status": "failed",
+      "completed_at": "2026-11-26T05:39:10+00:00"
+    },
+    {
+      "model": "qwen3.8:27b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "22130167c4c20e20c7b71454612966ca8e8171e9b3cc8ab6ce8aa6cbfec79643"
+      },
+      "digest": "sha256:22130167c4c20e20c7b71454612966ca8e8171e9b3cc8ab6ce8aa6cbfec79643",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 42,
+          "elapsed_seconds": 6.669
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 65,
+          "elapsed_seconds": 1.782
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 53,
+          "elapsed_seconds": 1.669
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:39:21+00:00"
+    },
+    {
+      "model": "gemma4:26b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "5571076f3d70050487b26b341705799e0ab29b808164f90d20d4cf84f699d251"
+      },
+      "digest": "sha256:5571076f3d70050487b26b341705799e0ab29b808164f90d20d4cf84f699d251",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 128,
+          "elapsed_seconds": 6.531
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 109,
+          "elapsed_seconds": 1.324
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 102,
+          "elapsed_seconds": 1.23
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:39:30+00:00"
+    },
+    {
+      "model": "gemma4:31b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "6316f0629137b426c9d9b853ffc4c8209589f30ee39aebede6285096c0ff47e7"
+      },
+      "digest": "sha256:6316f0629137b426c9d9b853ffc4c8209589f30ee39aebede6285096c0ff47e7",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 85,
+          "elapsed_seconds": 10.113
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 98,
+          "elapsed_seconds": 4.528
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 77,
+          "elapsed_seconds": 3.72
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:39:48+00:00"
+    },
+    {
+      "model": "nemotron-3-nano:30b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "b725f11174073334edd0c2ff396b8d4e66d7dab22a5a63717ccad5a08a270cf1"
+      },
+      "digest": "sha256:b725f11174073334edd0c2ff396b8d4e66d7dab22a5a63717ccad5a08a270cf1",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 52,
+          "elapsed_seconds": 7.043
+        },
+        {
+          "case": "lot",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 76,
+          "elapsed_seconds": 0.888
+        },
+        {
+          "case": "count",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 69,
+          "elapsed_seconds": 0.904
+        }
+      ],
+      "summary": {
+        "correct": 0,
+        "examples": 3,
+        "accuracy": 0.0
+      },
+      "status": "failed",
+      "completed_at": "2026-11-26T05:39:57+00:00"
+    },
+    {
+      "model": "nemotron3:33b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "f6d8b7ff496ccc53429cc480ad53971d522b443ee4a5aa58a6da49e57acf42cf"
+      },
+      "digest": "sha256:f6d8b7ff496ccc53429cc480ad53971d522b443ee4a5aa58a6da49e57acf42cf",
+      "workload": "short_text_extraction",
+      "quantization": "Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 52,
+          "elapsed_seconds": 9.041
+        },
+        {
+          "case": "lot",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 73,
+          "elapsed_seconds": 0.904
+        },
+        {
+          "case": "count",
+          "answer": "",
+          "correct": false,
+          "finish_reason": "stop",
+          "completion_tokens": 52,
+          "elapsed_seconds": 0.78
+        }
+      ],
+      "summary": {
+        "correct": 0,
+        "examples": 3,
+        "accuracy": 0.0
+      },
+      "status": "failed",
+      "completed_at": "2026-11-26T05:40:08+00:00"
+    },
+    {
+      "model": "minicpm-v-4.5-gguf-q4-k-m:dmr",
+      "backend": "vllm",
+      "artifact": {
+        "model_sha256": "8f5e8d5686924944bfa309ddfcff248fbc3a551a643a82948bdc5c7e4ae15dab"
+      },
+      "digest": "sha256:8f5e8d5686924944bfa309ddfcff248fbc3a551a643a82948bdc5c7e4ae15dab",
+      "workload": "short_text_extraction",
+      "quantization": "MOSTLY_Q4_K_M",
+      "rows": [
+        {
+          "case": "bay",
+          "answer": "D-04",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 5,
+          "elapsed_seconds": 9.323
+        },
+        {
+          "case": "lot",
+          "answer": "QP-82",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 5,
+          "elapsed_seconds": 0.159
+        },
+        {
+          "case": "count",
+          "answer": "11",
+          "correct": true,
+          "finish_reason": "stop",
+          "completion_tokens": 3,
+          "elapsed_seconds": 0.126
+        }
+      ],
+      "summary": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "status": "passed",
+      "completed_at": "2026-11-26T05:40:17+00:00"
+    }
+  ],
+  "ollama_version": "0.32.14"
+}

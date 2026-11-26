@@ -66,3 +66,34 @@ def test_get_resolves_short_and_qualified(tmp_path: Path) -> None:
 def test_missing_root_returns_empty(tmp_path: Path) -> None:
     reg = MLXRegistry(tmp_path / "does-not-exist")
     assert reg.list_models() == []
+
+
+def test_aliased_hub_snapshot_has_pinned_repository_identity(tmp_path: Path) -> None:
+    commit = "a" * 40
+    snapshot = _make_mlx_model(tmp_path / "hub/models--org--real-build/snapshots", commit)
+    (snapshot / "config.json").write_text('{"quantization":{"bits":4,"group_size":64}}')
+    aliases = tmp_path / "served"
+    aliases.mkdir()
+    (aliases / "deployment-alias").symlink_to(snapshot, target_is_directory=True)
+    registry = MLXRegistry(aliases)
+    descriptor = registry.get("deployment-alias:mlx")
+    assert descriptor.model_path == snapshot.resolve()
+    identity = descriptor.artifact_identity
+    assert identity.source == "hf_snapshot"
+    assert (identity.repo_id, identity.revision, identity.quantization) == (
+        "org/real-build", commit, "4-bit",
+    )
+    (aliases / "deployment-alias").unlink()
+    assert registry.list_models() == []
+    assert registry.get("deployment-alias:mlx") is None
+
+
+def test_flat_mlx_model_reports_only_configured_quantization(tmp_path: Path) -> None:
+    model = _make_mlx_model(tmp_path, "community-best-2bit")
+    registry = MLXRegistry(tmp_path)
+    assert registry.list_models()[0].artifact_identity is None
+    (model / "config.json").write_text('{"quantization":{"bits":4,"head":{"bits":8}}}')
+    identity = registry.list_models()[0].artifact_identity
+    assert identity.source == "mlx_config"
+    assert identity.quantization == "mixed-4-8-bit"
+    assert identity.repo_id is None and identity.revision is None

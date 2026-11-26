@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .artifact import configured_artifact
 from .ollama import ModelDescriptor
 
 
@@ -34,6 +35,7 @@ class OpenRouterRegistry:
 
     def list_models(self) -> list[ModelDescriptor]:
         if not self.config_path.is_file():
+            self._cache = {}
             return []
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -43,15 +45,16 @@ class OpenRouterRegistry:
             )
 
         descriptors: list[ModelDescriptor] = []
-        self._cache.clear()
+        cache: dict[str, ModelDescriptor] = {}
         for i, entry in enumerate(raw):
             if not isinstance(entry, dict):
                 raise ValueError(f"OpenRouter entry {i} is not an object: {entry!r}")
             desc = self._parse_entry(i, entry)
             descriptors.append(desc)
-            self._cache[desc.qualified_name] = desc
-            self._cache[desc.fully_qualified_name] = desc
+            cache[desc.qualified_name] = desc
+            cache[desc.fully_qualified_name] = desc
 
+        self._cache = cache
         return sorted(descriptors, key=lambda d: d.qualified_name)
 
     def get(self, name_with_tag: str) -> ModelDescriptor | None:
@@ -119,6 +122,7 @@ class OpenRouterRegistry:
             params=params,
             size_bytes=int(entry.get("size_bytes", 0)),
             endpoint=endpoint,
+            artifact_identity=configured_artifact(entry),
         )
 
     @staticmethod
