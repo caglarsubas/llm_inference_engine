@@ -16,6 +16,9 @@ from pydantic import (
     model_validator,
 )
 
+from .model_evidence import WorkloadEvaluation
+from .registry.artifact import ArtifactIdentity
+
 
 def _split_trace_value(value) -> list[str] | None:
     """Accept dotted trace fields as arrays or comma-separated strings."""
@@ -765,6 +768,8 @@ class ModelCatalogEntry(BaseModel):
     """Machine-readable operator catalog for benchmark and UI clients."""
 
     id: str
+    artifact_identity: ArtifactIdentity | None = None
+    workload_evaluations: list[WorkloadEvaluation] = Field(default_factory=list)
     object: Literal["model"] = "model"
     available: Literal[True] = True
     upstream_reachable: bool | None = True

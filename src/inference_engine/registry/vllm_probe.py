@@ -24,6 +24,7 @@ import httpx
 
 from ..config import settings
 from ..observability import get_logger
+from .artifact import ArtifactIdentity, ollama_sha256, reported_quantization
 from .breaker import HALF_OPEN, OPEN, deployment_key, get_upstream_breaker
 from .ollama import ModelDescriptor
 
@@ -46,6 +47,7 @@ class VLLMProbeResult:
     # breaker can tell a 503 (the server is unwell, worth a cooldown) from a
     # 404 (this configuration is wrong and a cooldown will not fix it).
     upstream_status_code: int | None = None
+    artifact_identity: ArtifactIdentity | None = None
 
 
 ClientFactory = Callable[[str, httpx.Timeout], httpx.Client]
@@ -78,6 +80,15 @@ class VLLMUpstreamProbe:
 
     def invalidate(self) -> None:
         self._cache.clear()
+
+    def last_artifact_identity(self, descriptor: ModelDescriptor) -> ArtifactIdentity | None:
+        """Read the result from the catalog's reachability pass without issuing another probe."""
+        key = (
+            (descriptor.endpoint or "").rstrip("/"),
+            str((descriptor.params or {}).get("model_id") or ""),
+        )
+        cached = self._cache.get(key)
+        return cached[1].artifact_identity if cached else None
 
     def probe(self, descriptor: ModelDescriptor) -> VLLMProbeResult:
         if descriptor.format != "vllm":
@@ -183,8 +194,15 @@ class VLLMUpstreamProbe:
             with self._client_factory(endpoint, timeout) as client:
                 response = client.get("/v1/models")
                 response.raise_for_status()
-                payload = response.json()
-            upstream_ids = self._extract_model_ids(payload)
+                entries = self._model_entries(response.json())
+                matched = entries.get(model_id)
+                identity = None
+                if (
+                    matched
+                    and matched.get("owned_by") == "docker"
+                    and isinstance(matched.get("dmr"), dict)
+                ):
+                    identity = self._docker_model_identity(client, model_id, matched["dmr"])
         except httpx.TimeoutException as exc:
             return VLLMProbeResult(
                 loadable=False,
@@ -215,12 +233,14 @@ class VLLMUpstreamProbe:
                 duration_ms=(time.perf_counter() - t0) * 1000,
             )
 
-        if model_id in upstream_ids:
+        if matched is not None:
             return VLLMProbeResult(
                 loadable=True,
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                artifact_identity=identity,
             )
 
+        upstream_ids = list(entries)
         listed = ", ".join(upstream_ids[:8]) if upstream_ids else "none"
         if len(upstream_ids) > 8:
             listed += ", ..."
@@ -232,17 +252,59 @@ class VLLMUpstreamProbe:
         )
 
     @staticmethod
-    def _extract_model_ids(payload: Any) -> list[str]:
+    def _model_entries(payload: Any) -> dict[str, dict]:
         if not isinstance(payload, dict):
             raise ValueError("upstream /v1/models response must be an object")
         data = payload.get("data")
         if not isinstance(data, list):
             raise ValueError("upstream /v1/models response missing data[]")
-        ids: list[str] = []
+        entries = {}
         for entry in data:
-            if isinstance(entry, dict) and entry.get("id"):
-                ids.append(str(entry["id"]))
-        return ids
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"]:
+                model_id = entry["id"]
+                # The route exists, but ambiguous entries cannot attest its build.
+                entries[model_id] = {} if model_id in entries else entry
+        return entries
+
+    def _docker_model_identity(
+        self, client: httpx.Client, model_id: str, metadata: dict
+    ) -> ArtifactIdentity | None:
+        # Docker serves OpenAI routes under /engines[/<engine>] and its model
+        # inventory under /api/tags on the same host. Preserve any proxy prefix.
+        path = client.base_url.path.rstrip("/")
+        parts = path.split("/")
+        if "engines" in parts:
+            path = "/".join(parts[: parts.index("engines")])
+        tags_url = client.base_url.copy_with(path=path + "/api/tags", query=None, fragment=None)
+        quantization = reported_quantization(metadata.get("quantization"))
+        digest = None
+        try:
+            response = client.get(tags_url, timeout=min(1.0, self.timeout_seconds))
+            response.raise_for_status()
+            payload = response.json()
+            tags = payload.get("models") if isinstance(payload, dict) else None
+            if isinstance(tags, list):
+                matches = [
+                    tag for tag in tags if isinstance(tag, dict) and tag.get("name") == model_id
+                ]
+                if len(matches) == 1:
+                    tag = matches[0]
+                    details = tag.get("details")
+                    tagged_quant = (
+                        reported_quantization(details.get("quantization_level"))
+                        if isinstance(details, dict) else None
+                    )
+                    if not quantization or not tagged_quant or tagged_quant == quantization:
+                        digest = ollama_sha256(tag.get("digest"))
+                        quantization = quantization or tagged_quant
+        except (httpx.HTTPError, ValueError):
+            # Identity is advisory. The matched OpenAI model is still reachable.
+            pass
+        if digest is None and quantization is None:
+            return None
+        return ArtifactIdentity(
+            source="docker_model_runner", model_sha256=digest, quantization=quantization
+        )
 
 
 _singleton: VLLMUpstreamProbe | None = None

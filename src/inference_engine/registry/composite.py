@@ -26,14 +26,14 @@ gains an analogous ``list_loadable(accept)`` that builds the merged view
 the same way — so /v1/models and the ModelManager always agree on what's
 reachable.
 
-The original ``get()`` and ``list_models()`` keep their pre-probe
-semantics so legacy callers (admin views, debug tooling) can still inspect
-"every descriptor any source knows about" without filtering.
+The original ``get()`` and ``list_models()`` expose each public route
+before probing. Individual sources can additionally enumerate artifacts
+that share a route or accept fully qualified artifact names.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Protocol
 
 from .ollama import ModelDescriptor
@@ -50,16 +50,25 @@ class CompositeRegistry:
             raise ValueError("CompositeRegistry requires at least one source")
         self._sources = list(sources)
 
+    def _listed_routes(self) -> Iterator[ModelDescriptor]:
+        """Yield one routable descriptor per public name per source, in source order."""
+        for source in self._sources:
+            routes: dict[str, ModelDescriptor | None] = {}
+            for desc in source.list_models():
+                name = desc.qualified_name
+                # Two namespaces or directories can share a public alias. Only
+                # the source knows which of those builds a request will reach.
+                routes[name] = source.get(name) if name in routes else desc
+            yield from (desc for desc in routes.values() if desc is not None)
+
     # ------------------------------------------------------------------
     # Pre-probe surface — returns whatever each source emits, first wins.
     # ------------------------------------------------------------------
 
     def list_models(self) -> list[ModelDescriptor]:
         seen: dict[str, ModelDescriptor] = {}
-        for source in self._sources:
-            for desc in source.list_models():
-                # First source wins for a given qualified_name.
-                seen.setdefault(desc.qualified_name, desc)
+        for desc in self._listed_routes():
+            seen.setdefault(desc.qualified_name, desc)
         return sorted(seen.values(), key=lambda d: d.qualified_name)
 
     def get(self, name_with_tag: str) -> ModelDescriptor | None:
@@ -110,9 +119,8 @@ class CompositeRegistry:
         # First pass: collect every (qname → ordered list of descriptors)
         # so we can apply accept() with full source-order context.
         per_name: dict[str, list[ModelDescriptor]] = {}
-        for source in self._sources:
-            for desc in source.list_models():
-                per_name.setdefault(desc.qualified_name, []).append(desc)
+        for desc in self._listed_routes():
+            per_name.setdefault(desc.qualified_name, []).append(desc)
 
         loadable: list[ModelDescriptor] = []
         rejected: list[ModelDescriptor] = []

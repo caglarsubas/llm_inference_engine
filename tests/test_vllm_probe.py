@@ -111,7 +111,7 @@ class _FakeProbe:
         )
 
 
-class _FakePassingProbe:
+class _FakePassingProbe(VLLMUpstreamProbe):
     def probe(self, descriptor: ModelDescriptor) -> VLLMProbeResult:  # noqa: ARG002
         return VLLMProbeResult(loadable=True)
 

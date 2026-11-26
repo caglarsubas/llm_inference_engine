@@ -89,6 +89,22 @@ def test_registry_parses_large_open_weight_entry(tmp_path: Path) -> None:
     assert desc.endpoint == "https://openrouter.ai/api"
     assert desc.params["model_id"] == "meta-llama/llama-3.1-70b-instruct"
     assert desc.params["request_key_source"] == "openrouter-api-key"
+    assert desc.artifact_identity is None
+
+
+def test_operator_pin_is_separate_from_openrouter_model_id(tmp_path: Path) -> None:
+    path = tmp_path / "openrouter.json"
+    registry = OpenRouterRegistry(path, default_endpoint="https://example.test/api", min_parameter_count_b=50)
+    pin = {"repo_id": "different-org/model-build", "revision": "a" * 40, "quantization": "FP8"}
+    _write_models(path, [_entry(hugging_face_id="reference/base")])
+    assert registry.list_models()[0].artifact_identity is None
+    _write_models(path, [_entry(hugging_face_id="reference/base", artifact_identity=pin)])
+    assert registry.list_models()[0].artifact_identity.model_dump(exclude_none=True) == {
+        **pin, "source": "operator_config",
+    }
+    path.unlink()
+    assert registry.list_models() == []
+    assert registry.get("llama-3.1-70b-instruct:openrouter") is None
 
 
 def test_example_catalog_is_policy_compliant() -> None:

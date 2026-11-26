@@ -25,8 +25,8 @@ def _make_store(root: Path, *, model_bytes: bytes = b"FAKE GGUF BYTES") -> None:
     manifests.mkdir(parents=True)
 
     model_digest, _ = _write_blob(blobs, model_bytes)
-    template_digest, _ = _write_blob(blobs, b"{{ .Prompt }}")
-    params_digest, _ = _write_blob(blobs, json.dumps({"temperature": 0.5}).encode())
+    template_digest, template = _write_blob(blobs, b"{{ .Prompt }}")
+    params_digest, params = _write_blob(blobs, json.dumps({"temperature": 0.5}).encode())
 
     manifest = {
         "schemaVersion": 2,
@@ -34,8 +34,8 @@ def _make_store(root: Path, *, model_bytes: bytes = b"FAKE GGUF BYTES") -> None:
         "config": {"mediaType": "application/vnd.docker.container.image.v1+json", "digest": "sha256:0", "size": 0},
         "layers": [
             {"mediaType": "application/vnd.ollama.image.model", "digest": model_digest, "size": len(model_bytes)},
-            {"mediaType": "application/vnd.ollama.image.template", "digest": template_digest, "size": 12},
-            {"mediaType": "application/vnd.ollama.image.params", "digest": params_digest, "size": 24},
+            {"mediaType": "application/vnd.ollama.image.template", "digest": template_digest, "size": template.stat().st_size},
+            {"mediaType": "application/vnd.ollama.image.params", "digest": params_digest, "size": params.stat().st_size},
         ],
     }
     (manifests / "1b").write_text(json.dumps(manifest))
@@ -63,6 +63,38 @@ def test_get_resolves_short_name(tmp_path: Path) -> None:
     assert registry.get("demo:1b") is not None
     assert registry.get("demo") is not None  # short form
     assert registry.get("nope") is None
+
+
+def test_gguf_identity_distinguishes_manifest_and_weight(tmp_path: Path) -> None:
+    _make_store(tmp_path)
+    manifest = tmp_path / "manifests/registry.ollama.ai/library/demo/1b"
+    obj = json.loads(manifest.read_bytes())
+    config_digest, _ = _write_blob(tmp_path / "blobs", b'{"file_type": "Q4_K_M"}')
+    obj["config"]["digest"] = config_digest
+    manifest.write_text(json.dumps(obj) + "\n")
+    registry = OllamaRegistry(tmp_path)
+    original = registry.get("demo:1b").artifact_identity
+    assert original.source == "ollama_manifest"
+    assert original.manifest_sha256 == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert original.weight_sha256 == hashlib.sha256(b"FAKE GGUF BYTES").hexdigest()
+    assert original.quantization == "Q4_K_M"
+
+    template_digest, template = _write_blob(tmp_path / "blobs", b"updated template")
+    obj["layers"][1]["digest"] = template_digest
+    obj["layers"][1]["size"] = template.stat().st_size
+    manifest.write_text(json.dumps(obj))
+    updated = registry.list_models()[0].artifact_identity
+    assert updated.manifest_sha256 != original.manifest_sha256
+    assert updated.weight_sha256 == original.weight_sha256
+    assert registry.get("demo:1b").artifact_identity == updated
+
+    template.unlink()
+    partial = registry.list_models()[0].artifact_identity
+    assert partial.manifest_sha256 is None and partial.weight_sha256 is None
+    assert partial.quantization == "Q4_K_M"
+    manifest.unlink()
+    assert registry.list_models() == []
+    assert registry.get("demo:1b") is None
 
 
 def test_missing_model_blob_skips_manifest(tmp_path: Path) -> None:

@@ -1,0 +1,332 @@
+{
+  "evaluations": [
+    {
+      "route_id": "embeddinggemma:300m",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1"
+      },
+      "workload": "short_text_retrieval",
+      "checked_at": "2026-11-26T05:38:26+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "queries": 3,
+        "valid_vectors": 6,
+        "vectors": 6,
+        "dimension": 768,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "gemma3:12b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "b92b218582c521ba287f38f1d6057dcd3c6cbff036f13cac97b5d861f5e58ec3"
+      },
+      "workload": "document_extraction",
+      "checked_at": "2026-11-26T05:34:57.735568+00:00",
+      "status": "passed",
+      "metrics": {
+        "cases": 8,
+        "valid_json": 8,
+        "schema_valid": 8,
+        "exact_pages": 7,
+        "exact_fields": 39,
+        "total_fields": 40,
+        "median_gateway_latency_s": 2.267582999949809,
+        "p95_gateway_latency_s": 4.807672042050399,
+        "peak_footprint_bytes": 9473668536,
+        "peak_ollama_bytes": 9063744142,
+        "median_ttft_s": 1.455643063003663,
+        "p95_ttft_s": 4.036099125049077
+      },
+      "evidence": "docs/benchmarks/gemma-document-extraction/results.json"
+    },
+    {
+      "route_id": "gemma3:4b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "68ceab7e468a31c988b44d5a4984a0e21f58c4f7158c6ce29c1804babac38df7"
+      },
+      "workload": "document_extraction",
+      "checked_at": "2026-11-26T05:34:36.760327+00:00",
+      "status": "failed",
+      "metrics": {
+        "cases": 8,
+        "valid_json": 8,
+        "schema_valid": 8,
+        "exact_pages": 5,
+        "exact_fields": 37,
+        "total_fields": 40,
+        "median_gateway_latency_s": 1.2636428750120103,
+        "p95_gateway_latency_s": 2.8850456250365824,
+        "peak_footprint_bytes": 4279523736,
+        "peak_ollama_bytes": 3839497337,
+        "median_ttft_s": 0.8525902080000378,
+        "p95_ttft_s": 2.459857250098139
+      },
+      "evidence": "docs/benchmarks/gemma-document-extraction/results.json"
+    },
+    {
+      "route_id": "gemma4:26b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "5571076f3d70050487b26b341705799e0ab29b808164f90d20d4cf84f699d251"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:39:30+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "gemma4:31b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "6316f0629137b426c9d9b853ffc4c8209589f30ee39aebede6285096c0ff47e7"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:39:48+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "gemma4:e2b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "7fbdbf8f5e45a75bb122155ed546e765b4d9c53a1285f62fd9f506baa1c5a47e"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:41+00:00",
+      "status": "failed",
+      "metrics": {
+        "correct": 1,
+        "examples": 3,
+        "accuracy": 0.3333333333333333
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "gemma4:e4b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:49+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "granite4.1:3b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "6fd349357287c7ffc9e38189a93b48ea175d24fc566b38f09cfc564fb7f303eb"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:30+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "llama3.2:1b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "baf6a787fdffd633537aa2eb51cfd54cb93ff08e28040095462bb63daf552878"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:28+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "llama3.2:3b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:29+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "minicpm-v-4.5-gguf-q4-k-m:dmr",
+      "backend": "vllm",
+      "artifact": {
+        "model_sha256": "8f5e8d5686924944bfa309ddfcff248fbc3a551a643a82948bdc5c7e4ae15dab"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:40:17+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "ministral-3:14b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "4760c35aeb9d9e9c6174c2492562c0b999e80a222804fd96b1915ab72bbcdcf7"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:44+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "ministral-3:3b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "f04aa1c738f64e13c625b82ae92504fc0260fa6723b509ed1ece0fa188179b1d"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:32+00:00",
+      "status": "failed",
+      "metrics": {
+        "correct": 2,
+        "examples": 3,
+        "accuracy": 0.6666666666666666
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "ministral-3:8b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "1922accd5827ebe6829e536369195db25eaf664528dc66206d646ea3bb386b71"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:38:35+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "nemotron-3-nano:30b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "b725f11174073334edd0c2ff396b8d4e66d7dab22a5a63717ccad5a08a270cf1"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:39:57+00:00",
+      "status": "failed",
+      "metrics": {
+        "correct": 0,
+        "examples": 3,
+        "accuracy": 0.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "nemotron3:33b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "f6d8b7ff496ccc53429cc480ad53971d522b443ee4a5aa58a6da49e57acf42cf"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:40:08+00:00",
+      "status": "failed",
+      "metrics": {
+        "correct": 0,
+        "examples": 3,
+        "accuracy": 0.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "qwen3-embedding:0.6b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d"
+      },
+      "workload": "short_text_retrieval",
+      "checked_at": "2026-11-26T05:38:27+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "queries": 3,
+        "valid_vectors": 6,
+        "vectors": 6,
+        "dimension": 1024,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "qwen3.6:27b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "a50eda8ed977ab48a12431878896b27ffd5cef552c17af3317d9623b939a7f1e"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:39:10+00:00",
+      "status": "failed",
+      "metrics": {
+        "correct": 0,
+        "examples": 3,
+        "accuracy": 0.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    },
+    {
+      "route_id": "qwen3.8:27b",
+      "backend": "ollama_http",
+      "artifact": {
+        "manifest_sha256": "22130167c4c20e20c7b71454612966ca8e8171e9b3cc8ab6ce8aa6cbfec79643"
+      },
+      "workload": "short_text_extraction",
+      "checked_at": "2026-11-26T05:39:21+00:00",
+      "status": "passed",
+      "metrics": {
+        "correct": 3,
+        "examples": 3,
+        "accuracy": 1.0
+      },
+      "evidence": "docs/benchmarks/local-route-checks/results.json"
+    }
+  ]
+}

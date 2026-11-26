@@ -293,7 +293,7 @@ OpenAI-compatible — drop into any client that already speaks the OpenAI schema
 | GET    | `/v1/ready`                   | Readiness probe; returns 503 + `Retry-After` while startup probes run      |
 | GET    | `/v1/metrics`, `/metrics`     | Prometheus scrape — engine internals plus OTel GenAI semconv instruments   |
 | GET    | `/v1/models`                  | All models discoverable in the unified registry                            |
-| GET    | `/v1/models.data`             | Machine-readable catalog — provider, modality, image / strict-JSON capability, plus a typed `unavailable[]` with the reason each id is not servable |
+| GET    | `/v1/models.data`             | Serving catalog with build identity, workload evaluations, capabilities and reasons for unavailable routes |
 | GET    | `/v1/models/{model:tag}`      | Single model details (size, blob path, backend, `context_length`)          |
 | POST   | `/v1/chat/completions`        | Blocking + SSE streaming (`stream: true`)                                  |
 | POST   | `/v1/completions`             | Legacy raw-prompt completions — bypasses chat templating                   |
@@ -1783,10 +1783,47 @@ a response stitched across providers. For HTTP-backed upstreams this is the
 a transient upstream failure no longer changes which model answers. See
 [Upstream resilience](#upstream-resilience--retry-the-same-model-then-cool-the-deployment-down).
 
-`GET /v1/models.data` is the machine-readable model catalog for benchmark
-harnesses and internal UIs. It uses the same probe-aware live surface as
-`/v1/models`, then adds provider details that clients need before sending image
-or strict JSON workloads:
+`GET /v1/models.data` reports the routes the gateway can serve. Each entry in
+`data[]` includes two fields for selecting a build for a particular workload.
+
+- `artifact_identity` identifies the source of the metadata and carries its
+  immutable reference when available. Ollama reports a manifest SHA-256.
+  The local GGUF registry also reads the weight-layer digest from that
+  manifest. A Hugging Face cache snapshot supplies the repository and commit.
+  Docker Model Runner supplies a model SHA-256 for the matching tag on the
+  same server. Quantization is included when reported by the source. A
+  mutable provider alias can have a null identity, and a quantization can
+  be known even when the revision is unknown.
+- `workload_evaluations` groups results by workload. Each group has a
+  `latest` result and a nullable `last_passing` result, with a timestamp,
+  status, measurements and repository-relative evidence path. An empty list
+  means the catalog has no reviewed evaluation matching that route, backend
+  and immutable build. Changing the digest drops the old qualification on
+  the next discovery refresh. An operator-supplied `artifact_identity` in a
+  vLLM or OpenRouter manifest is labeled `operator_config` and cannot qualify
+  a build by itself.
+
+For invoice extraction, check the `document_extraction` workload. The Gemma 3
+12B build passed the eight-page fixture with 39 of 40 fields correct. The 4B
+build produced schema-valid JSON on every page and missed the accuracy
+threshold. Both filled in a currency on a page that omitted it.
+[Fixture, measurements and model selection](docs/benchmarks/gemma-document-extraction/README.md).
+
+The other 17 local builds have a short text extraction or retrieval check.
+Ten of 15 chat routes returned all three requested strings exactly. Both
+embedding routes ranked the labeled passage first for every query. A model
+that passes a text check still needs an image evaluation before it can be
+selected for invoice extraction.
+[Per-route measurements, prompts and criteria](docs/benchmarks/local-route-checks/README.md).
+
+To publish another evaluation, save its scored output under `docs/benchmarks/`
+and add a dated entry to `src/inference_engine/model_evaluations.json` with
+the route, backend, immutable build reference, workload, metrics and evidence
+path. Keep previous runs so clients can see when a newer evaluation failed
+after an earlier pass.
+
+The catalog also exposes provider capabilities and availability details
+used by existing image and strict-JSON clients.
 
 ```json
 {

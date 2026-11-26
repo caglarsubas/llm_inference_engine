@@ -12,8 +12,11 @@ never collides with Ollama's ``model:tag`` namespace.
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
+from .artifact import REPO_PATTERN, ArtifactIdentity
 from .ollama import ModelDescriptor
 
 REQUIRED_FILES = ("config.json",)
@@ -42,6 +45,41 @@ def _dir_size_bytes(path: Path) -> int:
             except OSError:
                 pass
     return total
+
+
+def _mlx_quantization(path: Path) -> str | None:
+    try:
+        config = json.loads((path / "config.json").read_bytes())
+    except (OSError, ValueError):
+        return None
+    quant = config.get("quantization") if isinstance(config, dict) else None
+    if not isinstance(quant, dict):
+        return None
+    widths = [quant.get("bits")]
+    widths.extend(val.get("bits") for val in quant.values() if isinstance(val, dict))
+    if any(type(bits) is not int or not 0 < bits <= 32 for bits in widths):
+        return None
+    distinct = sorted(set(widths))
+    if len(distinct) == 1:
+        return f"{distinct[0]}-bit"
+    mixed = "mixed-" + "-".join(str(bits) for bits in distinct) + "-bit"
+    return mixed if len(mixed) <= 64 else "mixed"
+
+
+def _artifact_identity(snapshot: Path) -> ArtifactIdentity | None:
+    quant = _mlx_quantization(snapshot)
+    # A service-facing alias can point directly at a pinned Hub snapshot.
+    # A flat download directory or a model name containing "4bit" gives no revision.
+    repo_dir = snapshot.parent.parent.name
+    if snapshot.parent.name == "snapshots" and repo_dir.startswith("models--"):
+        repo = repo_dir.removeprefix("models--").replace("--", "/")
+        if re.fullmatch(r"[0-9a-f]{40}", snapshot.name) and re.fullmatch(REPO_PATTERN, repo) and len(repo) <= 97:
+            return ArtifactIdentity(
+                source="hf_snapshot", repo_id=repo, revision=snapshot.name, quantization=quant
+            )
+    if quant:
+        return ArtifactIdentity(source="mlx_config", quantization=quant)
+    return None
 
 
 class MLXRegistry:
@@ -74,27 +112,33 @@ class MLXRegistry:
 
     def list_models(self) -> list[ModelDescriptor]:
         if not self.root.is_dir():
+            self._cache = {}
             return []
 
         descriptors: list[ModelDescriptor] = []
+        cache: dict[str, ModelDescriptor] = {}
         for path in self._scan(self.root):
             name = path.name
             # Strip HuggingFace cache prefix `models--<owner>--<repo>` → just `<repo>`.
             if name.startswith("models--") and "--" in name[len("models--") :]:
                 name = name.split("--")[-1]
             qualified = f"{name}:mlx"
+            resolved = path.resolve()
+            identity = _artifact_identity(resolved)
             desc = ModelDescriptor(
                 name=name,
                 tag="mlx",
                 namespace="mlx-community",
                 registry="huggingface.co",
-                model_path=path,
+                model_path=resolved if identity and identity.source == "hf_snapshot" else path,
                 format="mlx",
                 size_bytes=_dir_size_bytes(path),
+                artifact_identity=identity,
             )
             descriptors.append(desc)
-            self._cache[qualified] = desc
+            cache[qualified] = desc
 
+        self._cache = cache
         return sorted(descriptors, key=lambda d: d.qualified_name)
 
     def get(self, name_with_tag: str) -> ModelDescriptor | None:

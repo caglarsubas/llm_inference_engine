@@ -1,3 +1,4 @@
+from .artifact import ArtifactIdentity
 from .breaker import (
     UpstreamBreaker,
     breaker_span_attrs,
@@ -17,6 +18,7 @@ from .vllm import VLLMRegistry
 from .vllm_probe import VLLMProbeResult, VLLMUpstreamProbe, get_vllm_probe
 
 __all__ = [
+    "ArtifactIdentity",
     "CompositeRegistry",
     "GGUFLoadProbe",
     "MLXProbeResult",

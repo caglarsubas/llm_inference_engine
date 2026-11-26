@@ -69,6 +69,38 @@ def test_registry_parses_minimal_entry(tmp_path: Path) -> None:
     assert d.qualified_name == "llama-3.2-1b-instruct:vllm"
     assert d.endpoint == "http://vllm:8000"
     assert d.params["model_id"] == "meta-llama/Llama-3.2-1B-Instruct"
+    assert d.artifact_identity is None
+
+
+def test_registry_accepts_explicit_operator_artifact(tmp_path: Path) -> None:
+    entry = {
+        "name": "my-alias", "endpoint": "http://vllm", "model_id": "another-alias",
+        "artifact_identity": {"weight_sha256": "f" * 64},
+    }
+    path = tmp_path / "vllm.json"
+    path.write_text(json.dumps([entry]))
+    registry = VLLMRegistry(path)
+    identity = registry.list_models()[0].artifact_identity
+    assert identity.source == "operator_config"
+    assert identity.weight_sha256 == "f" * 64
+    assert identity.repo_id is None
+    path.write_text("[]")
+    assert registry.list_models() == []
+    assert registry.get("my-alias:vllm") is None
+
+
+@pytest.mark.parametrize("invalid", [
+    {"revision": "main", "repo_id": "org/model"},
+    {"revision": "a" * 40},
+    {"source": "ollama_tags", "manifest_sha256": "c" * 64},
+    {"weight_sha256": "partial"},
+])
+def test_registry_rejects_unusable_operator_artifact(tmp_path: Path, invalid) -> None:
+    entry = {"name": "a", "endpoint": "http://vllm", "model_id": "b", "artifact_identity": invalid}
+    path = tmp_path / "vllm.json"
+    path.write_text(json.dumps([entry]))
+    with pytest.raises(ValueError):
+        VLLMRegistry(path).list_models()
 
 
 def test_registry_parses_chat_template_kwargs(tmp_path: Path) -> None:

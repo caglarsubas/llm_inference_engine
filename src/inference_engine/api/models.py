@@ -2,6 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from .. import model_evidence
 from ..adapters.base import effective_n_ctx
 from ..auth import require_identity
 from ..config import settings
@@ -337,8 +338,19 @@ def _supports_images(modality: str | None) -> bool | None:
 
 
 def _catalog_entry(desc) -> ModelCatalogEntry:
+    fields = _catalog_fields(desc)
+    identity = desc.artifact_identity
+    if desc.format == "vllm":
+        identity = get_vllm_probe().last_artifact_identity(desc) or identity
+    identity = app_state.manager.artifact_for_route(desc, identity)
     return ModelCatalogEntry(
-        **_catalog_fields(desc),
+        **fields,
+        artifact_identity=identity,
+        workload_evaluations=model_evidence.evaluations_for(
+            route_id=desc.qualified_name,
+            backend=fields["backend"],
+            artifact_identity=identity,
+        ),
         available=True,
         upstream_reachable=True,
         availability_status="available",
@@ -468,7 +480,7 @@ async def list_model_catalog(_=Depends(require_identity)) -> ModelCatalog:
     This is the machine-readable operator surface for benchmark harnesses and
     internal UIs. It uses the same probe-aware availability check as
     ``/v1/models`` but includes non-standard metadata such as upstream provider,
-    modality, context limits, image sizing hints, and JSON-mode support.
+    modality, context limits, build identity and dated workload evaluations.
 
     Shares the same background snapshot as ``/v1/models`` (both views come from
     one probe pass), with the same off-thread fallback before the first refresh.
