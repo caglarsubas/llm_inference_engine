@@ -22,7 +22,7 @@ from ..adapters.llama_cpp import LlamaCppAdapter
 from ..config import settings
 from ..evals import EvalRunner, PolicyRegistry, RubricRegistry, TenantRubricStore
 from ..manager import ModelManager
-from ..model_substitution import ModelSubstituter, parse_groups
+from ..model_substitution import ModelSubstituter, ResidencyCache, parse_groups
 from ..model_routing import ActivatedModelRoutingPolicy
 from ..model_routing_runtime import (
     LoadedModelRoutingPricingCatalog,
@@ -169,8 +169,9 @@ class AppState:
         # In memory until the lifespan loads ``EVAL_RUBRICS_DIR``, so a route
         # test that bypasses the lifespan never writes into the working tree.
         self.tenant_rubrics = TenantRubricStore()
+        self.ollama_residency = ResidencyCache()
         self.model_substituter = ModelSubstituter(
-            parse_groups(settings.model_substitution_groups)
+            parse_groups(settings.model_substitution_groups), self.ollama_residency
         )
         self.eval_runner = EvalRunner(self.manager, substituter=self.model_substituter)
         # Policy is reloaded from disk in main.py's lifespan so a startup

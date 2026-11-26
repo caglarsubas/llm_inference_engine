@@ -832,7 +832,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Loaded models (per replica)",
+      "title": "Native models loaded per engine replica",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -846,7 +846,7 @@
       "id": 17,
       "targets": [
         {
-          "expr": "sum by (instance) (inference_engine_models_loaded)",
+          "expr": "max by (instance) (inference_engine_models_loaded)",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -860,7 +860,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Loaded model bytes (per replica)",
+      "title": "Native weight artifact bytes per engine replica",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -874,7 +874,7 @@
       "id": 18,
       "targets": [
         {
-          "expr": "sum by (instance) (inference_engine_loaded_bytes)",
+          "expr": "max by (instance) (inference_engine_loaded_bytes)",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -911,6 +911,111 @@
           "unit": "bytes"
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ollama resident models",
+      "description": "Each engine replica reports its configured Ollama server. Zero means the process list was empty. A gap means the process list was unavailable or the endpoint was unconfigured.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 7,
+        "x": 0,
+        "y": 93
+      },
+      "id": 21,
+      "targets": [
+        {
+          "expr": "max by (instance) (inference_engine_ollama_resident_models)",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ollama resident bytes by model",
+      "description": "Ollama reports each model's total and its VRAM portion. Each engine replica reports its own view. Replicas can share an Ollama server.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 11,
+        "x": 7,
+        "y": 93
+      },
+      "id": 22,
+      "targets": [
+        {
+          "expr": "max by (instance, model) (inference_engine_ollama_resident_bytes)",
+          "legendFormat": "{{model}} total ({{instance}})",
+          "refId": "A"
+        },
+        {
+          "expr": "max by (instance, model) (inference_engine_ollama_resident_vram_bytes)",
+          "legendFormat": "{{model}} VRAM ({{instance}})",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Ollama residency probe",
+      "description": "Latest probe status from each engine replica. Observed means the engine read Ollama's process list successfully.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 93
+      },
+      "id": 23,
+      "targets": [
+        {
+          "expr": "max by (instance, state) (inference_engine_ollama_residency_status) == 1",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{instance}} \u00b7 {{state}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "name",
+        "graphMode": "none",
+        "colorMode": "none"
+      }
     }
   ],
   "refresh": "10s",
@@ -930,6 +1035,6 @@
   "timezone": "",
   "title": "Inference Engine \u2014 Overview",
   "uid": "inference-engine-overview",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }

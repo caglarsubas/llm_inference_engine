@@ -122,17 +122,40 @@ async def metrics() -> str:
         lines.append(f"# TYPE {name} {metric_type}")
         lines.append(f"{name} {control_metrics.get(metric, 0)}")
 
-    lines.append("# HELP inference_engine_models_loaded Number of models currently loaded.")
+    lines.append("# HELP inference_engine_models_loaded Models loaded in the engine process.")
     lines.append("# TYPE inference_engine_models_loaded gauge")
     lines.append(f"inference_engine_models_loaded {len(app_state.manager.loaded_models())}")
 
-    lines.append("# HELP inference_engine_loaded_bytes Total bytes of loaded model weights on disk.")
+    lines.append("# HELP inference_engine_loaded_bytes Native loaded model weights by artifact size.")
     lines.append("# TYPE inference_engine_loaded_bytes gauge")
     lines.append(f"inference_engine_loaded_bytes {app_state.manager.loaded_bytes}")
 
-    lines.append("# HELP inference_engine_memory_budget_bytes Configured hot-keep memory budget.")
+    lines.append("# HELP inference_engine_memory_budget_bytes Configured native hot-keep budget.")
     lines.append("# TYPE inference_engine_memory_budget_bytes gauge")
     lines.append(f"inference_engine_memory_budget_bytes {app_state.manager.memory_budget_bytes}")
+
+    lines.append("# HELP inference_engine_cached_upstream_clients Cached upstream model clients.")
+    lines.append("# TYPE inference_engine_cached_upstream_clients gauge")
+    lines.append(f"inference_engine_cached_upstream_clients {len(app_state.manager.cached_upstream_clients())}")
+
+    residency = await app_state.ollama_residency.report(settings.ollama_http_endpoint)
+    lines.append("# HELP inference_engine_ollama_residency_status Current Ollama process-list observation status.")
+    lines.append("# TYPE inference_engine_ollama_residency_status gauge")
+    lines.append(f'inference_engine_ollama_residency_status{{state="{residency.status}"}} 1')
+    lines.append("# HELP inference_engine_ollama_resident_models Number of models reported by Ollama /api/ps.")
+    lines.append("# TYPE inference_engine_ollama_resident_models gauge")
+    lines.append("# HELP inference_engine_ollama_resident_bytes Total resident size per model reported by Ollama.")
+    lines.append("# TYPE inference_engine_ollama_resident_bytes gauge")
+    lines.append("# HELP inference_engine_ollama_resident_vram_bytes VRAM portion per model reported by Ollama.")
+    lines.append("# TYPE inference_engine_ollama_resident_vram_bytes gauge")
+    if residency.models is not None:
+        lines.append(f"inference_engine_ollama_resident_models {len(residency.models)}")
+        for model in residency.models:
+            labels = f'{{model="{_label_value(model.model)}"}}'
+            if model.size_bytes is not None:
+                lines.append(f"inference_engine_ollama_resident_bytes{labels} {model.size_bytes}")
+            if model.size_vram_bytes is not None:
+                lines.append(f"inference_engine_ollama_resident_vram_bytes{labels} {model.size_vram_bytes}")
 
     lines.append("# HELP inference_engine_models_available Total models discoverable in the registry.")
     lines.append("# TYPE inference_engine_models_available gauge")

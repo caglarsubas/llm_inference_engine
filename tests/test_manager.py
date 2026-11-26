@@ -146,6 +146,36 @@ async def test_lru_eviction_when_over_budget() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["ollama_http", "openrouter", "vllm"])
+async def test_cached_upstream_clients_are_outside_the_native_weight_budget(fmt: str) -> None:
+    a = _desc("a", "1", 80)
+    b = _desc("b", "1", 50, "mlx")
+    remote = _desc("remote", "1", 1_000, fmt)
+    mgr = ModelManager(_registry(a, b, remote), lambda _d: FakeAdapter(), memory_budget_bytes=100)
+
+    await mgr.get("a:1")
+    upstream, _ = await mgr.get("remote:1")
+    assert mgr.loaded_bytes == 80
+    assert mgr.loaded_models() == ["a:1"]
+    assert mgr.loaded_summary() == [{"model": "a:1", "size_bytes": 80, "backend": "fake"}]
+    assert mgr.cached_upstream_clients() == [{"model": "remote:1", "backend": "fake"}]
+    assert FakeAdapter.unload_calls == []
+
+    # Move the client to the oldest position, then trigger native eviction.
+    await mgr.get("a:1")
+    await mgr.get("b:1")
+    assert FakeAdapter.unload_calls == ["a:1"]
+    assert mgr.loaded_models() == ["b:1"]
+    assert mgr.loaded_bytes == 50
+    assert {name for name, _, _ in mgr.iter_loaded()} == {"remote:1", "b:1"}
+    cached, _ = await mgr.get("remote:1")
+    assert cached is upstream
+    await mgr.shutdown()
+    assert mgr.cached_upstream_clients() == []
+    assert sorted(FakeAdapter.unload_calls) == ["a:1", "b:1", "remote:1"]
+
+
+@pytest.mark.asyncio
 async def test_get_touches_lru() -> None:
     a = _desc("a", "1", 40)
     b = _desc("b", "1", 40)

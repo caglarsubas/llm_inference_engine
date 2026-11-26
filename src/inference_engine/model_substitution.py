@@ -41,7 +41,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 import httpx
 
@@ -109,21 +109,60 @@ def parse_groups(raw: str) -> tuple[tuple[str, ...], ...]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ResidentModel:
+    model: str
+    size_bytes: int | None
+    size_vram_bytes: int | None
+
+
+@dataclass(frozen=True)
+class OllamaObservation:
+    models: tuple[ResidentModel, ...]
+    names: frozenset[str]  # Includes both Ollama name aliases for routing.
+
+
+@dataclass(frozen=True)
+class ResidencyReport:
+    status: Literal["observed", "unavailable", "unconfigured"]
+    models: tuple[ResidentModel, ...] | None
+
+
+def _byte_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+async def probe_ollama_residency(endpoint: str) -> OllamaObservation:
+    """Read Ollama's process list with a deadline for the complete request."""
+    async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+        async with httpx.AsyncClient(base_url=endpoint, timeout=PROBE_TIMEOUT_SECONDS) as client:
+            response = await client.get("/api/ps")
+            response.raise_for_status()
+            payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise ValueError("Invalid Ollama process list")
+    names: set[str] = set()
+    models = []
+    for entry in payload["models"]:
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid entry in Ollama process list")
+        aliases = [
+            _normalize(value)
+            for value in (entry.get("name"), entry.get("model"))
+            if isinstance(value, str) and value.strip()
+        ]
+        if not aliases:
+            raise ValueError("Invalid entry in Ollama process list")
+        names.update(aliases)
+        models.append(
+            ResidentModel(aliases[0], _byte_count(entry.get("size")), _byte_count(entry.get("size_vram")))
+        )
+    return OllamaObservation(tuple(models), frozenset(names))
+
+
 async def ollama_resident_models(endpoint: str) -> frozenset[str]:
     """Names Ollama at ``endpoint`` holds in memory right now. Raises on failure."""
-    async with httpx.AsyncClient(base_url=endpoint, timeout=PROBE_TIMEOUT_SECONDS) as client:
-        response = await client.get("/api/ps")
-        response.raise_for_status()
-        payload = response.json()
-    names: set[str] = set()
-    for entry in payload.get("models") or []:
-        if not isinstance(entry, dict):
-            continue
-        for key in ("name", "model"):
-            value = entry.get(key)
-            if isinstance(value, str) and value:
-                names.add(_normalize(value))
-    return frozenset(names)
+    return (await probe_ollama_residency(endpoint)).names
 
 
 class ResidencyCache:
@@ -131,7 +170,7 @@ class ResidencyCache:
 
     def __init__(
         self,
-        probe: Callable[[str], Awaitable[frozenset[str]]] = ollama_resident_models,
+        probe: Callable[[str], Awaitable[OllamaObservation | frozenset[str]]] = probe_ollama_residency,
         *,
         ttl_seconds: float = RESIDENCY_TTL_SECONDS,
         pending_seconds: float = PENDING_LOAD_SECONDS,
@@ -141,15 +180,16 @@ class ResidencyCache:
         self._ttl = ttl_seconds
         self._pending_seconds = pending_seconds
         self._clock = clock
-        self._entries: dict[str, tuple[float, frozenset[str] | None]] = {}
+        self._entries: dict[str, tuple[float, OllamaObservation | None]] = {}
         self._pending: dict[str, dict[str, float]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def resident(self, endpoint: str) -> frozenset[str] | None:
         """Resident names, or None when residency could not be read."""
-        observed = await self._observed(endpoint)
-        if observed is None:
+        observation = await self._observed(endpoint)
+        if observation is None:
             return None
+        observed = observation.names
         now = self._clock()
         pending = self._pending.get(endpoint, {})
         for name in [n for n, expires in pending.items() if expires <= now or n in observed]:
@@ -162,7 +202,19 @@ class ResidencyCache:
             self._clock() + self._pending_seconds
         )
 
-    async def _observed(self, endpoint: str) -> frozenset[str] | None:
+    async def report(self, endpoint: str) -> ResidencyReport:
+        if not endpoint:
+            return ResidencyReport("unconfigured", None)
+        observation = await self._observed(endpoint)
+        if observation is None:
+            return ResidencyReport("unavailable", None)
+        return ResidencyReport("observed", observation.models)
+
+    async def _observed(self, endpoint: str) -> OllamaObservation | None:
+        """Actual process list. Pending loads are used only by resident() for routing."""
+        endpoint = endpoint.rstrip("/")
+        if not endpoint:
+            return None
         cached = self._entries.get(endpoint)
         if cached is not None and self._clock() - cached[0] < self._ttl:
             return cached[1]
@@ -172,12 +224,15 @@ class ResidencyCache:
             if cached is not None and self._clock() - cached[0] < self._ttl:
                 return cached[1]
             try:
-                value: frozenset[str] | None = await self._probe(endpoint)
+                result = await self._probe(endpoint)
+                # Allow existing name-only probe implementations to omit byte counts.
+                if isinstance(result, frozenset):
+                    models = tuple(ResidentModel(name, None, None) for name in sorted(result))
+                    result = OllamaObservation(models, result)
+                value: OllamaObservation | None = result
             except Exception as exc:  # noqa: BLE001 — degrade to "no substitution"
                 log.warning(
                     "model_substitution.residency_unavailable",
-                    endpoint=endpoint,
-                    error=str(exc),
                     error_type=type(exc).__name__,
                 )
                 value = None
