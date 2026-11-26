@@ -6,6 +6,7 @@ from .. import model_evidence
 from ..adapters.base import effective_n_ctx
 from ..auth import require_identity
 from ..config import settings
+from ..portfolio import ModelPortfolio, load_portfolio
 from ..registry import (
     VLLMRegistry,
     descriptor_allows,
@@ -449,6 +450,17 @@ def build_model_views() -> tuple[ModelList, ModelCatalog]:
 def is_model_available(model_id: str) -> bool:
     """Return whether request-time registry resolution can reach a model."""
     return app_state.registry.resolve(model_id, _accept_descriptor) is not None
+
+
+@router.get("/v1/model-portfolio", response_model=ModelPortfolio, response_model_exclude_none=True)
+def list_model_portfolio(task: str | None = None, _=Depends(require_identity)) -> ModelPortfolio:
+    """Browse upstream releases. GET /v1/models lists available deployments."""
+    portfolio = load_portfolio()
+    if task is None:
+        return portfolio
+    return portfolio.model_copy(update={
+        "entries": [entry for entry in portfolio.entries if task in entry.tasks],
+    })
 
 
 @router.get("/v1/models", response_model=ModelList)
